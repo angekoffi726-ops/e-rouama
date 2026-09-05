@@ -9,8 +9,7 @@ import { ProjetsTab } from './components/tabs/ProjetsTab';
 import { ArchivesTab } from './components/tabs/ArchivesTab';
 import { AdminPortal } from './components/admin/AdminPortal';
 import { TabType } from './components/Navigation';
-import { AdminRole } from './types';
-import { LayoutDashboard, CreditCard, Newspaper, Tent, Rocket, FileText, Shield, LogOut, Download, User, Sparkles } from 'lucide-react';
+import { LayoutDashboard, CreditCard, Newspaper, Tent, Rocket, FileText, Download, LogOut } from 'lucide-react';
 import { ADMIN_USERS } from './data/membersData';
 
 function MainLayout() {
@@ -18,17 +17,7 @@ function MainLayout() {
   const [activeTab, setActiveTab] = useState<TabType>('DASHBOARD');
   const [targetDocId, setTargetDocId] = useState<string | undefined>(undefined);
   const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
-
-  const handleNavigateTab = (tab: TabType, docId?: string) => {
-    setActiveTab(tab);
-    if (docId) {
-      setTargetDocId(docId);
-    }
-  };
   const [isInstalled, setIsInstalled] = useState(false);
-
-  const registeredCount = members ? members.filter(m => m.isRegistered).length : 0;
-  const totalMembers = members ? members.length : 13;
 
   React.useEffect(() => {
     const handleBeforeInstall = (e: any) => {
@@ -47,6 +36,13 @@ function MainLayout() {
     };
   }, []);
 
+  const handleNavigateTab = (tab: TabType, docId?: string) => {
+    setActiveTab(tab);
+    if (docId) {
+      setTargetDocId(docId);
+    }
+  };
+
   const handleInstallClick = async () => {
     if (deferredPrompt) {
       deferredPrompt.prompt();
@@ -62,29 +58,27 @@ function MainLayout() {
     }
   };
 
-  // RÈGLE D'OR : Total security at startup
+  // 1. SI PAS DE CONNECTÉ : AFFICHER DIRECTEMENT L'ÉCRAN DE CONNEXION / INSCRIPTION
   if (!currentUser) {
     return <AuthScreen />;
   }
 
+  const registeredCount = members ? members.filter(m => m.isRegistered).length : 0;
+  const totalMembers = members ? members.length : 13;
+
   const isMember = currentUser?.type === 'MEMBER' && !!currentUser?.member;
   const isAdmin = currentUser?.type === 'ADMIN' && !!currentUser?.adminRole;
 
-  // STRICT WATERTIGHT SEPARATION: If logged in as Admin, render Admin Cockpit directly
+  // 2. VUE ADMIN DIRECTE
   if (isAdmin) {
     const adminRoleDef = ADMIN_USERS.find(a => a.id === currentUser?.adminRole);
     return (
       <div className="min-h-screen bg-[#F5EEDC] flex flex-col font-sans text-slate-800 selection:bg-[#E67E22] selection:text-white">
-        {/* Admin Header */}
         <header className="bg-[#E67E22] border-b border-[#D35400] text-white px-4 sm:px-8 py-4 shadow-md flex flex-wrap items-center justify-between gap-4">
           <div>
             <div className="flex items-center gap-3">
               <div className="w-10 h-10 sm:w-12 sm:h-12 rounded-full overflow-hidden border border-amber-200 bg-white p-0 shrink-0 shadow-sm">
-                <img 
-                  src="/LOGOPRO.png" 
-                  alt="Logo E-ROUAMA" 
-                  className="w-full h-full object-cover p-0" 
-                />
+                <img src="/LOGOPRO.png" alt="Logo E-ROUAMA" className="w-full h-full object-cover p-0" />
               </div>
               <h1 className="text-2xl sm:text-3xl font-black tracking-tight text-white">E-ROUAMA</h1>
               <span className="bg-slate-900 text-amber-300 px-3 py-1 rounded-full text-xs font-black uppercase tracking-wider border border-amber-300/30">
@@ -117,12 +111,10 @@ function MainLayout() {
           </div>
         </header>
 
-        {/* Admin Main Body */}
         <main className="flex-1 p-4 sm:p-6 lg:p-8 max-w-7xl w-full mx-auto">
           <AdminPortal />
         </main>
 
-        {/* Footer */}
         <footer className="bg-[#355E3B] text-white/90 px-4 sm:px-8 py-3.5 flex flex-col sm:flex-row items-center justify-between text-[11px] font-extrabold uppercase tracking-wider gap-2 border-t border-emerald-800">
           <div className="flex items-center space-x-3">
             <span className="bg-[#E67E22] text-white px-3 py-1 rounded-full text-[11px] font-black shadow-sm tracking-widest border border-amber-300/30">
@@ -140,9 +132,9 @@ function MainLayout() {
     );
   }
 
-  // MEMBER VIEW (Logged in as MEMBER)
-  const memberNickname = currentUser?.member?.nickname || 'MEMBRE';
-  const memberFirstName = currentUser?.member?.firstName || '';
+  // 3. VUE MEMBRE CONNECTÉ
+  const memberNickname = currentUser?.member?.nickname || currentUser?.member?.name || 'MEMBRE';
+  const memberFirstName = currentUser?.member?.firstName || currentUser?.member?.name || '';
   const userAvatar = currentUser?.member?.avatar ||
     (memberNickname.toUpperCase() === 'CAPELO' || memberFirstName.toUpperCase() === 'WILFRIED'
       ? '/PP-CAPELO.jpeg'
@@ -154,55 +146,20 @@ function MainLayout() {
     : (newsItems || []).length;
 
   const navItems = [
-    {
-      id: 'DASHBOARD' as TabType,
-      label: '📊 TABLEAU DE BORD',
-      icon: LayoutDashboard,
-      badge: null,
-    },
-    {
-      id: 'FINANCES' as TabType,
-      label: '💳 FINANCES',
-      icon: CreditCard,
-      badge: null,
-    },
-    {
-      id: 'NOUVELLES' as TabType,
-      label: '📰 NOUVELLES',
-      icon: Newspaper,
-      badge: unreadNewsCount > 0 ? unreadNewsCount : null,
-    },
-    {
-      id: 'ACTIVITES' as TabType,
-      label: '⛺ ACTIVITÉS',
-      icon: Tent,
-      badge: null,
-    },
-    {
-      id: 'PROJETS' as TabType,
-      label: '🚀 PROJETS',
-      icon: Rocket,
-      badge: null,
-    },
-    {
-      id: 'ARCHIVES' as TabType,
-      label: '📑 ARCHIVES',
-      icon: FileText,
-      badge: null,
-    },
+    { id: 'DASHBOARD' as TabType, label: '📊 TABLEAU DE BORD', icon: LayoutDashboard, badge: null },
+    { id: 'FINANCES' as TabType, label: '💳 FINANCES', icon: CreditCard, badge: null },
+    { id: 'NOUVELLES' as TabType, label: '📰 NOUVELLES', icon: Newspaper, badge: unreadNewsCount > 0 ? unreadNewsCount : null },
+    { id: 'ACTIVITES' as TabType, label: '⛺ ACTIVITÉS', icon: Tent, badge: null },
+    { id: 'PROJETS' as TabType, label: '🚀 PROJETS', icon: Rocket, badge: null },
+    { id: 'ARCHIVES' as TabType, label: '📑 ARCHIVES', icon: FileText, badge: null },
   ];
 
   return (
     <div className="min-h-screen bg-[#F5EEDC] flex flex-col font-sans text-slate-800 selection:bg-[#E67E22] selection:text-white">
-      {/* Member Header Bar */}
       <header className="bg-[#E67E22] text-white border-b border-[#D35400] px-4 sm:px-8 py-4 sm:py-5 shadow-lg flex flex-wrap items-center justify-between gap-4">
         <div className="flex items-center gap-4">
           <div className="w-10 h-10 sm:w-12 sm:h-12 rounded-full overflow-hidden border border-amber-200 bg-white p-0 shrink-0 shadow-sm">
-            <img 
-              src="/LOGOPRO.png" 
-              alt="Logo E-ROUAMA" 
-              className="w-full h-full object-cover p-0" 
-            />
+            <img src="/LOGOPRO.png" alt="Logo E-ROUAMA" className="w-full h-full object-cover p-0" />
           </div>
           <div>
             <h1 className="text-2xl sm:text-3xl font-black tracking-tight text-white">E-ROUAMA</h1>
@@ -212,30 +169,20 @@ function MainLayout() {
           </div>
         </div>
 
-        {/* Prominent Member Identity Display */}
         <div className="bg-black/20 backdrop-blur-sm px-5 py-2.5 rounded-[2rem] border border-white/20 flex items-center gap-3">
           {userAvatar ? (
-            <img
-              src={userAvatar}
-              alt={memberNickname}
-              className="w-10 h-10 rounded-full object-cover border-2 border-white shadow-md shrink-0"
-            />
+            <img src={userAvatar} alt={memberNickname} className="w-10 h-10 rounded-full object-cover border-2 border-white shadow-md shrink-0" />
           ) : (
             <div className="w-10 h-10 rounded-full bg-[#355E3B] text-white flex items-center justify-center font-black text-lg border-2 border-white shadow-md shrink-0">
               {memberNickname.charAt(0).toUpperCase()}
             </div>
           )}
           <div>
-            <div className="text-[10px] text-amber-200 uppercase font-extrabold tracking-wider">
-              MEMBRE CONNECTÉ
-            </div>
-            <div className="text-xl sm:text-2xl font-black text-white tracking-wide">
-              {memberNickname}
-            </div>
+            <div className="text-[10px] text-amber-200 uppercase font-extrabold tracking-wider">MEMBRE CONNECTÉ</div>
+            <div className="text-xl sm:text-2xl font-black text-white tracking-wide">{memberNickname}</div>
           </div>
         </div>
 
-        {/* Action Buttons */}
         <div className="flex items-center space-x-3 ml-auto">
           {!isInstalled && (
             <button
@@ -257,7 +204,6 @@ function MainLayout() {
         </div>
       </header>
 
-      {/* Main Horizontal Navigation Bar */}
       <nav className="bg-[#E67E22]/95 border-b border-[#D35400] px-4 sm:px-8 py-3 shadow-inner">
         <div className="max-w-7xl mx-auto flex items-center gap-2 overflow-x-auto no-scrollbar py-1">
           {navItems.map(item => {
@@ -286,7 +232,6 @@ function MainLayout() {
         </div>
       </nav>
 
-      {/* Tab Content */}
       <main className="flex-1 p-4 sm:p-6 lg:p-8 max-w-7xl w-full mx-auto">
         {activeTab === 'DASHBOARD' && <DashboardTab onNavigateTab={setActiveTab} />}
         {activeTab === 'FINANCES' && <FinancesTab />}
@@ -296,7 +241,6 @@ function MainLayout() {
         {activeTab === 'ARCHIVES' && <ArchivesTab highlightedDocId={targetDocId} />}
       </main>
 
-      {/* Footer */}
       <footer className="bg-[#355E3B] text-white/90 px-4 sm:px-8 py-3.5 flex flex-col sm:flex-row items-center justify-between text-[11px] font-extrabold uppercase tracking-wider gap-2 border-t border-emerald-800">
         <div className="flex items-center space-x-3">
           <span className="bg-[#E67E22] text-white px-3.5 py-1 rounded-full text-[11px] font-black shadow-sm tracking-widest border border-amber-300/30">
@@ -353,7 +297,7 @@ class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoundarySta
             </p>
             <button
               onClick={() => {
-                localStorage.removeItem('EROUAMA_STATE_V1');
+                localStorage.clear();
                 window.location.reload();
               }}
               className="w-full bg-[#E67E22] hover:bg-[#D35400] text-white font-black py-3.5 px-6 rounded-2xl shadow-lg transition-all text-sm active:scale-95"
