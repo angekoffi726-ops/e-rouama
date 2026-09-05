@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import {
+import { supabase } from '../lib/supabase';
   RouamaMember,
   AdminRole,
   AdminUser,
@@ -263,66 +263,49 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [prayerIntentions, setPrayerIntentions] = useState<PrayerIntention[]>([]);
   const [religiousEvents, setReligiousEvents] = useState<ReligiousEvent[]>([]);
 
-  // Load from local storage on mount
+  // Chargement global (Membres, Déclarations, Transactions) depuis Supabase au démarrage
   useEffect(() => {
-    try {
-      // 1. Always ensure EROUAMA_REGISTERED_USERS is initialized if missing
-      const registeredRecords = getStoredRegisteredUsers();
+    const fetchInitialData = async () => {
+      try {
+        // 1. Charger les membres
+        const { data: membersData, error: membersError } = await supabase
+          .from('members')
+          .select('*');
 
-      // 2. Load app state
-      const saved = localStorage.getItem(LOCAL_STORAGE_KEY);
-      let baseMembers = INITIAL_ROUAMA_MEMBERS;
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (parsed.members) {
-          // Exclude GUY from loaded state if present in older localStorage
-          baseMembers = parsed.members.filter((m: RouamaMember) => m.id !== '3' && m.firstName.toUpperCase() !== 'GUY');
+        if (membersError) {
+          console.error("Erreur membres Supabase :", membersError.message);
+        } else if (membersData && membersData.length > 0) {
+          setMembers(membersData);
         }
-        if (parsed.adminUsers) {
-          let loadedAdmins: AdminUser[] = parsed.adminUsers;
-          if (!loadedAdmins.some(a => a.id === 'SPIRITUALITE')) {
-            const spiritDef = ADMIN_USERS.find(a => a.id === 'SPIRITUALITE');
-            if (spiritDef) loadedAdmins = [...loadedAdmins, spiritDef];
-          }
-          setAdminUsers(loadedAdmins);
+
+        // 2. Charger les déclarations
+        const { data: declData, error: declError } = await supabase
+          .from('declarations')
+          .select('*');
+
+        if (declError) {
+          console.error("Erreur déclarations Supabase :", declError.message);
+        } else if (declData) {
+          setDeclarations(declData);
         }
-        if (parsed.fundBalances) setFundBalances(parsed.fundBalances);
-        if (parsed.declarations) setDeclarations(parsed.declarations);
-        if (parsed.transactions) setTransactions(parsed.transactions);
-        if (parsed.withdrawals) setWithdrawals(parsed.withdrawals);
-        if (parsed.newsItems) setNewsItems(parsed.newsItems);
-        if (parsed.activities) setActivities(parsed.activities);
-        if (parsed.projects) setProjects(parsed.projects);
-        if (parsed.financialEvents) setFinancialEvents(parsed.financialEvents);
-        if (parsed.archiveDocs) setArchiveDocs(parsed.archiveDocs);
-        if (parsed.pvs) setPvs(parsed.pvs);
-        if (parsed.bilans) setBilans(parsed.bilans);
-        if (parsed.verseOfTheDay) setVerseOfTheDay(parsed.verseOfTheDay);
-        if (parsed.prayerIntentions) setPrayerIntentions(parsed.prayerIntentions);
-        if (parsed.religiousEvents) setReligiousEvents(parsed.religiousEvents);
+
+        // 3. Charger les transactions
+        const { data: txData, error: txError } = await supabase
+          .from('transactions')
+          .select('*');
+
+        if (txError) {
+          console.error("Erreur transactions Supabase :", txError.message);
+        } else if (txData) {
+          setTransactions(txData);
+        }
+
+      } catch (err) {
+        console.error("Erreur globale de connexion Supabase :", err);
       }
+    };
 
-      // 3. Merge permanently registered users from EROUAMA_REGISTERED_USERS
-      const mergedMembers = baseMembers.map(m => {
-        const regRecord = registeredRecords.find(
-          r => r.id === m.id ||
-            r.firstName.toUpperCase() === m.firstName.toUpperCase() ||
-            r.nickname.toUpperCase() === m.nickname.toUpperCase()
-        );
-        if (regRecord) {
-          return {
-            ...m,
-            isRegistered: true,
-            pin: regRecord.pin,
-          };
-        }
-        return m;
-      });
-
-      setMembers(mergedMembers);
-    } catch (e) {
-      console.error('Failed to parse state from localStorage', e);
-    }
+    fetchInitialData();
   }, []);
 
   // Save to local storage on change
@@ -399,105 +382,85 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   // Registration logic
-  const registerMember = (inputName: string, pin: string) => {
+  const registerMember = async (inputName: string, pin: string) => {
     if (!pin || pin.length !== 4 || !/^\d{4}$/.test(pin)) {
       return { success: false, message: 'Le code PIN doit comporter exactement 4 chiffres.' };
     }
 
     const matched = findRosterMember(inputName);
     if (!matched) {
-      return { success: false, message: "Désolé mais vous n'êtes pas Rouama" };
+      return { success: false, message: "Désolé mais vous n'êtes pas membre Rouama." };
     }
 
-    const registeredRecords = getStoredRegisteredUsers();
-    const existingInStorage = registeredRecords.find(
-      r => r.id === matched.id ||
-        r.firstName.toUpperCase() === matched.firstName.toUpperCase() ||
-        r.nickname.toUpperCase() === matched.nickname.toUpperCase()
-    );
-
-    if (matched.isRegistered || existingInStorage) {
+    if (matched.isRegistered) {
       return { success: false, message: `Le membre ${matched.nickname} est déjà inscrit. Connectez-vous avec votre PIN.` };
     }
 
-    // Permanent record in EROUAMA_REGISTERED_USERS
-    const newRecord: RegisteredUserRecord = {
-      id: matched.id,
-      firstName: matched.firstName,
-      nickname: matched.nickname,
-      pin: pin,
-      registrationDate: new Date().toISOString(),
-    };
-    saveRegisteredUserRecord(newRecord);
+    try {
+      const { error } = await supabase
+        .from('members')
+        .update({ pin: pin, isRegistered: true })
+        .eq('id', matched.id);
 
-    // Register member in memory state
-    const updatedMembers = members.map(m => {
-      if (m.id === matched.id) {
-        return { ...m, pin, isRegistered: true };
+      if (error) {
+        console.error("Erreur d'enregistrement Supabase :", error.message);
+        return { success: false, message: "Erreur lors de l'enregistrement." };
       }
-      return m;
-    });
 
-    setMembers(updatedMembers);
-    const registeredUser = updatedMembers.find(m => m.id === matched.id)!;
-    setCurrentUser({ type: 'MEMBER', member: registeredUser });
-    return { success: true, message: `Bienvenue chez vous, ${registeredUser.nickname} !` };
+      const updatedMembers = members.map(m => {
+        if (m.id === matched.id) {
+          return { ...m, pin, isRegistered: true };
+        }
+        return m;
+      });
+
+      setMembers(updatedMembers);
+      const registeredUser = updatedMembers.find(m => m.id === matched.id)!;
+      setCurrentUser({ type: 'MEMBER', member: registeredUser });
+
+      return { success: true, message: `Bienvenue chez vous, ${registeredUser.nickname} !` };
+    } catch (err) {
+      console.error("Erreur serveur :", err);
+      return { success: false, message: "Erreur de connexion au serveur." };
+    }
   };
 
-  // Login Member
-  const loginMember = (inputName: string, pin: string) => {
+  // Login Member avec Supabase
+  const loginMember = async (inputName: string, pin: string) => {
     if (!inputName || !inputName.trim()) {
       return { success: false, message: 'Veuillez saisir votre prénom ou surnom fraternel.' };
     }
 
-    const cleanInput = inputName.trim().toUpperCase();
     const matched = findRosterMember(inputName);
-
-    // Check EROUAMA_REGISTERED_USERS as primary persistent authority
-    const registeredRecords = getStoredRegisteredUsers();
-    const storedRecord = registeredRecords.find(
-      r => r.firstName.toUpperCase() === cleanInput ||
-        r.nickname.toUpperCase() === cleanInput ||
-        (matched && (r.id === matched.id || r.firstName.toUpperCase() === matched.firstName.toUpperCase() || r.nickname.toUpperCase() === matched.nickname.toUpperCase()))
-    );
-
-    if (!matched && !storedRecord) {
-      return { success: false, message: "Désolé mais vous n'êtes pas membre Rouama. Vérifiez l'orthographe de votre prénom." };
+    if (!matched) {
+      return { success: false, message: "Désolé mais vous n'êtes pas membre Rouama. Vérifiez l'orthographe." };
     }
 
-    const targetMember = matched || (storedRecord ? members.find(m => m.id === storedRecord.id) : undefined);
-    const memberNickname = targetMember?.nickname || storedRecord?.nickname || cleanInput;
-    const isRegistered = targetMember?.isRegistered || !!storedRecord;
-    const expectedPin = storedRecord ? storedRecord.pin : targetMember?.pin;
+    try {
+      const { data, error } = await supabase
+        .from('members')
+        .select('*')
+        .eq('id', matched.id)
+        .single();
 
-    if (!isRegistered) {
-      return { success: false, message: `Le membre ${memberNickname} n'est pas encore inscrit. Veuillez d'abord utiliser l'onglet INSCRIPTION pour créer votre code PIN (4 chiffres).` };
+      if (error || !data) {
+        return { success: false, message: "Erreur lors de la vérification du compte." };
+      }
+
+      if (!data.isRegistered) {
+        return { success: false, message: `Le membre ${data.nickname} n'est pas encore inscrit. Allez sur l'onglet INSCRIPTION.` };
+      }
+
+      if (data.pin !== pin) {
+        return { success: false, message: 'Code PIN incorrect.' };
+      }
+
+      setCurrentUser({ type: 'MEMBER', member: data });
+      return { success: true, message: `Content de vous revoir, ${data.nickname} !` };
+    } catch (err) {
+      console.error("Erreur serveur :", err);
+      return { success: false, message: "Erreur de connexion au serveur." };
     }
-
-    if (!pin || expectedPin !== pin) {
-      return { success: false, message: 'Code PIN incorrect.' };
-    }
-
-    const baseMember = targetMember || {
-      id: storedRecord?.id || 'm-' + Date.now(),
-      firstName: storedRecord?.firstName || cleanInput,
-      fullRosterName: storedRecord?.firstName || cleanInput,
-      nickname: storedRecord?.nickname || cleanInput,
-      phone: '',
-      isRegistered: true,
-    };
-
-    const memberToLogin: RouamaMember = {
-      ...baseMember,
-      isRegistered: true,
-      pin: expectedPin,
-    };
-
-    // Keep members state updated
-    setMembers(prev => prev.map(m => m.id === memberToLogin.id ? { ...m, isRegistered: true, pin: expectedPin } : m));
-
-    setCurrentUser({ type: 'MEMBER', member: memberToLogin });
-    return { success: true, message: `Content de vous revoir, ${memberToLogin.nickname} !` };
   };
 
   // Login Admin
@@ -797,6 +760,28 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     const currentMonthStr = month || new Date().toISOString().substring(0, 7);
 
+    const declarePayment = async (
+    fund: FundType,
+    amount: number,
+    reference: string,
+    isFull: boolean = false,
+    subCategory?: string
+  ) => {
+    if (!currentUser || currentUser.type !== 'MEMBER') {
+      return { success: false, message: 'Seuls les membres enregistrés peuvent effectuer des déclarations.' };
+    }
+
+    if (!amount || amount <= 0) {
+      return { success: false, message: 'Le montant doit être supérieur à 0 F CFA.' };
+    }
+
+    if (!reference || !reference.trim()) {
+      return { success: false, message: 'La référence de transaction Wave / Orange Money est obligatoire.' };
+    }
+
+    const activeMember = currentUser.member;
+    const currentMonthStr = new Date().toLocaleString('fr-FR', { month: 'long', year: 'numeric' });
+
     const newDecl: PaymentDeclaration = {
       id: 'DECL-' + Date.now() + '-' + Math.floor(Math.random() * 1000),
       memberId: activeMember.id,
@@ -812,54 +797,96 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       subCategory,
     };
 
-    setDeclarations(prev => [newDecl, ...prev]);
+    try {
+      const { error } = await supabase
+        .from('declarations')
+        .insert([newDecl]);
 
-    const displayCategory = fund === 'COTISATION'
-      ? `Cotisation Mensuelle (${Math.round(amount / 500)} mois)`
-      : isFull
-      ? 'Règlement Totalité'
-      : 'Acompte par tranche';
+      if (error) {
+        console.error("Erreur lors de l'enregistrement de la déclaration :", error.message);
+        return { success: false, message: "Erreur lors de la transmission de la déclaration." };
+      }
 
-    return {
-      success: true,
-      message: `Déclaration de versement (${displayCategory} de ${amount.toLocaleString('fr-FR')} F CFA) transmise au Trésorier pour validation.`
-    };
+      setDeclarations(prev => [newDecl, ...prev]);
+
+      const displayCategory = fund === 'COTISATION'
+        ? `Cotisation Mensuelle (${Math.round(amount / 500)} mois)`
+        : isFull
+        ? 'Règlement Totalité'
+        : 'Acompte par tranche';
+
+      return {
+        success: true,
+        message: `Déclaration de versement (${displayCategory} de ${amount.toLocaleString('fr-FR')} F CFA) transmise au Trésorier pour validation.`
+      };
+    } catch (err) {
+      console.error("Erreur réseau Supabase :", err);
+      return { success: false, message: "Erreur de connexion au serveur." };
+    }
   };
 
   // Approve Payment (Trésorier)
-  const approvePayment = (declarationId: string) => {
+  const approvePayment = async (declarationId: string) => {
     const decl = declarations.find(d => d.id === declarationId);
-    if (!decl) return;
+    if (!decl || decl.status !== 'PENDING') return;
 
-    // Update decl status
-    setDeclarations(prev => prev.map(d => d.id === declarationId ? { ...d, status: 'APPROVED' } : d));
+    try {
+      // 1. Mise à jour du statut dans Supabase
+      const { error: declError } = await supabase
+        .from('declarations')
+        .update({ status: 'APPROVED' })
+        .eq('id', declarationId);
 
-    // Increase Fund Balance
-    setFundBalances(prev => ({
-      ...prev,
-      [decl.fund]: prev[decl.fund] + decl.amount,
-    }));
+      if (declError) {
+        console.error("Erreur de validation Supabase :", declError.message);
+        return;
+      }
 
-    // Record Transaction
-    const newTx: Transaction = {
-      id: 'TX-' + Date.now(),
-      type: 'DEPOT',
-      fund: decl.fund,
-      amount: decl.amount,
-      description: `Dépôt validé (${decl.fund}) par ${decl.memberNickname} - Réf: ${decl.reference}`,
-      memberNickname: decl.memberNickname,
-      date: new Date().toLocaleDateString('fr-FR'),
-      createdBy: 'TRÉSORIER',
-    };
-    setTransactions(prev => [newTx, ...prev]);
+      // 2. Création de la transaction dans Supabase
+      const newTx: Transaction = {
+        id: 'TX-' + Date.now(),
+        type: 'DEPOT',
+        fund: decl.fund,
+        amount: decl.amount,
+        description: `Dépôt validé (${decl.fund}) par ${decl.memberNickname} - Réf: ${decl.reference}`,
+        memberNickname: decl.memberNickname,
+        date: new Date().toLocaleDateString('fr-FR'),
+        createdBy: 'TRÉSORIER',
+      };
 
-    // Automatically trigger notification to CERVEAU to broadcast alert if it's Cotisation or Anniversaire
-    broadcastCerveauAlert(decl.memberNickname, decl.month);
+      await supabase.from('transactions').insert([newTx]);
+
+      // 3. Mise à jour de l'état local
+      setDeclarations(prev => prev.map(d => d.id === declarationId ? { ...d, status: 'APPROVED' } : d));
+      setFundBalances(prev => ({
+        ...prev,
+        [decl.fund]: prev[decl.fund] + decl.amount,
+      }));
+      setTransactions(prev => [newTx, ...prev]);
+
+      // Alerte Cerveau
+      broadcastCerveauAlert(decl.memberNickname, decl.month);
+    } catch (err) {
+      console.error("Erreur serveur :", err);
+    }
   };
 
-  // Reject Payment (Trésorier)
-  const rejectPayment = (declarationId: string, reason: string) => {
-    setDeclarations(prev => prev.map(d => d.id === declarationId ? { ...d, status: 'REJECTED', rejectionReason: reason } : d));
+  const rejectPayment = async (declarationId: string, reason: string) => {
+    try {
+      const { error } = await supabase
+        .from('declarations')
+        .update({ status: 'REJECTED', rejectionReason: reason })
+        .eq('id', declarationId);
+
+      if (error) {
+        console.error("Erreur de rejet Supabase :", error.message);
+        return;
+      }
+
+      setDeclarations(prev => prev.map(d => d.id === declarationId ? { ...d, status: 'REJECTED', rejectionReason: reason } : d));
+    } catch (err) {
+      console.error("Erreur serveur :", err);
+    }
   };
 
   // Broadcast Alert from Cerveau
