@@ -18,12 +18,12 @@ import { supabase } from '../lib/supabase';
   TargetAudience,
   DuesStatus,
   MemberDuesDetail,
+MemberDuesDetail,
   RegisteredUserRecord,
   VerseOfTheDay,
   PrayerIntention,
   ReligiousEvent,
   TabType,
-import {
   MemberRubricProgress,
   FUND_LABELS
 } from '../types';
