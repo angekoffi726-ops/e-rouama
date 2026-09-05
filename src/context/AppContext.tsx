@@ -24,7 +24,7 @@ import { supabase } from '../lib/supabase';
   ReligiousEvent,
   TabType,
   MemberRubricProgress,
-  FUND_LABELS
+  FUND_LABELS,
 } from '../types';
 import { INITIAL_ROUAMA_MEMBERS, ADMIN_USERS } from '../data/membersData';
 import { sendEmailBroadcastAsync } from '../utils/emailService';
