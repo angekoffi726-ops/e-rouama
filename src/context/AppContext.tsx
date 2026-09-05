@@ -1,13 +1,10 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
-  RouamaMember,
-  AdminRole,
-  AdminUser,
-  CurrentUser,
-  FundType,
-  PaymentDeclaration,
-  Transaction,
-  WithdrawalRequest,
+import type {
+  Member,
+  Payment,
+  DuesStatus,
+  MemberDuesDetail,
   NewsItem,
   EventActivity,
   AgrProject,
@@ -16,16 +13,14 @@ import { supabase } from '../lib/supabase';
   SecretaryPV,
   FinancialBilan,
   TargetAudience,
-  DuesStatus,
-  MemberDuesDetail,
   RegisteredUserRecord,
   VerseOfTheDay,
   PrayerIntention,
   ReligiousEvent,
   TabType,
-  MemberRubricProgress,
-  FUND_LABELS,
+  MemberRubricProgress
 } from '../types';
+import { FUND_LABELS } from '../types';
 import { INITIAL_ROUAMA_MEMBERS, ADMIN_USERS } from '../data/membersData';
 import { sendEmailBroadcastAsync } from '../utils/emailService';
 
