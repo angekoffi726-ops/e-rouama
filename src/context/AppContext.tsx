@@ -18,7 +18,7 @@ import { supabase } from '../lib/supabase';
   TargetAudience,
   DuesStatus,
   MemberDuesDetail,
-MemberDuesDetail,
+  MemberDuesDetail,
   RegisteredUserRecord,
   VerseOfTheDay,
   PrayerIntention,
