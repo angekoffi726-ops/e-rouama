@@ -23,7 +23,7 @@ import { supabase } from '../lib/supabase';
   PrayerIntention,
   ReligiousEvent,
   TabType,
- import {
+import {
   MemberRubricProgress,
   FUND_LABELS
 } from '../types';
