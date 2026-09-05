@@ -1,11 +1,9 @@
 import React, { useState } from 'react';
 import { useApp } from '../context/AppContext';
-import { ADMIN_USERS } from '../data/membersData';
-import { AdminRole } from '../types';
-import { Shield, KeyRound, UserCheck, AlertCircle, Lock, ArrowRight, CheckCircle2 } from 'lucide-react';
+import { Shield, KeyRound, UserCheck, AlertCircle, Lock, ArrowRight, CheckCircle2, Loader2 } from 'lucide-react';
 
 export const AuthScreen: React.FC = () => {
-  const { registerMember, loginMember, loginAdmin, members, adminUsers } = useApp();
+  const { registerMember, loginMember, loginAdmin, members } = useApp();
 
   const registeredCount = members ? members.filter(m => m.isRegistered).length : 1;
   const totalMembersCount = members ? members.length : 13;
@@ -24,9 +22,10 @@ export const AuthScreen: React.FC = () => {
   const [adminRoleInput, setAdminRoleInput] = useState('');
   const [adminPinInput, setAdminPinInput] = useState('');
 
-  // Status Message
+  // Status & Loading State
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
 
   const clearAllFields = () => {
     setMemberLoginName('');
@@ -44,7 +43,7 @@ export const AuthScreen: React.FC = () => {
     clearAllFields();
   };
 
-  const handleMemberRegister = (e: React.FormEvent) => {
+  const handleMemberRegister = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg(null);
     setSuccessMsg(null);
@@ -54,16 +53,28 @@ export const AuthScreen: React.FC = () => {
       return;
     }
 
-    const res = registerMember(regMemberName, regMemberPin);
-    if (!res.success) {
-      setErrorMsg(res.message);
-    } else {
-      setSuccessMsg(res.message);
-      clearAllFields();
+    if (!regMemberPin || regMemberPin.length !== 4) {
+      setErrorMsg('Le code PIN doit comporter exactement 4 chiffres.');
+      return;
+    }
+
+    setIsSubmitting(true);
+    try {
+      const res = await registerMember(regMemberName, regMemberPin);
+      if (!res.success) {
+        setErrorMsg(res.message);
+      } else {
+        setSuccessMsg(res.message);
+        clearAllFields();
+      }
+    } catch (err) {
+      setErrorMsg("Une erreur réseau est survenue lors de l'inscription.");
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
-  const handleMemberLogin = (e: React.FormEvent) => {
+  const handleMemberLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg(null);
     setSuccessMsg(null);
@@ -73,12 +84,19 @@ export const AuthScreen: React.FC = () => {
       return;
     }
 
-    const res = loginMember(memberLoginName, memberLoginPin);
-    if (!res.success) {
-      setErrorMsg(res.message);
-    } else {
-      setSuccessMsg(res.message);
-      clearAllFields();
+    setIsSubmitting(true);
+    try {
+      const res = await loginMember(memberLoginName, memberLoginPin);
+      if (!res.success) {
+        setErrorMsg(res.message);
+      } else {
+        setSuccessMsg(res.message);
+        clearAllFields();
+      }
+    } catch (err) {
+      setErrorMsg("Une erreur réseau est survenue lors de la connexion.");
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -130,7 +148,7 @@ export const AuthScreen: React.FC = () => {
           </div>
         </div>
 
-        {/* Barre d'onglets compacte & responsive (3 colonnes parfaites) */}
+        {/* Barre d'onglets compacte & responsive */}
         <div className="grid grid-cols-3 gap-1 bg-[#F5EEDC]/80 p-1.5 rounded-2xl mb-8 border border-[#E67E22]/10">
           <button
             type="button"
@@ -199,7 +217,7 @@ export const AuthScreen: React.FC = () => {
               </label>
               <input
                 type="text"
-                placeholder=""
+                placeholder="Ex: Koffi"
                 value={memberLoginName}
                 onChange={e => setMemberLoginName(e.target.value)}
                 className="w-full bg-[#F5EEDC]/50 border-2 border-[#E67E22]/30 rounded-2xl px-4 py-3 text-sm font-semibold text-slate-800 focus:outline-none focus:border-[#E67E22] transition-all"
@@ -214,7 +232,7 @@ export const AuthScreen: React.FC = () => {
                 <input
                   type="password"
                   maxLength={4}
-                  placeholder=""
+                  placeholder="••••"
                   value={memberLoginPin}
                   onChange={e => setMemberLoginPin(e.target.value.replace(/\D/g, ''))}
                   className="w-full bg-[#F5EEDC]/50 border-2 border-[#E67E22]/30 rounded-2xl px-4 py-3 text-center text-2xl font-black tracking-widest text-[#E67E22] focus:outline-none focus:border-[#E67E22] transition-all"
@@ -225,10 +243,20 @@ export const AuthScreen: React.FC = () => {
 
             <button
               type="submit"
-              className="w-full bg-[#E67E22] hover:bg-[#D35400] text-white font-black py-4 rounded-2xl shadow-lg hover:shadow-xl transition-all flex items-center justify-center gap-2 text-base active:scale-98"
+              disabled={isSubmitting}
+              className="w-full bg-[#E67E22] hover:bg-[#D35400] text-white font-black py-4 rounded-2xl shadow-lg hover:shadow-xl transition-all flex items-center justify-center gap-2 text-base active:scale-98 disabled:opacity-50"
             >
-              <span>Se Connecter à E-ROUAMA</span>
-              <ArrowRight className="w-5 h-5" />
+              {isSubmitting ? (
+                <>
+                  <Loader2 className="w-5 h-5 animate-spin" />
+                  <span>Connexion en cours...</span>
+                </>
+              ) : (
+                <>
+                  <span>Se Connecter à E-ROUAMA</span>
+                  <ArrowRight className="w-5 h-5" />
+                </>
+              )}
             </button>
           </form>
         )}
@@ -238,11 +266,11 @@ export const AuthScreen: React.FC = () => {
           <form onSubmit={handleMemberRegister} className="space-y-5">
             <div>
               <label className="block text-xs font-bold text-[#355E3B] uppercase tracking-wider mb-2">
-                PRÉNOM
+                PRÉNOM OU SURNOM
               </label>
               <input
                 type="text"
-                placeholder=""
+                placeholder="Entrez votre prénom ou surnom"
                 value={regMemberName}
                 onChange={e => setRegMemberName(e.target.value)}
                 className="w-full bg-[#F5EEDC]/50 border-2 border-[#355E3B]/20 rounded-2xl px-4 py-3 text-sm font-semibold text-slate-800 focus:outline-none focus:border-[#355E3B] transition-all"
@@ -251,12 +279,12 @@ export const AuthScreen: React.FC = () => {
 
             <div>
               <label className="block text-xs font-bold text-[#355E3B] uppercase tracking-wider mb-2">
-                CODE
+                CRÉER VOTRE CODE PIN (4 CHIFFRES)
               </label>
               <input
                 type="password"
                 maxLength={4}
-                placeholder=""
+                placeholder="••••"
                 value={regMemberPin}
                 onChange={e => setRegMemberPin(e.target.value.replace(/\D/g, ''))}
                 className="w-full bg-[#F5EEDC]/50 border-2 border-[#355E3B]/20 rounded-2xl px-4 py-3 text-center text-2xl font-black tracking-widest text-[#355E3B] focus:outline-none focus:border-[#355E3B] transition-all"
@@ -265,10 +293,20 @@ export const AuthScreen: React.FC = () => {
 
             <button
               type="submit"
-              className="w-full bg-[#E67E22] hover:opacity-90 text-white font-black py-4 rounded-2xl shadow-lg hover:shadow-xl transition-all flex items-center justify-center gap-2 text-base active:scale-98"
+              disabled={isSubmitting}
+              className="w-full bg-[#E67E22] hover:opacity-90 text-white font-black py-4 rounded-2xl shadow-lg hover:shadow-xl transition-all flex items-center justify-center gap-2 text-base active:scale-98 disabled:opacity-50"
             >
-              <span>Créer mon Code PIN & Activer mon Compte</span>
-              <UserCheck className="w-5 h-5" />
+              {isSubmitting ? (
+                <>
+                  <Loader2 className="w-5 h-5 animate-spin" />
+                  <span>Activation en cours...</span>
+                </>
+              ) : (
+                <>
+                  <span>Créer mon Code PIN & Activer mon Compte</span>
+                  <UserCheck className="w-5 h-5" />
+                </>
+              )}
             </button>
           </form>
         )}
@@ -278,11 +316,11 @@ export const AuthScreen: React.FC = () => {
           <form onSubmit={handleAdminLogin} className="space-y-5">
             <div>
               <label className="block text-xs font-bold text-slate-800 uppercase tracking-wider mb-2">
-                ID
+                IDENTIFIANT ADMIN
               </label>
               <input
                 type="text"
-                placeholder=""
+                placeholder="Identifiant"
                 value={adminRoleInput}
                 onChange={e => setAdminRoleInput(e.target.value)}
                 className="w-full bg-[#F5EEDC]/50 border-2 border-[#E67E22]/40 rounded-2xl px-4 py-3 text-sm font-bold text-slate-900 focus:outline-none focus:border-[#E67E22] transition-all"
@@ -291,11 +329,11 @@ export const AuthScreen: React.FC = () => {
 
             <div>
               <label className="block text-xs font-bold text-slate-800 uppercase tracking-wider mb-2">
-                MDP
+                MOT DE PASSE / PIN
               </label>
               <input
                 type="password"
-                placeholder=""
+                placeholder="••••"
                 value={adminPinInput}
                 onChange={e => setAdminPinInput(e.target.value)}
                 className="w-full bg-[#F5EEDC]/50 border-2 border-[#E67E22]/40 rounded-2xl px-4 py-3 text-center text-xl font-bold tracking-widest text-slate-900 focus:outline-none focus:border-[#E67E22] transition-all"
