@@ -892,9 +892,9 @@ export const AdminPortal: React.FC = () => {
             <div class="sig-date">✍️ Signé & Validé le ${bilan.treasurerSignatureDate || bilan.date}</div>
           </div>
 
-          <!-- EMPLACEMENT 2 : LE PAYOR (AUDIT & ARBITRAGE) -->
+          <!-- EMPLACEMENT 2 : LE PAYOR -->
           <div class="sig-block">
-            <div class="sig-title">Le Payor (Audit & Sécurité)</div>
+            <div class="sig-title">Le Payor</div>
             <div class="sig-img-box">
               ${
                 isApprovedByPayor
@@ -971,7 +971,7 @@ export const AdminPortal: React.FC = () => {
               <span>
                 {activeRole === 'TRESORIER' && 'TRÉSORERIE GÉNÉRALE'}
                 {activeRole === 'CERVEAU' && 'LE CERVEAU (PRÉSIDENCE)'}
-                {activeRole === 'PAYOR' && 'ESPACE PAYOR (AUDIT & CO-VALIDATION)'}
+                {activeRole === 'PAYOR' && 'ESPACE PAYOR'}
                 {activeRole === 'SECRETARIAT' && 'SECRÉTARIAT GÉNÉRAL'}
                 {activeRole === 'COM' && "BASE D'INFORMATION ET DE COMMUNICATION (BIC)"}
                 {activeRole === 'ORGANISATION' && 'COMMISSION ORGANISATION'}
@@ -3419,13 +3419,13 @@ export const AdminPortal: React.FC = () => {
       )}
 
       {/* ========================================================= */}
-      {/* 4. ESPACE PAYOR (AUDIT & CO-VALIDATION) */}
+      {/* 4. ESPACE PAYOR */}
       {/* ========================================================= */}
       {activeRole === 'PAYOR' && (
         <div className="space-y-8">
           {/* RBAC Lock Badge */}
           <RbacWarningBanner
-            roleName="PAYOR (AUDIT & SÉCURITÉ)"
+            roleName="ESPACE PAYOR"
             allowedActionsText="Audit financier en lecture seule, co-validation des PV/dossiers et exportation des bilans."
           />
 

@@ -129,7 +129,7 @@ export const ADMIN_USERS: AdminUser[] = [
   {
     id: 'PAYOR',
     loginId: 'PAYOR',
-    roleName: 'Payor (Validation Admin)',
+    roleName: 'Espace Payor',
     pin: '2103',
     description: 'Validation administrative des PV, Règlements, Programmes et Projets avant transmission à la BIC',
   },
