@@ -47,6 +47,7 @@ export const AdminPortal: React.FC = () => {
     declarations,
     approvePayment,
     rejectPayment,
+    deleteReceipt,
     withdrawals,
     createWithdrawalRequest,
     approveWithdrawal,
@@ -430,20 +431,20 @@ export const AdminPortal: React.FC = () => {
   const [rejectReason, setRejectReason] = useState<string>('Reçu illisible ou non conforme aux informations déclarées');
 
   // Dedicated Validation Handler with feedback and state updates
-  const handleValidateReceipt = (decl: any) => {
+  const handleValidateReceipt = async (decl: any) => {
     if (!decl || !decl.id) return;
     try {
-      approvePayment(decl.id);
+      await approvePayment(decl.id);
       setPreviewDeclaration(null);
       setPreviewReceiptImgError(false);
       setRejectModalDeclaration(null);
       const amountStr = decl.amount ? `${decl.amount.toLocaleString('fr-FR')} F CFA` : '';
       const name = decl.memberNickname || 'Membre';
-      setToastMessage(`✅ Reçu de ${name} (${amountStr}) validé avec succès ! Solde et cotisations mis à jour.`);
+      setToastMessage(`✅ Reçu de ${name} (${amountStr}) validé avec succès sur Firestore ! Solde et cotisations synchronisés.`);
       setTimeout(() => setToastMessage(null), 4500);
     } catch (err) {
       console.error('Erreur lors de la validation du reçu:', err);
-      setToastMessage("Une erreur est survenue lors de la validation du reçu.");
+      setToastMessage("Une erreur est survenue lors de la validation du reçu sur Firestore.");
       setTimeout(() => setToastMessage(null), 4000);
     }
   };
@@ -456,21 +457,21 @@ export const AdminPortal: React.FC = () => {
   };
 
   // Dedicated Confirm Rejection Handler
-  const handleConfirmReject = () => {
+  const handleConfirmReject = async () => {
     if (!rejectModalDeclaration) return;
     try {
       const decl = rejectModalDeclaration;
       const finalReason = rejectReason.trim() || 'Reçu non conforme';
-      rejectPayment(decl.id, finalReason);
+      await rejectPayment(decl.id, finalReason);
       setRejectModalDeclaration(null);
       setPreviewDeclaration(null);
       setPreviewReceiptImgError(false);
       const name = decl.memberNickname || 'Membre';
-      setToastMessage(`❌ Reçu de versement de ${name} rejeté. Déclaration annulée.`);
+      setToastMessage(`❌ Reçu de versement de ${name} rejeté sur Firestore. Statut mis à jour.`);
       setTimeout(() => setToastMessage(null), 4500);
     } catch (err) {
       console.error('Erreur lors du rejet du reçu:', err);
-      setToastMessage("Une erreur est survenue lors du rejet du reçu.");
+      setToastMessage("Une erreur est survenue lors du rejet du reçu sur Firestore.");
       setTimeout(() => setToastMessage(null), 4000);
     }
   };

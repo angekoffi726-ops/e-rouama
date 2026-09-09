@@ -35,8 +35,10 @@ import {
   updateDoc,
   deleteDoc,
   onSnapshot,
+  addDoc,
 } from 'firebase/firestore';
 import { db, testFirestoreConnection, sanitizeFirestore } from '../firebase';
+import { compressReceiptImage } from '../utils/imageCompressor';
 
 interface AppContextType {
   currentUser: CurrentUser | null;
@@ -104,9 +106,19 @@ interface AppContextType {
     paymentType?: 'TOTAL' | 'TRANCHE',
     subCategory?: string,
     receiptImage?: string
-  ) => { success: boolean; message: string };
-  approvePayment: (declarationId: string) => void;
-  rejectPayment: (declarationId: string, reason: string) => void;
+  ) => Promise<{ success: boolean; message: string }>;
+  submitReceipt: (receiptData: {
+    fund: FundType;
+    amount: number;
+    reference: string;
+    receiptImage?: string;
+    month?: string;
+    paymentType?: 'TOTAL' | 'TRANCHE';
+    subCategory?: string;
+  }) => Promise<{ success: boolean; message: string }>;
+  approvePayment: (declarationId: string) => Promise<void> | void;
+  rejectPayment: (declarationId: string, reason?: string) => Promise<void> | void;
+  deleteReceipt: (declarationId: string) => Promise<void>;
 
   createWithdrawalRequest: (fund: FundType, amount: number, reason: string) => void;
   approveWithdrawal: (requestId: string) => void;
@@ -316,51 +328,32 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     const unsubscribes: (() => void)[] = [];
 
-    // 1. REÇUS ET DÉCLARATIONS DE PAIEMENT (Collection 'receipts' & 'declarations' synchronisées en temps réel)
-    const receiptsMap = new Map<string, PaymentDeclaration>();
-
-    const updateMergedReceipts = () => {
-      const list = Array.from(receiptsMap.values());
-      list.sort((a, b) => {
-        const timeA = (a as any).createdAt || 0;
-        const timeB = (b as any).createdAt || 0;
-        if (timeA && timeB) return timeB - timeA;
-        return b.id.localeCompare(a.id);
-      });
-      setDeclarations(list);
-    };
-
+    // 1. REÇUS DE PAIEMENT (Collection 'receipts' synchronisée EXCLUSIVEMENT en temps réel depuis Firestore)
     const unsubReceipts = onSnapshot(
       collection(db, 'receipts'),
       (snapshot) => {
         setIsFirebaseConnected(true);
-        snapshot.forEach((docSnap) => {
-          receiptsMap.set(docSnap.id, { id: docSnap.id, ...(docSnap.data() as any) });
+        const loaded: PaymentDeclaration[] = snapshot.docs.map((docSnap) => ({
+          id: docSnap.id,
+          ...(docSnap.data() as any),
+        }));
+
+        // Tri chronologique rigoureux : reçus les plus récents en premier
+        loaded.sort((a, b) => {
+          const timeA = (a as any).createdAt || 0;
+          const timeB = (b as any).createdAt || 0;
+          if (timeA && timeB) return timeB - timeA;
+          return b.id.localeCompare(a.id);
         });
-        updateMergedReceipts();
+
+        // La liste affichée provient EXCLUSIVEMENT de Firestore pour tous les appareils
+        setDeclarations(loaded);
       },
       (err) => {
         console.warn('Firestore receipts listener notification:', err);
       }
     );
     unsubscribes.push(unsubReceipts);
-
-    const unsubDeclarations = onSnapshot(
-      collection(db, 'declarations'),
-      (snapshot) => {
-        setIsFirebaseConnected(true);
-        snapshot.forEach((docSnap) => {
-          if (!receiptsMap.has(docSnap.id)) {
-            receiptsMap.set(docSnap.id, { id: docSnap.id, ...(docSnap.data() as any) });
-          }
-        });
-        updateMergedReceipts();
-      },
-      (err) => {
-        console.warn('Firestore declarations listener notification:', err);
-      }
-    );
-    unsubscribes.push(unsubDeclarations);
 
     // 2. MEMBRES DE L'ASSOCIATION (Synchronisation exacte des 12 membres officiels E-ROUAMA)
     const unsubMembers = onSnapshot(
@@ -1050,11 +1043,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   // =========================================================================
-  // ACTIONS DE PAIEMENT & REÇUS (Synchronisées sur Firebase)
+  // ACTIONS DE PAIEMENT & REÇUS (Synchronisées sur Firebase Firestore)
   // =========================================================================
 
-  // 1. Déclarer un versement (Envoyé par un membre, visible immédiatement chez le Trésorier)
-  const declarePayment = (
+  // 1. Déclarer un versement (Envoyé par un membre, écrit DIRECTEMENT dans Firestore collection 'receipts')
+  const declarePayment = async (
     fund: FundType,
     amount: number,
     reference: string,
@@ -1062,7 +1055,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     paymentType?: 'TOTAL' | 'TRANCHE',
     subCategory?: string,
     receiptImage?: string
-  ) => {
+  ): Promise<{ success: boolean; message: string }> => {
     let activeMember = currentUser?.member;
     if (!activeMember && currentUser?.type === 'ADMIN') {
       activeMember = members.find(m => m.assignedRole === currentUser.adminRole) || members.find(m => m.id === '1') || members[0];
@@ -1111,7 +1104,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     const currentMonthStr = month || new Date().toISOString().substring(0, 7);
 
-    const resolvedReceiptImage = receiptImage || (
+    const rawReceiptImage = receiptImage || (
       typeof reference === 'string' && (
         reference.startsWith('data:image/') ||
         reference.startsWith('http://') ||
@@ -1131,14 +1124,23 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       ) : undefined
     );
 
-    const newDecl: PaymentDeclaration = {
-      id: 'DECL-' + Date.now() + '-' + Math.floor(Math.random() * 1000),
+    // Redimensionnement automatique de l'image (Canvas max 600px, qualité 0.5) pour respecter strictement la limite Firestore
+    let resolvedReceiptImage: string | undefined = undefined;
+    if (rawReceiptImage) {
+      resolvedReceiptImage = await compressReceiptImage(rawReceiptImage, 600, 0.5);
+    }
+
+    const cleanRef = typeof reference === 'string' && reference.startsWith('data:')
+      ? 'Capture de reçu Wave'
+      : reference.trim();
+
+    const newDeclData: Omit<PaymentDeclaration, 'id'> = {
       memberId: activeMember.id,
       memberName: activeMember.firstName,
       memberNickname: activeMember.nickname,
       fund,
       amount,
-      reference: reference.trim(),
+      reference: cleanRef,
       month: currentMonthStr,
       date: new Date().toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }),
       status: 'PENDING',
@@ -1148,59 +1150,73 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       createdAt: Date.now(),
     } as any;
 
-    // Écriture directe sur Firebase Firestore (collection 'receipts' et miroir 'declarations')
-    setDoc(doc(db, 'receipts', newDecl.id), sanitizeFirestore(newDecl)).catch(err => {
-      console.error('Erreur Firebase receipts declarePayment:', err);
-    });
-    setDoc(doc(db, 'declarations', newDecl.id), sanitizeFirestore(newDecl)).catch(err => {
-      console.error('Erreur Firebase declarations declarePayment:', err);
-    });
+    try {
+      // 1. Écriture DIRECTE et EXCLUSIVE dans Firestore via addDoc (aucun localStorage utilisé)
+      const docRef = await addDoc(collection(db, 'receipts'), sanitizeFirestore(newDeclData));
+      await updateDoc(docRef, { id: docRef.id });
 
-    // Mise à jour optimiste immédiate
-    setDeclarations(prev => [newDecl, ...prev.filter(d => d.id !== newDecl.id)]);
+      const displayCategory = fund === 'COTISATION'
+        ? `Cotisation Mensuelle (${Math.round(amount / 500)} mois)`
+        : isFull
+        ? 'Règlement Totalité'
+        : 'Acompte par tranche';
 
-    const displayCategory = fund === 'COTISATION'
-      ? `Cotisation Mensuelle (${Math.round(amount / 500)} mois)`
-      : isFull
-      ? 'Règlement Totalité'
-      : 'Acompte par tranche';
-
-    return {
-      success: true,
-      message: `Reçu (${displayCategory} de ${amount.toLocaleString('fr-FR')} F CFA) transmis en direct sur Firebase au Trésorier pour validation.`
-    };
+      return {
+        success: true,
+        message: `Reçu (${displayCategory} de ${amount.toLocaleString('fr-FR')} F CFA) transmis en direct sur Firebase au Trésorier pour validation.`
+      };
+    } catch (err: any) {
+      console.error('Erreur Firebase receipts addDoc declarePayment:', err);
+      return {
+        success: false,
+        message: `Erreur d'enregistrement sur Firestore : ${err?.message || 'Vérifiez votre connexion internet'}`
+      };
+    }
   };
 
-  // 2. Valider le reçu (Trésorier -> Met à jour Firebase, le membre le voit instantanément)
-  const approvePayment = (declarationId: string) => {
+  // Raccourci explicite submitReceipt demandé par la directive
+  const submitReceipt = async (receiptData: {
+    fund: FundType;
+    amount: number;
+    reference: string;
+    receiptImage?: string;
+    month?: string;
+    paymentType?: 'TOTAL' | 'TRANCHE';
+    subCategory?: string;
+  }) => {
+    return declarePayment(
+      receiptData.fund,
+      receiptData.amount,
+      receiptData.reference,
+      receiptData.month,
+      receiptData.paymentType,
+      receiptData.subCategory,
+      receiptData.receiptImage
+    );
+  };
+
+  // 2. Valider le reçu (Trésorier -> Met à jour Firestore via updateDoc)
+  const approvePayment = async (declarationId: string) => {
     if (!declarationId) return;
     const targetId = declarationId.trim();
 
     const targetDecl = declarations.find(d => d.id === targetId);
     if (!targetDecl) return;
 
-    // 1. Mettre à jour le statut du reçu sur Firestore dans 'receipts' et 'declarations'
-    setDoc(
-      doc(db, 'receipts', targetId),
-      { status: 'APPROVED' },
-      { merge: true }
-    ).catch(err => console.error('Erreur Firebase receipts approvePayment:', err));
-
-    setDoc(
-      doc(db, 'declarations', targetId),
-      { status: 'APPROVED' },
-      { merge: true }
-    ).catch(err => console.error('Erreur Firebase declarations approvePayment:', err));
-
-    // Optimiste
-    setDeclarations(prev => prev.map(d => (d.id === targetId ? { ...d, status: 'APPROVED' as const } : d)));
+    // 1. Mettre à jour le statut du reçu sur Firestore dans 'receipts' via updateDoc
+    try {
+      await updateDoc(doc(db, 'receipts', targetId), { status: 'APPROVED' });
+    } catch (err) {
+      console.warn('Fallback setDoc pour receipts approvePayment:', err);
+      await setDoc(doc(db, 'receipts', targetId), { status: 'APPROVED' }, { merge: true });
+    }
 
     // 2. Créditer la caisse sur Firestore
     const updatedFundBalances = {
       ...fundBalances,
       [targetDecl.fund]: (fundBalances[targetDecl.fund] || 0) + targetDecl.amount,
     };
-    setDoc(doc(db, 'treasury', 'balances'), sanitizeFirestore(updatedFundBalances), { merge: true }).catch(console.warn);
+    await setDoc(doc(db, 'treasury', 'balances'), sanitizeFirestore(updatedFundBalances), { merge: true }).catch(console.warn);
     setFundBalances(updatedFundBalances);
 
     // 3. Enregistrer la transaction sur Firestore
@@ -1219,8 +1235,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       date: new Date().toLocaleDateString('fr-FR'),
       createdBy: 'TRÉSORIER',
     };
-    setDoc(doc(db, 'transactions', newTx.id), sanitizeFirestore(newTx)).catch(console.warn);
-    setTransactions(prev => [newTx, ...prev]);
+    await setDoc(doc(db, 'transactions', newTx.id), sanitizeFirestore(newTx)).catch(console.warn);
 
     // 4. Déclencher l'alerte fraternelle Cerveau
     try {
@@ -1235,33 +1250,37 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
-  // 3. Rejeter le reçu (Trésorier -> Met à jour Firebase avec motif, le membre le voit instantanément)
-  const rejectPayment = (declarationId: string, reason?: string) => {
+  // 3. Rejeter le reçu (Trésorier -> Met à jour Firestore via updateDoc avec motif)
+  const rejectPayment = async (declarationId: string, reason?: string) => {
     if (!declarationId) return;
     const targetId = declarationId.trim();
     const finalReason = reason?.trim() || 'Reçu non conforme ou rejeté par le Trésorier';
 
-    // Mettre à jour sur Firestore dans 'receipts' et 'declarations'
-    setDoc(
-      doc(db, 'receipts', targetId),
-      { status: 'REJECTED', rejectionReason: finalReason },
-      { merge: true }
-    ).catch(err => console.error('Erreur Firebase receipts rejectPayment:', err));
+    // Mettre à jour sur Firestore dans 'receipts' via updateDoc
+    try {
+      await updateDoc(doc(db, 'receipts', targetId), {
+        status: 'REJECTED',
+        rejectionReason: finalReason,
+      });
+    } catch (err) {
+      console.warn('Fallback setDoc pour receipts rejectPayment:', err);
+      await setDoc(
+        doc(db, 'receipts', targetId),
+        { status: 'REJECTED', rejectionReason: finalReason },
+        { merge: true }
+      );
+    }
+  };
 
-    setDoc(
-      doc(db, 'declarations', targetId),
-      { status: 'REJECTED', rejectionReason: finalReason },
-      { merge: true }
-    ).catch(err => console.error('Erreur Firebase declarations rejectPayment:', err));
-
-    // Optimiste
-    setDeclarations(prev =>
-      prev.map(d =>
-        d.id === targetId
-          ? { ...d, status: 'REJECTED' as const, rejectionReason: finalReason }
-          : d
-      )
-    );
+  // 4. Supprimer un reçu sur Firestore via deleteDoc (Trésorier)
+  const deleteReceipt = async (declarationId: string) => {
+    if (!declarationId) return;
+    const targetId = declarationId.trim();
+    try {
+      await deleteDoc(doc(db, 'receipts', targetId));
+    } catch (err) {
+      console.error('Erreur deleteReceipt Firestore:', err);
+    }
   };
 
   // Alerte Cerveau
@@ -1811,8 +1830,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         getActiveAgrProject,
         getAllMembersRubricSummary,
         declarePayment,
+        submitReceipt,
         approvePayment,
         rejectPayment,
+        deleteReceipt,
         createWithdrawalRequest,
         approveWithdrawal,
         rejectWithdrawal,

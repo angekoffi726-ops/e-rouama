@@ -25,6 +25,7 @@ import {
   Sprout,
   Info,
 } from 'lucide-react';
+import { compressReceiptImage } from '../../utils/imageCompressor';
 
 export const FinancesTab: React.FC = () => {
   const {
@@ -37,6 +38,7 @@ export const FinancesTab: React.FC = () => {
     getActiveFinancialEvent,
     getActiveAgrProject,
     declarePayment,
+    submitReceipt,
     getMemberDuesDetail,
     getMemberDuesStatus,
     getMemberRubricProgress,
@@ -76,22 +78,23 @@ export const FinancesTab: React.FC = () => {
   const [monthlyReceiptFile, setMonthlyReceiptFile] = useState<File | null>(null);
   const [monthlyReceiptPreview, setMonthlyReceiptPreview] = useState<string | null>(null);
   const [monthlyMsg, setMonthlyMsg] = useState<{ type: 'error' | 'success'; text: string } | null>(null);
+  const [isMonthlySubmitting, setIsMonthlySubmitting] = useState(false);
 
   const monthlyAmount = monthlyMonthsCount * 500;
   const isMonthlyWaveActive = monthlyAmount >= 500;
-  const isMonthlySubmitActive = monthlyReceiptFile !== null && monthlyAmount >= 500;
+  const isMonthlySubmitActive = monthlyReceiptFile !== null && monthlyAmount >= 500 && !isMonthlySubmitting;
 
-  const handleMonthlyFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleMonthlyFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
       const file = e.target.files[0];
       setMonthlyReceiptFile(file);
-      const reader = new FileReader();
-      reader.onloadend = () => setMonthlyReceiptPreview(reader.result as string);
-      reader.readAsDataURL(file);
+      // Compression Canvas immédiate (max 600px, qualité 0.5) pour affichage fluide et respect strict de Firestore
+      const compressed = await compressReceiptImage(file, 600, 0.5);
+      setMonthlyReceiptPreview(compressed);
     }
   };
 
-  const handleMonthlySubmit = (e: React.FormEvent) => {
+  const handleMonthlySubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setMonthlyMsg(null);
 
@@ -111,33 +114,49 @@ export const FinancesTab: React.FC = () => {
       return;
     }
 
-    const refText = monthlyTxnRef.trim()
-      ? monthlyTxnRef.trim()
-      : `REÇU-${monthlyReceiptFile?.name || 'WAVE'}`;
+    setIsMonthlySubmitting(true);
+    try {
+      let finalImage = monthlyReceiptPreview;
+      if (monthlyReceiptFile && (!finalImage || finalImage.length > 250000)) {
+        finalImage = await compressReceiptImage(monthlyReceiptFile, 600, 0.5);
+      }
 
-    const res = declarePayment(
-      'COTISATION',
-      monthlyAmount,
-      refText,
-      undefined,
-      'TOTAL',
-      undefined,
-      monthlyReceiptPreview || undefined
-    );
+      const refText = monthlyTxnRef.trim()
+        ? monthlyTxnRef.trim()
+        : `REÇU-${monthlyReceiptFile?.name || 'WAVE'}`;
 
-    if (res.success) {
-      setMonthlyMsg({
-        type: 'success',
-        text: `Votre cotisation mensuelle de ${monthlyAmount.toLocaleString('fr-FR')} F CFA (${monthlyMonthsCount} mois) a été transmise avec succès au Trésorier pour validation !`,
-      });
-      setMonthlyTxnRef('');
-      setMonthlyReceiptFile(null);
-      setMonthlyReceiptPreview(null);
-    } else {
+      const res = await declarePayment(
+        'COTISATION',
+        monthlyAmount,
+        refText,
+        undefined,
+        'TOTAL',
+        undefined,
+        finalImage || undefined
+      );
+
+      if (res.success) {
+        setMonthlyMsg({
+          type: 'success',
+          text: `Votre cotisation mensuelle de ${monthlyAmount.toLocaleString('fr-FR')} F CFA (${monthlyMonthsCount} mois) a été transmise en direct sur Firestore au Trésorier pour validation !`,
+        });
+        setMonthlyTxnRef('');
+        setMonthlyReceiptFile(null);
+        setMonthlyReceiptPreview(null);
+      } else {
+        setMonthlyMsg({
+          type: 'error',
+          text: res.message || 'Erreur lors de la transmission du reçu.',
+        });
+      }
+    } catch (err: any) {
+      console.error('Erreur soumission mensuelle:', err);
       setMonthlyMsg({
         type: 'error',
-        text: res.message || 'Erreur lors de la déclaration.',
+        text: `Erreur d'envoi du reçu : ${err?.message || 'Veuillez réessayer'}`,
       });
+    } finally {
+      setIsMonthlySubmitting(false);
     }
   };
 
@@ -153,6 +172,7 @@ export const FinancesTab: React.FC = () => {
   const [trancheReceiptFile, setTrancheReceiptFile] = useState<File | null>(null);
   const [trancheReceiptPreview, setTrancheReceiptPreview] = useState<string | null>(null);
   const [trancheMsg, setTrancheMsg] = useState<{ type: 'error' | 'success'; text: string } | null>(null);
+  const [isTrancheSubmitting, setIsTrancheSubmitting] = useState(false);
 
   // Rubric progresses for connected member
   const annivProgress = getMemberRubricProgress(currentMemberId, 'ANNIVERSAIRE');
@@ -177,15 +197,15 @@ export const FinancesTab: React.FC = () => {
   const isTrancheAmountValid = numericTrancheAmount >= minTrancheAllowed;
   const isTrancheWaveActive = trancheAmountInput.trim() !== '' && isTrancheAmountValid;
   const isTrancheSubmitActive =
-    trancheReceiptFile !== null && trancheAmountInput.trim() !== '' && isTrancheAmountValid;
+    trancheReceiptFile !== null && trancheAmountInput.trim() !== '' && isTrancheAmountValid && !isTrancheSubmitting;
 
-  const handleTrancheFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleTrancheFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
       const file = e.target.files[0];
       setTrancheReceiptFile(file);
-      const reader = new FileReader();
-      reader.onloadend = () => setTrancheReceiptPreview(reader.result as string);
-      reader.readAsDataURL(file);
+      // Compression Canvas immédiate (max 600px, qualité 0.5) pour respecter Firestore
+      const compressed = await compressReceiptImage(file, 600, 0.5);
+      setTrancheReceiptPreview(compressed);
     }
   };
 
@@ -230,7 +250,7 @@ export const FinancesTab: React.FC = () => {
     }
   };
 
-  const handleTrancheSubmit = (e: React.FormEvent) => {
+  const handleTrancheSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setTrancheMsg(null);
 
@@ -252,34 +272,50 @@ export const FinancesTab: React.FC = () => {
       return;
     }
 
-    const refText = trancheTxnRef.trim()
-      ? trancheTxnRef.trim()
-      : `REÇU-${trancheReceiptFile?.name || 'WAVE'}`;
+    setIsTrancheSubmitting(true);
+    try {
+      let finalImage = trancheReceiptPreview;
+      if (trancheReceiptFile && (!finalImage || finalImage.length > 250000)) {
+        finalImage = await compressReceiptImage(trancheReceiptFile, 600, 0.5);
+      }
 
-    const res = declarePayment(
-      selectedTrancheFund,
-      amt,
-      refText,
-      undefined,
-      paymentMode,
-      selectedTrancheFund === 'CAS_SOCIAUX' ? socialPrecision : undefined,
-      trancheReceiptPreview || undefined
-    );
+      const refText = trancheTxnRef.trim()
+        ? trancheTxnRef.trim()
+        : `REÇU-${trancheReceiptFile?.name || 'WAVE'}`;
 
-    if (res.success) {
-      setTrancheMsg({
-        type: 'success',
-        text: `Votre versement (${paymentMode === 'TOTAL' ? 'Paiement Totalité' : 'Acompte par tranche'}) de ${amt.toLocaleString('fr-FR')} F CFA a été transmis avec succès au Trésorier !`,
-      });
-      setTrancheTxnRef('');
-      setTrancheReceiptFile(null);
-      setTrancheReceiptPreview(null);
-      setTrancheAmountInput('');
-    } else {
+      const res = await declarePayment(
+        selectedTrancheFund,
+        amt,
+        refText,
+        undefined,
+        paymentMode,
+        selectedTrancheFund === 'CAS_SOCIAUX' ? socialPrecision : undefined,
+        finalImage || undefined
+      );
+
+      if (res.success) {
+        setTrancheMsg({
+          type: 'success',
+          text: `Votre versement (${paymentMode === 'TOTAL' ? 'Paiement Totalité' : 'Acompte par tranche'}) de ${amt.toLocaleString('fr-FR')} F CFA a été transmis en direct sur Firestore au Trésorier !`,
+        });
+        setTrancheTxnRef('');
+        setTrancheReceiptFile(null);
+        setTrancheReceiptPreview(null);
+        setTrancheAmountInput('');
+      } else {
+        setTrancheMsg({
+          type: 'error',
+          text: res.message || 'Erreur lors de la déclaration.',
+        });
+      }
+    } catch (err: any) {
+      console.error('Erreur soumission tranche:', err);
       setTrancheMsg({
         type: 'error',
-        text: res.message || 'Erreur lors de la déclaration.',
+        text: `Erreur d'envoi du reçu : ${err?.message || 'Veuillez réessayer'}`,
       });
+    } finally {
+      setIsTrancheSubmitting(false);
     }
   };
 
@@ -780,10 +816,19 @@ export const FinancesTab: React.FC = () => {
                     : 'bg-gray-200 text-gray-400 border border-gray-300 cursor-not-allowed pointer-events-none'
                 }`}
               >
-                <CheckCircle2 className="w-5 h-5" />
-                <span>
-                  DÉCLARER MA COTISATION MENSUELLE ({monthlyAmount.toLocaleString('fr-FR')} F CFA - {monthlyMonthsCount} MOIS)
-                </span>
+                {isMonthlySubmitting ? (
+                  <>
+                    <Clock className="w-5 h-5 animate-spin text-emerald-300" />
+                    <span>ENVOI DIRECT VERS FIRESTORE EN COURS...</span>
+                  </>
+                ) : (
+                  <>
+                    <CheckCircle2 className="w-5 h-5" />
+                    <span>
+                      DÉCLARER MA COTISATION MENSUELLE ({monthlyAmount.toLocaleString('fr-FR')} F CFA - {monthlyMonthsCount} MOIS)
+                    </span>
+                  </>
+                )}
               </button>
 
               {!isMonthlySubmitActive && (
@@ -1438,12 +1483,21 @@ export const FinancesTab: React.FC = () => {
                     : 'bg-gray-200 text-gray-400 border border-gray-300 cursor-not-allowed pointer-events-none'
                 }`}
               >
-                <CheckCircle2 className="w-5 h-5" />
-                <span>
-                  {paymentMode === 'TOTAL'
-                    ? `DÉCLARER MON RÈGLEMENT TOTAL (${numericTrancheAmount > 0 ? numericTrancheAmount.toLocaleString('fr-FR') + ' F CFA' : ''})`
-                    : `DÉCLARER MON ACOMPTE PAR TRANCHE (${numericTrancheAmount > 0 ? numericTrancheAmount.toLocaleString('fr-FR') + ' F CFA' : ''})`}
-                </span>
+                {isTrancheSubmitting ? (
+                  <>
+                    <Clock className="w-5 h-5 animate-spin text-amber-200" />
+                    <span>ENVOI DIRECT VERS FIRESTORE EN COURS...</span>
+                  </>
+                ) : (
+                  <>
+                    <CheckCircle2 className="w-5 h-5" />
+                    <span>
+                      {paymentMode === 'TOTAL'
+                        ? `DÉCLARER MON RÈGLEMENT TOTAL (${numericTrancheAmount > 0 ? numericTrancheAmount.toLocaleString('fr-FR') + ' F CFA' : ''})`
+                        : `DÉCLARER MON ACOMPTE PAR TRANCHE (${numericTrancheAmount > 0 ? numericTrancheAmount.toLocaleString('fr-FR') + ' F CFA' : ''})`}
+                    </span>
+                  </>
+                )}
               </button>
 
               {!isTrancheSubmitActive && (
