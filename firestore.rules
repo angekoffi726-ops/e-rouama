@@ -1,0 +1,97 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 1. Document test de connectivité
+    match /test/{docId} {
+      allow read, write: if true;
+    }
+
+    // 2. Reçus et déclarations de paiement (synchronisation temps réel membre <-> trésorier)
+    match /receipts/{receiptId} {
+      allow read, write: if true;
+    }
+    match /declarations/{declarationId} {
+      allow read, write: if true;
+    }
+
+    // 3. Membres de l'association
+    match /members/{memberId} {
+      allow read, write: if true;
+    }
+
+    // 4. Soldes des caisses et trésorerie
+    match /treasury/{docId} {
+      allow read, write: if true;
+    }
+
+    // 5. Activités et sorties
+    match /activities/{activityId} {
+      allow read, write: if true;
+    }
+
+    // 6. Projets AGR
+    match /projects/{projectId} {
+      allow read, write: if true;
+    }
+
+    // 7. Actualités et annonces
+    match /news/{newsId} {
+      allow read, write: if true;
+    }
+
+    // 8. Transactions et écritures comptables
+    match /transactions/{txId} {
+      allow read, write: if true;
+    }
+
+    // 9. Demandes de décaissements
+    match /withdrawals/{wId} {
+      allow read, write: if true;
+    }
+
+    // 10. Événements financiers (Loisirs, Cas Sociaux)
+    match /financial_events/{eventId} {
+      allow read, write: if true;
+    }
+
+    // 11. Spiritualité (Verset du jour)
+    match /spiritual/{docId} {
+      allow read, write: if true;
+    }
+
+    // 12. Intentions de prière
+    match /prayer_intentions/{prayerId} {
+      allow read, write: if true;
+    }
+
+    // 13. Événements religieux
+    match /religious_events/{relId} {
+      allow read, write: if true;
+    }
+
+    // 14. Secrétariat & Procès-Verbaux
+    match /secretary_pvs/{pvId} {
+      allow read, write: if true;
+    }
+
+    // 15. Bilans financiers officiels
+    match /secretary_bilans/{bilanId} {
+      allow read, write: if true;
+    }
+
+    // 16. Archives officielles et coffre-fort
+    match /archive_docs/{docId} {
+      allow read, write: if true;
+    }
+
+    // 17. Configuration des administrateurs
+    match /admin/{docId} {
+      allow read, write: if true;
+    }
+
+    // Refus par défaut pour toute autre collection non répertoriée
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

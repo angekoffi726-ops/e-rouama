@@ -1,0 +1,109 @@
+{
+  "entities": {
+    "Member": {
+      "title": "Member",
+      "description": "Un membre de la famille Rouamba dans l'association",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "firstName": { "type": "string" },
+        "lastName": { "type": "string" },
+        "nickname": { "type": "string" },
+        "phone": { "type": "string" },
+        "monthlyContribution": { "type": "number" },
+        "duesStatus": { "type": "string" },
+        "balance": { "type": "number" },
+        "isRegistered": { "type": "boolean" },
+        "pin": { "type": "string" },
+        "avatarUrl": { "type": "string" },
+        "role": { "type": "string" }
+      },
+      "required": ["id", "firstName", "lastName", "nickname"]
+    },
+    "PaymentDeclaration": {
+      "title": "PaymentDeclaration",
+      "description": "Déclaration de versement ou reçu soumis par un membre",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "memberId": { "type": "string" },
+        "memberName": { "type": "string" },
+        "memberNickname": { "type": "string" },
+        "fund": { "type": "string" },
+        "amount": { "type": "number" },
+        "date": { "type": "string" },
+        "reference": { "type": "string" },
+        "status": { "type": "string", "enum": ["PENDING", "APPROVED", "REJECTED"] },
+        "rejectionReason": { "type": "string" },
+        "paymentType": { "type": "string" },
+        "subCategory": { "type": "string" },
+        "receiptImage": { "type": "string" },
+        "createdAt": { "type": "number" }
+      },
+      "required": ["id", "memberId", "amount", "fund", "status"]
+    },
+    "TreasuryState": {
+      "title": "TreasuryState",
+      "description": "Soldes consolidés des caisses",
+      "type": "object",
+      "properties": {
+        "COTISATION": { "type": "number" },
+        "ANNIVERSAIRE": { "type": "number" },
+        "LOISIRS": { "type": "number" },
+        "AGR": { "type": "number" },
+        "CAS_SOCIAUX": { "type": "number" },
+        "updatedAt": { "type": "number" }
+      },
+      "required": ["COTISATION", "ANNIVERSAIRE", "LOISIRS", "AGR", "CAS_SOCIAUX"]
+    },
+    "Activity": {
+      "title": "Activity",
+      "description": "Activité événementielle ou sortie",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "date": { "type": "string" },
+        "budget": { "type": "number" },
+        "status": { "type": "string" }
+      },
+      "required": ["id", "title"]
+    },
+    "Project": {
+      "title": "Project",
+      "description": "Projet AGR initié par les membres",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "estimatedCost": { "type": "number" },
+        "status": { "type": "string" }
+      },
+      "required": ["id", "title"]
+    }
+  },
+  "firestore": {
+    "/members/{memberId}": {
+      "schema": "Member",
+      "description": "Membres et profils"
+    },
+    "/declarations/{declarationId}": {
+      "schema": "PaymentDeclaration",
+      "description": "Reçus et déclarations de versement"
+    },
+    "/treasury/{treasuryDoc}": {
+      "schema": "TreasuryState",
+      "description": "Soldes des caisses de la trésorerie"
+    },
+    "/activities/{activityId}": {
+      "schema": "Activity",
+      "description": "Activités associatives"
+    },
+    "/projects/{projectId}": {
+      "schema": "Project",
+      "description": "Projets AGR"
+    }
+  }
+}

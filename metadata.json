@@ -1,0 +1,6 @@
+{
+  "name": "E-ROUAMA",
+  "description": "Application web de gestion fraternelle pour le groupe E-ROUAMA (14 membres)",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
