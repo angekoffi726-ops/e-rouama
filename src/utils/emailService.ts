@@ -1,3 +1,4 @@
+import emailjs from '@emailjs/browser';
 import { RouamaMember } from '../types';
 
 export interface EmailDispatchLog {
@@ -12,10 +13,15 @@ export interface EmailDispatchLog {
   status: 'SENT' | 'DELIVERED';
 }
 
+export const EMAILJS_CONFIG = {
+  serviceId: 'service_fmxtmw1',
+  templateId: 'template_z2nyaem',
+  publicKey: '4uaf30m_mKHnobzKh',
+};
+
 /**
- * Direct automated background email dispatch service.
- * Performs a 100% background HTTP request sending emails directly to all members
- * WITHOUT opening mailto, Outlook, or any third-party desktop client.
+ * Direct automated background email dispatch service powered by EmailJS.
+ * Sends emails directly to all targeted members without opening third-party email clients.
  */
 export const sendEmailBroadcastAsync = async (
   title: string,
@@ -26,44 +32,46 @@ export const sendEmailBroadcastAsync = async (
 ): Promise<{ success: boolean; recipientCount: number; recipients: string[]; log: EmailDispatchLog }> => {
   // Extract all valid member email addresses from roster
   const recipientEmails = members
-    .map(m => m.email)
+    .map(m => m.email?.trim())
     .filter((email): email is string => Boolean(email && email.includes('@')));
 
   // Unique list of email recipients
   const uniqueRecipients = Array.from(new Set(recipientEmails));
 
-  // Build structured email payload
-  const payload = {
-    sender: `Bureau Exécutif E-ROUAMA <noreply@e-rouama.org>`,
-    authorRole,
-    title: `[GROUPE E-ROUAMA] ${title}`,
-    content,
-    dispatchChannel: dispatchChannel === 'GENERAL' ? 'App + Email' : 'Email Uniquement',
-    recipients: uniqueRecipients,
-    sentAt: new Date().toISOString(),
-  };
+  if (uniqueRecipients.length === 0) {
+    throw new Error('Aucun destinataire avec une adresse email valide trouvé.');
+  }
 
-  // Execute background HTTP request to backend/email API endpoint
-  try {
-    // Attempt background API call if backend service is available
-    const response = await fetch('/api/send-email', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(payload),
-    }).catch(() => null);
+  // Initialise EmailJS avec la clé publique officielle
+  emailjs.init({ publicKey: EMAILJS_CONFIG.publicKey });
 
-    // If endpoint returns ok or if running in static dev, complete background simulation smoothly
-    if (response && response.ok) {
-      console.log('API email response received:', await response.json());
-    } else {
-      // Background simulated network latency (1.2s) to represent secure background SMTP dispatch
-      await new Promise(resolve => setTimeout(resolve, 1200));
-    }
-  } catch (error) {
-    console.warn('Background email gateway fallback active:', error);
-    await new Promise(resolve => setTimeout(resolve, 1200));
+  // Envoi réel vers chaque membre par Promise.all
+  const sendResponses = await Promise.all(
+    uniqueRecipients.map(async (email) => {
+      const templateParams = {
+        subject: title,
+        message: content,
+        to_email: email,
+      };
+
+      const res = await emailjs.send(
+        EMAILJS_CONFIG.serviceId,
+        EMAILJS_CONFIG.templateId,
+        templateParams,
+        EMAILJS_CONFIG.publicKey
+      );
+
+      if (res.status !== 200) {
+        throw new Error(`Échec d'envoi vers ${email} : HTTP ${res.status} (${res.text})`);
+      }
+
+      return res;
+    })
+  );
+
+  const allOk = sendResponses.every(r => r && r.status === 200);
+  if (!allOk) {
+    throw new Error("L'un des envois d'email n'a pas retourné le code de succès HTTP 200.");
   }
 
   // Create delivery log

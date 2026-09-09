@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import emailjs from '@emailjs/browser';
 import { useApp } from '../../context/AppContext';
 import { AdminRole, FundType, FUND_LABELS, TargetAudience, Committee, AgrProject, FinancialBilan } from '../../types';
 import { ADMIN_USERS } from '../../data/membersData';
@@ -165,6 +166,7 @@ export const AdminPortal: React.FC = () => {
     channel: 'APP' | 'MAIL' | 'GENERAL';
     recipients: string[];
   } | null>(null);
+  const [emailError, setEmailError] = useState<string | null>(null);
   const [editingAdminRole, setEditingAdminRole] = useState<AdminRole | null>(null);
   const [editLoginId, setEditLoginId] = useState<string>('');
   const [editPin, setEditPin] = useState<string>('');
@@ -949,6 +951,222 @@ export const AdminPortal: React.FC = () => {
     renderAndPrintBilanPDF(newBilan);
 
     setToastMessage("✍️ Bilan Financier généré avec la signature SIMAHO.png et transmis au Payor pour visa !");
+  };
+
+  // Configuration officielle EmailJS
+  const EMAILJS_SERVICE_ID = 'service_fmxtmw1';
+  const EMAILJS_TEMPLATE_ID = 'template_z2nyaem';
+  const EMAILJS_PUBLIC_KEY = '4uaf30m_mKHnobzKh';
+
+  // LOGIQUE D'ENVOI RÉEL BIC (handleSendMail / handlePublish)
+  const handlePublishBIC = async () => {
+    if (!newsTitle.trim() || !newsContent.trim()) {
+      alert('Veuillez renseigner le titre et le contenu du communiqué.');
+      return;
+    }
+
+    setEmailError(null);
+
+    // 1. Si le canal est uniquement APP (pas d'envoi de courriel)
+    if (comDispatchChannel === 'APP') {
+      publishNews(newsTitle.trim(), newsContent.trim(), newsCategory, newsTarget, 'COM', 'APP');
+      setToastMessage("Annonce publiée dans l'application avec succès !");
+      setTimeout(() => setToastMessage(null), 4000);
+      setNewsTitle('');
+      setNewsContent('');
+      return;
+    }
+
+    // 2. Canal MAIL ou GENERAL (APP + MAIL) : Envoi réel via EmailJS
+    try {
+      setIsSendingEmail(true);
+
+      // Déterminer les membres ciblés selon le ciblage d'audience
+      let targetedMembers = members;
+      if (newsTarget === 'RETARD') {
+        targetedMembers = members.filter(m => getMemberDuesStatus(m.id) === 'RETARD');
+      } else if (newsTarget === 'A_JOUR') {
+        targetedMembers = members.filter(m => getMemberDuesStatus(m.id) === 'A_JOUR');
+      } else if (newsTarget === 'EN_AVANCE') {
+        targetedMembers = members.filter(m => getMemberDuesStatus(m.id) === 'EN_AVANCE');
+      }
+
+      // Extraire la liste des adresses emails valides des membres ciblés
+      const targetEmails = Array.from(
+        new Set(
+          targetedMembers
+            .map(m => m.email?.trim())
+            .filter((email): email is string => Boolean(email && email.includes('@')))
+        )
+      );
+
+      if (targetEmails.length === 0) {
+        throw new Error(`Aucune adresse email valide trouvée pour la cible sélectionnée (${newsTarget}).`);
+      }
+
+      // Initialisation EmailJS avec la clé publique officielle
+      emailjs.init({ publicKey: EMAILJS_PUBLIC_KEY });
+
+      // Boucle async / Promise.all pour envoyer à chaque membre via emailjs.send
+      const sendResults = await Promise.all(
+        targetEmails.map(async (email) => {
+          const templateParams = {
+            subject: newsTitle.trim(),
+            message: newsContent.trim(),
+            to_email: email,
+          };
+
+          const res = await emailjs.send(
+            EMAILJS_SERVICE_ID,
+            EMAILJS_TEMPLATE_ID,
+            templateParams,
+            EMAILJS_PUBLIC_KEY
+          );
+
+          if (res.status !== 200) {
+            throw new Error(`Échec d'envoi vers ${email} : statut HTTP ${res.status} (${res.text || 'Erreur'})`);
+          }
+
+          return res;
+        })
+      );
+
+      // Vérification stricte que chaque envoi a abouti avec le statut 200
+      const allSuccess = sendResults.length > 0 && sendResults.every(r => r && r.status === 200);
+      if (!allSuccess) {
+        throw new Error("L'envoi d'un ou plusieurs courriels n'a pas retourné le code de succès HTTP 200.");
+      }
+
+      // Enregistrement dans l'application si canal GENERAL
+      publishNews(newsTitle.trim(), newsContent.trim(), newsCategory, newsTarget, 'COM', comDispatchChannel);
+
+      // N'affiche la modal de succès QUE si les envois aboutissent avec le statut 200
+      setEmailModalData({
+        title: newsTitle.trim(),
+        content: newsContent.trim(),
+        authorRole: "BASE D'INFORMATION ET DE COMMUNICATION (BIC)",
+        channel: comDispatchChannel,
+        recipients: targetEmails,
+      });
+
+      setToastMessage("✉️ Courriels transmis avec succès aux membres ciblés (Statut 200 OK) !");
+      setTimeout(() => setToastMessage(null), 5000);
+
+      // Réinitialiser les champs du formulaire
+      setNewsTitle('');
+      setNewsContent('');
+    } catch (err: any) {
+      console.error('Erreur transmission EmailJS BIC:', err);
+      // En cas d'échec d'envoi ou d'erreur réseau : masque l'écran de succès et affiche une alerte rouge
+      setEmailModalData(null);
+      const detail =
+        err?.text ||
+        err?.message ||
+        (typeof err === 'string' ? err : 'Erreur réseau ou échec du service EmailJS.');
+      setEmailError(detail);
+    } finally {
+      setIsSendingEmail(false);
+    }
+  };
+
+  // LOGIQUE D'ENVOI RÉEL CERVEAU (Diffusion d'Alerte Cerveau)
+  const handlePublishCerveauAlert = async () => {
+    if (!cerveauAlertTitle.trim() || !cerveauAlertContent.trim()) {
+      alert("Veuillez renseigner le titre et le contenu de l'alerte.");
+      return;
+    }
+
+    setEmailError(null);
+
+    const formattedTitle = cerveauAlertTitle.startsWith('🟢') || cerveauAlertTitle.startsWith('🚨')
+      ? cerveauAlertTitle.trim()
+      : `🚨 ALERTE CERVEAU : ${cerveauAlertTitle.trim()}`;
+
+    // Si le canal est uniquement APP
+    if (cerveauDispatchChannel === 'APP') {
+      broadcastCerveauAlert(cerveauAlertTitle.trim(), cerveauAlertContent.trim(), 'APP');
+      setToastMessage("Alerte Cerveau publiée dans l'application avec succès !");
+      setTimeout(() => setToastMessage(null), 4000);
+      setCerveauAlertTitle('');
+      setCerveauAlertContent('');
+      return;
+    }
+
+    // Canal MAIL ou GENERAL (APP + MAIL) : Envoi réel d'emails via EmailJS
+    try {
+      setIsSendingEmail(true);
+
+      const targetEmails = Array.from(
+        new Set(
+          members
+            .map(m => m.email?.trim())
+            .filter((email): email is string => Boolean(email && email.includes('@')))
+        )
+      );
+
+      if (targetEmails.length === 0) {
+        throw new Error("Aucune adresse email valide trouvée parmi les membres.");
+      }
+
+      // Initialiser EmailJS
+      emailjs.init({ publicKey: EMAILJS_PUBLIC_KEY });
+
+      const sendResults = await Promise.all(
+        targetEmails.map(async (email) => {
+          const templateParams = {
+            subject: formattedTitle,
+            message: cerveauAlertContent.trim(),
+            to_email: email,
+          };
+
+          const res = await emailjs.send(
+            EMAILJS_SERVICE_ID,
+            EMAILJS_TEMPLATE_ID,
+            templateParams,
+            EMAILJS_PUBLIC_KEY
+          );
+
+          if (res.status !== 200) {
+            throw new Error(`Échec d'envoi vers ${email} : statut HTTP ${res.status} (${res.text || 'Erreur'})`);
+          }
+
+          return res;
+        })
+      );
+
+      const allSuccess = sendResults.length > 0 && sendResults.every(r => r && r.status === 200);
+      if (!allSuccess) {
+        throw new Error("L'envoi des alertes n'a pas retourné le code de succès HTTP 200.");
+      }
+
+      broadcastCerveauAlert(cerveauAlertTitle.trim(), cerveauAlertContent.trim(), cerveauDispatchChannel);
+
+      // N'affiche la modal de succès QUE si les envois aboutissent avec statut 200
+      setEmailModalData({
+        title: formattedTitle,
+        content: cerveauAlertContent.trim(),
+        authorRole: 'CERVEAU (EXÉCUTIF)',
+        channel: cerveauDispatchChannel,
+        recipients: targetEmails,
+      });
+
+      setToastMessage("✉️ Alertes Cerveau transmises avec succès par courriel (Statut 200 OK) !");
+      setTimeout(() => setToastMessage(null), 5000);
+
+      setCerveauAlertTitle('');
+      setCerveauAlertContent('');
+    } catch (err: any) {
+      console.error("Erreur transmission EmailJS (Alerte Cerveau):", err);
+      // En cas d'échec d'envoi ou d'erreur réseau : masque l'écran de succès et affiche une alerte rouge
+      setEmailModalData(null);
+      const detail =
+        err?.text ||
+        err?.message ||
+        (typeof err === 'string' ? err : 'Erreur réseau ou échec du service EmailJS.');
+      setEmailError(detail);
+    } finally {
+      setIsSendingEmail(false);
+    }
   };
 
   return (
@@ -3045,52 +3263,50 @@ export const AdminPortal: React.FC = () => {
               </div>
             </div>
 
+            {/* Red Error Alert in BIC Studio */}
+            {emailError && (
+              <div className="p-4 bg-rose-950/80 border-2 border-rose-500 rounded-2xl flex items-start justify-between gap-3 text-rose-200 animate-fadeIn">
+                <div className="flex items-start gap-3">
+                  <AlertTriangle className="w-5 h-5 text-rose-400 shrink-0 mt-0.5" />
+                  <div>
+                    <h4 className="font-black text-rose-100 text-sm">Échec de transmission des courriels (EmailJS)</h4>
+                    <p className="text-xs text-rose-300 mt-1 font-mono break-all">{emailError}</p>
+                    <p className="text-[11px] text-rose-400/90 mt-1">
+                      Service ID: <code className="text-amber-300">service_fmxtmw1</code> • Template: <code className="text-amber-300">template_z2nyaem</code>
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setEmailError(null)}
+                  className="text-rose-400 hover:text-white p-1 rounded-lg transition-colors cursor-pointer"
+                  title="Fermer l'alerte"
+                >
+                  <XCircle className="w-5 h-5" />
+                </button>
+              </div>
+            )}
+
             <button
               disabled={isSendingEmail}
-              onClick={async () => {
-                if (!newsTitle.trim() || !newsContent.trim()) {
-                  alert('Veuillez renseigner le titre et le contenu du communiqué.');
-                  return;
-                }
-
-                const validEmails = members.filter(m => m.email).map(m => m.email!);
-
-                if (comDispatchChannel === 'MAIL' || comDispatchChannel === 'GENERAL') {
-                  setIsSendingEmail(true);
-                  await sendEmailBroadcastAsync(newsTitle, newsContent, members, "BASE D'INFORMATION ET DE COMMUNICATION (BIC)", comDispatchChannel);
-                  publishNews(newsTitle, newsContent, newsCategory, newsTarget, 'COM', comDispatchChannel);
-                  setIsSendingEmail(false);
-
-                  setToastMessage("✉️ Email envoyé automatiquement avec succès aux membres !");
-                  setTimeout(() => setToastMessage(null), 5000);
-
-                  setEmailModalData({
-                    title: newsTitle,
-                    content: newsContent,
-                    authorRole: "BASE D'INFORMATION ET DE COMMUNICATION (BIC)",
-                    channel: comDispatchChannel,
-                    recipients: validEmails,
-                  });
-                } else {
-                  publishNews(newsTitle, newsContent, newsCategory, newsTarget, 'COM', comDispatchChannel);
-                  setToastMessage("Annonce publiée dans l'application avec succès !");
-                  setTimeout(() => setToastMessage(null), 4000);
-                }
-
-                setNewsTitle('');
-                setNewsContent('');
-              }}
+              onClick={handlePublishBIC}
               className="bg-[#E67E22] hover:bg-[#D35400] text-white font-black py-3.5 px-6 rounded-2xl shadow-lg text-sm flex items-center gap-2 transition-all active:scale-95 disabled:opacity-50 cursor-pointer"
             >
               {isSendingEmail ? (
                 <>
                   <Loader2 className="w-4 h-4 animate-spin text-white" />
-                  <span>Envoi automatique des emails en cours...</span>
+                  <span>Envoi réel des emails en cours (EmailJS)...</span>
                 </>
               ) : (
                 <>
                   <Send className="w-4 h-4" />
-                  <span>Diffuser l'Annonce dans le Fil</span>
+                  <span>
+                    {comDispatchChannel === 'MAIL'
+                      ? 'Envoyer le Communiqué par Mail (EmailJS)'
+                      : comDispatchChannel === 'GENERAL'
+                      ? "Diffuser dans l'App & Envoyer par Mail (EmailJS)"
+                      : "Diffuser l'Annonce dans le Fil (App)"}
+                  </span>
                 </>
               )}
             </button>
@@ -3988,55 +4204,50 @@ export const AdminPortal: React.FC = () => {
               </div>
             </div>
 
+            {/* Red Error Alert in Cerveau Cockpit */}
+            {emailError && (
+              <div className="p-4 bg-rose-950/80 border-2 border-rose-500 rounded-2xl flex items-start justify-between gap-3 text-rose-200 animate-fadeIn">
+                <div className="flex items-start gap-3">
+                  <AlertTriangle className="w-5 h-5 text-rose-400 shrink-0 mt-0.5" />
+                  <div>
+                    <h4 className="font-black text-rose-100 text-sm">Échec de transmission des courriels (EmailJS)</h4>
+                    <p className="text-xs text-rose-300 mt-1 font-mono break-all">{emailError}</p>
+                    <p className="text-[11px] text-rose-400/90 mt-1">
+                      Service ID: <code className="text-amber-300">service_fmxtmw1</code> • Template: <code className="text-amber-300">template_z2nyaem</code>
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setEmailError(null)}
+                  className="text-rose-400 hover:text-white p-1 rounded-lg transition-colors cursor-pointer"
+                  title="Fermer l'alerte"
+                >
+                  <XCircle className="w-5 h-5" />
+                </button>
+              </div>
+            )}
+
             <button
               disabled={isSendingEmail}
-              onClick={async () => {
-                if (!cerveauAlertTitle.trim() || !cerveauAlertContent.trim()) {
-                  alert("Veuillez renseigner le titre et le contenu de l'alerte.");
-                  return;
-                }
-
-                const validEmails = members.filter(m => m.email).map(m => m.email!);
-                const formattedTitle = cerveauAlertTitle.startsWith('🟢') || cerveauAlertTitle.startsWith('🚨')
-                  ? cerveauAlertTitle
-                  : `🚨 ALERTE CERVEAU : ${cerveauAlertTitle}`;
-
-                if (cerveauDispatchChannel === 'MAIL' || cerveauDispatchChannel === 'GENERAL') {
-                  setIsSendingEmail(true);
-                  await sendEmailBroadcastAsync(formattedTitle, cerveauAlertContent, members, 'CERVEAU (EXÉCUTIF)', cerveauDispatchChannel);
-                  broadcastCerveauAlert(cerveauAlertTitle, cerveauAlertContent, cerveauDispatchChannel);
-                  setIsSendingEmail(false);
-
-                  setToastMessage("✉️ Email envoyé automatiquement avec succès aux membres !");
-                  setTimeout(() => setToastMessage(null), 5000);
-
-                  setEmailModalData({
-                    title: formattedTitle,
-                    content: cerveauAlertContent,
-                    authorRole: 'CERVEAU (EXÉCUTIF)',
-                    channel: cerveauDispatchChannel,
-                    recipients: validEmails,
-                  });
-                } else {
-                  broadcastCerveauAlert(cerveauAlertTitle, cerveauAlertContent, cerveauDispatchChannel);
-                  setToastMessage("Alerte Cerveau publiée dans l'application avec succès !");
-                  setTimeout(() => setToastMessage(null), 4000);
-                }
-
-                setCerveauAlertTitle('');
-                setCerveauAlertContent('');
-              }}
+              onClick={handlePublishCerveauAlert}
               className="bg-rose-600 hover:bg-rose-500 text-white font-black py-3.5 px-6 rounded-2xl shadow-lg text-sm flex items-center gap-2 active:scale-95 transition-all disabled:opacity-50 cursor-pointer"
             >
               {isSendingEmail ? (
                 <>
                   <Loader2 className="w-4 h-4 animate-spin text-white" />
-                  <span>Envoi automatique des emails en cours...</span>
+                  <span>Envoi réel des emails en cours (EmailJS)...</span>
                 </>
               ) : (
                 <>
                   <AlertTriangle className="w-4 h-4" />
-                  <span>Diffuser l'Alerte Officielle</span>
+                  <span>
+                    {cerveauDispatchChannel === 'MAIL'
+                      ? "Envoyer l'Alerte Cerveau par Mail (EmailJS)"
+                      : cerveauDispatchChannel === 'GENERAL'
+                      ? "Diffuser dans l'App & Envoyer par Mail (EmailJS)"
+                      : "Diffuser l'Alerte Officielle (App)"}
+                  </span>
                 </>
               )}
             </button>
@@ -5362,7 +5573,7 @@ export const AdminPortal: React.FC = () => {
             <div className="p-3 bg-emerald-950/40 border border-emerald-800/60 rounded-2xl flex items-center gap-2.5">
               <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />
               <p className="text-xs text-emerald-200 font-medium leading-relaxed">
-                Le courriel a été transmis directement et automatiquement en arrière-plan par API aux {emailModalData.recipients.length} membres sans ouverture de logiciel tiers.
+                Le courriel a été transmis directement et avec succès via EmailJS API aux {emailModalData.recipients.length} membres (Code HTTP 200 OK validé).
               </p>
             </div>
 
@@ -5383,7 +5594,32 @@ export const AdminPortal: React.FC = () => {
       {isSendingEmail && (
         <div className="fixed top-6 right-6 z-50 bg-slate-900/95 border border-amber-500/60 text-amber-300 px-5 py-4 rounded-2xl shadow-2xl flex items-center gap-3 animate-bounce">
           <Loader2 className="w-5 h-5 animate-spin text-amber-400 shrink-0" />
-          <span className="text-xs font-bold">Envoi automatique des emails en cours...</span>
+          <span className="text-xs font-bold">Envoi réel des emails via EmailJS en cours...</span>
+        </div>
+      )}
+
+      {/* FLOATING RED ERROR ALERT */}
+      {emailError && (
+        <div className="fixed top-6 right-6 z-50 bg-rose-950/95 border-2 border-rose-500 text-white p-5 rounded-3xl shadow-2xl flex items-start gap-3.5 max-w-md animate-fadeIn">
+          <div className="w-10 h-10 rounded-2xl bg-rose-600/30 border border-rose-500/50 flex items-center justify-center shrink-0 text-rose-400">
+            <AlertTriangle className="w-5 h-5" />
+          </div>
+          <div className="flex-1 space-y-1">
+            <div className="flex items-center justify-between">
+              <h4 className="text-sm font-black text-rose-200">Échec Envoi EmailJS</h4>
+              <button
+                type="button"
+                onClick={() => setEmailError(null)}
+                className="text-rose-400 hover:text-white p-0.5 rounded cursor-pointer"
+              >
+                <XCircle className="w-4 h-4" />
+              </button>
+            </div>
+            <p className="text-xs text-rose-300 font-mono break-all leading-snug">{emailError}</p>
+            <p className="text-[11px] text-rose-400/80 pt-1">
+              L'écran de confirmation a été masqué en raison de cette erreur.
+            </p>
+          </div>
         </div>
       )}
 
