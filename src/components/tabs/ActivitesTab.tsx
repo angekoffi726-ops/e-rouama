@@ -110,7 +110,7 @@ export const ActivitesTab: React.FC = () => {
             <span>Comités Ad-Hoc & Programmes d'Événements</span>
           </h2>
           <p className="text-xs text-slate-500 font-medium mt-1">
-            Organisation des commissions (Cambuse, Restauration, Logistique, Transport) validées par le PAYOR et diffusées par la COM.
+            Organisation des commissions (Cambuse, Restauration, Logistique, Transport) validées par le PAYOR et diffusées par la BIC.
           </p>
         </div>
 

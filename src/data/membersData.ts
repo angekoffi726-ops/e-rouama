@@ -131,7 +131,7 @@ export const ADMIN_USERS: AdminUser[] = [
     loginId: 'PAYOR',
     roleName: 'Payor (Validation Admin)',
     pin: '2103',
-    description: 'Validation administrative des PV, Règlements, Programmes et Projets avant transmission à la COM',
+    description: 'Validation administrative des PV, Règlements, Programmes et Projets avant transmission à la BIC',
   },
   {
     id: 'SECRETARIAT',
@@ -143,9 +143,9 @@ export const ADMIN_USERS: AdminUser[] = [
   {
     id: 'COM',
     loginId: 'COM',
-    roleName: 'Chargé de Communication',
+    roleName: "Base d'Information et de Communication (BIC)",
     pin: '1010',
-    description: 'Guichet unique de diffusion aux membres, validation avec accusé de réception (ACK) et ciblage d’audience',
+    description: "Base d'information et de communication (BIC) pour la diffusion aux membres, validation avec accusé de réception (ACK) et ciblage d’audience",
   },
   {
     id: 'ORGANISATION',

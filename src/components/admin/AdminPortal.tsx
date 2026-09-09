@@ -973,7 +973,7 @@ export const AdminPortal: React.FC = () => {
                 {activeRole === 'CERVEAU' && 'LE CERVEAU (PRÉSIDENCE)'}
                 {activeRole === 'PAYOR' && 'ESPACE PAYOR (AUDIT & CO-VALIDATION)'}
                 {activeRole === 'SECRETARIAT' && 'SECRÉTARIAT GÉNÉRAL'}
-                {activeRole === 'COM' && 'GUICHET UNIQUE COMMUNICATION (COM)'}
+                {activeRole === 'COM' && "BASE D'INFORMATION ET DE COMMUNICATION (BIC)"}
                 {activeRole === 'ORGANISATION' && 'COMMISSION ORGANISATION'}
                 {activeRole === 'PROJET' && 'COMMISSION PROJETS (AGR)'}
                 {activeRole === 'SPIRITUALITE' && 'DÉPARTEMENT SPIRITUALITÉ'}
@@ -2830,21 +2830,21 @@ export const AdminPortal: React.FC = () => {
       )}
 
       {/* ========================================================= */}
-      {/* 2. ESPACE COMMUNICATEUR / SECRÉTAIRE (COM) */}
+      {/* 2. BASE D'INFORMATION ET DE COMMUNICATION (BIC) */}
       {/* ========================================================= */}
       {activeRole === 'COM' && (
         <div className="space-y-8">
           {/* RBAC Lock Badge */}
           <RbacWarningBanner
-            roleName="CHARGÉ DE COMMUNICATION (COM)"
+            roleName="BASE D'INFORMATION ET DE COMMUNICATION (BIC)"
             allowedActionsText="Studio de diffusion d'annonces, accusé de réception (ACK) & publication officielle dans le fil."
           />
 
-          {/* Guichet de Réception Bilans (Du Secrétariat) & Actions COM */}
+          {/* Réception Bilans (Du Secrétariat) & Actions BIC */}
           <div className="bg-slate-900 rounded-[2.5rem] p-6 sm:p-8 border border-slate-800 shadow-xl space-y-6">
             <h2 className="text-xl font-black text-white flex items-center gap-2">
               <Eye className="w-5 h-5 text-amber-500" />
-              <span>Guichet de Réception Bilans (Du Secrétariat) & Actions COM</span>
+              <span>Réception des Bilans (Du Secrétariat) & Actions BIC</span>
             </h2>
 
             {bilans.filter(b => b.sentToCom).length === 0 ? (
@@ -3057,7 +3057,7 @@ export const AdminPortal: React.FC = () => {
 
                 if (comDispatchChannel === 'MAIL' || comDispatchChannel === 'GENERAL') {
                   setIsSendingEmail(true);
-                  await sendEmailBroadcastAsync(newsTitle, newsContent, members, 'COMMISSION COMMUNICATION (COM)', comDispatchChannel);
+                  await sendEmailBroadcastAsync(newsTitle, newsContent, members, "BASE D'INFORMATION ET DE COMMUNICATION (BIC)", comDispatchChannel);
                   publishNews(newsTitle, newsContent, newsCategory, newsTarget, 'COM', comDispatchChannel);
                   setIsSendingEmail(false);
 
@@ -3067,7 +3067,7 @@ export const AdminPortal: React.FC = () => {
                   setEmailModalData({
                     title: newsTitle,
                     content: newsContent,
-                    authorRole: 'COMMISSION COMMUNICATION (COM)',
+                    authorRole: "BASE D'INFORMATION ET DE COMMUNICATION (BIC)",
                     channel: comDispatchChannel,
                     recipients: validEmails,
                   });
@@ -3338,11 +3338,11 @@ export const AdminPortal: React.FC = () => {
                           </span>
                           {b.ackByCom ? (
                             <span className="bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-2.5 py-0.5 rounded-full text-[10px] font-black">
-                              🟢 Accusé de réception COM validé
+                              🟢 Accusé de réception BIC validé
                             </span>
                           ) : (
                             <span className="bg-amber-500/20 text-amber-400 border border-amber-500/30 px-2.5 py-0.5 rounded-full text-[10px] font-bold">
-                              ⏳ En attente de l'accusé de réception de la COM
+                              ⏳ En attente de l'accusé de réception de la BIC
                             </span>
                           )}
                         </div>
@@ -3363,23 +3363,23 @@ export const AdminPortal: React.FC = () => {
                           <span>PDF</span>
                         </button>
 
-                        {/* 1. Transmettre à la COM */}
+                        {/* 1. Transmettre à la BIC */}
                         {!b.sentToCom ? (
                           <button
                             type="button"
                             onClick={() => {
                               sendBilanFromSecretariatToCom(b.id);
-                              setToastMessage("🟢 Bilan financier transmis au Chargé de Communication (COM) !");
+                              setToastMessage("🟢 Bilan financier transmis à la Base d'Information et de Communication (BIC) !");
                             }}
                             className="bg-amber-600 hover:bg-amber-500 text-white font-black px-4 py-2.5 rounded-xl flex items-center gap-1.5 shadow active:scale-95 transition-all cursor-pointer"
                           >
                             <Send className="w-3.5 h-3.5" />
-                            <span>🟢 Transmettre à la COM</span>
+                            <span>🟢 Transmettre à la BIC</span>
                           </button>
                         ) : (
                           <span className="bg-blue-500/20 text-blue-300 font-bold px-3 py-2 rounded-xl border border-blue-500/30 text-xs flex items-center gap-1">
                             <CheckCircle2 className="w-3.5 h-3.5 text-blue-400" />
-                            <span>Transmis à la COM</span>
+                            <span>Transmis à la BIC</span>
                           </span>
                         )}
 
@@ -3387,7 +3387,7 @@ export const AdminPortal: React.FC = () => {
                         <button
                           type="button"
                           disabled={!b.ackByCom || b.archivedBySecretariat}
-                          title={!b.ackByCom ? "En attente de l'accusé de réception de la COM" : "Classer dans les Archives Officielle"}
+                          title={!b.ackByCom ? "En attente de l'accusé de réception de la BIC" : "Classer dans les Archives Officielle"}
                           onClick={() => {
                             archiveBilanSecretariat(b.id);
                             setToastMessage("📦 Bilan Financier classé définitivement dans les Archives Officielle !");
@@ -3680,7 +3680,7 @@ export const AdminPortal: React.FC = () => {
                                 status: 'APPROVED_PAYOR',
                                 payorSignatureDate: nowStr,
                               });
-                              setToastMessage("🟢 Bilan Financier approuvé avec succès ! Signature SIDEPO.png apposée. Document bi-signé transmis au Secrétariat et publié à la COM.");
+                              setToastMessage("🟢 Bilan Financier approuvé avec succès ! Signature SIDEPO.png apposée. Document bi-signé transmis au Secrétariat et publié à la BIC.");
                             }}
                             className="bg-emerald-600 hover:bg-emerald-500 text-white font-black px-4 py-2.5 rounded-xl flex items-center gap-2 shadow-lg active:scale-95 transition-all text-xs cursor-pointer"
                           >
@@ -3689,7 +3689,7 @@ export const AdminPortal: React.FC = () => {
                           </button>
                         ) : (
                           <span className="bg-emerald-500/10 text-emerald-400 font-bold px-3 py-1.5 rounded-xl border border-emerald-500/20 text-xs">
-                            ✅ Transmis Secrétariat & COM
+                            ✅ Transmis Secrétariat & BIC
                           </span>
                         )}
                       </div>

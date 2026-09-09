@@ -120,9 +120,9 @@ interface AppContextType {
   rejectPayment: (declarationId: string, reason?: string) => Promise<void> | void;
   deleteReceipt: (declarationId: string) => Promise<void>;
 
-  createWithdrawalRequest: (fund: FundType, amount: number, reason: string) => void;
-  approveWithdrawal: (requestId: string) => void;
-  rejectWithdrawal: (requestId: string) => void;
+  createWithdrawalRequest: (fund: FundType, amount: number, reason: string) => Promise<void> | void;
+  approveWithdrawal: (requestId: string) => Promise<void> | void;
+  rejectWithdrawal: (requestId: string) => Promise<void> | void;
 
   publishNews: (
     title: string,
@@ -333,10 +333,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       collection(db, 'receipts'),
       (snapshot) => {
         setIsFirebaseConnected(true);
-        const loaded: PaymentDeclaration[] = snapshot.docs.map((docSnap) => ({
-          id: docSnap.id,
-          ...(docSnap.data() as any),
-        }));
+        // Conserver l'intégralité de l'historique sans jamais le purger
+        const loaded: PaymentDeclaration[] = snapshot.docs.map((docSnap) => {
+          const data = docSnap.data() as any;
+          return {
+            ...data,
+            id: docSnap.id, // Toujours l'identifiant unique Firestore
+          };
+        });
 
         // Tri chronologique rigoureux : reçus les plus récents en premier
         loaded.sort((a, b) => {
@@ -346,7 +350,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           return b.id.localeCompare(a.id);
         });
 
-        // La liste affichée provient EXCLUSIVEMENT de Firestore pour tous les appareils
+        // La liste affichée provient EXCLUSIVEMENT de Firestore et conserve tout l'historique
         setDeclarations(loaded);
       },
       (err) => {
@@ -355,90 +359,88 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     );
     unsubscribes.push(unsubReceipts);
 
-    // 2. MEMBRES DE L'ASSOCIATION (Synchronisation exacte des 12 membres officiels E-ROUAMA)
+    // 2. MEMBRES DE L'ASSOCIATION (Persistance stricte sans reset ni écrasement)
     const unsubMembers = onSnapshot(
       collection(db, 'members'),
       async (snapshot) => {
         setIsFirebaseConnected(true);
-        const registeredRecords = getStoredRegisteredUsers();
 
-        // 1. Détecter et supprimer les documents obsolètes ou non officiels de Firestore (ex: Habib/Nayou ou doublons)
-        snapshot.forEach((docSnap) => {
-          const dData = docSnap.data() as any;
-          const docNick = normalizeRosterString(dData?.nickname || '');
-          const docFirst = normalizeRosterString(dData?.firstName || '');
-          const matchingOfficial = INITIAL_ROUAMA_MEMBERS.find(
-            m => m.id === docSnap.id ||
-                 normalizeRosterString(m.nickname) === docNick ||
-                 normalizeRosterString(m.firstName) === docFirst
-          );
-
-          if (!matchingOfficial) {
-            console.log('🗑️ Retrait membre non-officiel Firestore:', docSnap.id, dData?.nickname);
-            deleteDoc(doc(db, 'members', docSnap.id)).catch(console.warn);
-          } else if (docSnap.id !== matchingOfficial.id) {
-            console.log('🔄 Migration id membre Firestore:', docSnap.id, 'vers id officiel:', matchingOfficial.id);
-            deleteDoc(doc(db, 'members', docSnap.id)).catch(console.warn);
+        // RÈGLE 1 : Si la collection est complètement vide (0 document),
+        // SEULEMENT ALORS on amorce les 12 membres officiels par défaut.
+        if (snapshot.empty) {
+          console.log('🌱 Initialisation unique de la collection members (0 document détecté)');
+          const initialList: RouamaMember[] = [];
+          for (const official of INITIAL_ROUAMA_MEMBERS) {
+            initialList.push(official);
+            setDoc(doc(db, 'members', official.id), sanitizeFirestore(official)).catch(console.warn);
           }
+          setMembers(initialList);
+          return;
+        }
+
+        // RÈGLE 2 : Si des données existent déjà dans Firestore,
+        // STRICTEMENT conserver les données en ligne sans les remplacer ni les supprimer.
+        const firestoreDocsMap = new Map<string, RouamaMember>();
+        snapshot.docs.forEach((docSnap) => {
+          const data = docSnap.data() as any;
+          firestoreDocsMap.set(docSnap.id, {
+            id: docSnap.id,
+            firstName: data.firstName || '',
+            fullRosterName: data.fullRosterName || data.firstName || '',
+            nickname: data.nickname || '',
+            phone: data.phone || '',
+            email: data.email || '',
+            assignedRole: data.assignedRole,
+            avatar: data.avatar,
+            isRegistered: Boolean(data.isRegistered),
+            pin: data.pin || undefined,
+            ...data,
+          });
         });
 
-        // 2. Reconstituer la liste stricte des 12 membres officiels avec leurs statuts réels
+        // Reconstituer la liste avec conservation intégrale des données Firestore
         const reconciledList: RouamaMember[] = [];
+        const orderMap = new Map(INITIAL_ROUAMA_MEMBERS.map((m, idx) => [m.id, idx]));
 
         for (const official of INITIAL_ROUAMA_MEMBERS) {
-          const matchedDoc = snapshot.docs.find(d => {
-            if (d.id === official.id) return true;
-            const data = d.data() as any;
-            return normalizeRosterString(data?.nickname) === normalizeRosterString(official.nickname) ||
-                   normalizeRosterString(data?.firstName) === normalizeRosterString(official.firstName);
-          });
-
-          const regRecord = registeredRecords.find(
-            r => r.id === official.id ||
-                 normalizeRosterString(r.firstName) === normalizeRosterString(official.firstName) ||
-                 normalizeRosterString(r.nickname) === normalizeRosterString(official.nickname)
-          );
-
-          if (matchedDoc) {
-            const firestoreData = matchedDoc.data() as any;
-            const isReg = Boolean(firestoreData.isRegistered || regRecord);
-            const userPin = firestoreData.pin || regRecord?.pin || undefined;
-            const memberObj: RouamaMember = {
-              ...official,
-              ...firestoreData,
-              id: official.id,
-              firstName: official.firstName,
-              fullRosterName: official.fullRosterName,
-              nickname: official.nickname,
-              isRegistered: isReg,
-              pin: userPin,
-              avatar: firestoreData.avatar || official.avatar,
-              assignedRole: firestoreData.assignedRole || official.assignedRole,
-              phone: firestoreData.phone || official.phone,
-              email: firestoreData.email || official.email,
-            };
-
-            reconciledList.push(memberObj);
-
-            // Mettre à jour si l'ID Firestore était incorrect ou si des champs doivent être alignés
-            if (matchedDoc.id !== official.id || firestoreData.isRegistered !== isReg || firestoreData.pin !== userPin) {
-              setDoc(doc(db, 'members', official.id), sanitizeFirestore(memberObj), { merge: true }).catch(console.warn);
+          let existing = firestoreDocsMap.get(official.id);
+          if (!existing) {
+            for (const m of firestoreDocsMap.values()) {
+              if (
+                normalizeRosterString(m.nickname) === normalizeRosterString(official.nickname) ||
+                normalizeRosterString(m.firstName) === normalizeRosterString(official.firstName)
+              ) {
+                existing = m;
+                break;
+              }
             }
-          } else {
-            // Membre manquant sur Firestore, on l'initialise immédiatement
-            const isReg = !!regRecord;
-            const memberObj: RouamaMember = {
+          }
+
+          if (existing) {
+            // STRICTEMENT CONSERVER LES DONNÉES EN LIGNE (PIN, isRegistered, rôles, etc.)
+            reconciledList.push({
               ...official,
-              isRegistered: isReg,
-              pin: regRecord?.pin || undefined,
-            };
-            reconciledList.push(memberObj);
-            setDoc(doc(db, 'members', official.id), sanitizeFirestore(memberObj)).catch(console.warn);
+              ...existing,
+              id: existing.id || official.id,
+              isRegistered: Boolean(existing.isRegistered),
+              pin: existing.pin || undefined,
+            });
+          } else {
+            // Membre manquant individuel : initialisé sans écraser les autres
+            const newMember: RouamaMember = { ...official };
+            reconciledList.push(newMember);
+            setDoc(doc(db, 'members', official.id), sanitizeFirestore(newMember)).catch(console.warn);
           }
         }
 
-        // 3. Conserver l'ordre fraternel officiel (1 à 12)
-        const orderMap = new Map(INITIAL_ROUAMA_MEMBERS.map((m, idx) => [m.id, idx]));
+        // Conserver les autres membres s'il y en a pour ne rien perdre
+        firestoreDocsMap.forEach((m, id) => {
+          if (!reconciledList.some(r => r.id === id)) {
+            reconciledList.push(m);
+          }
+        });
+
+        // Conserver l'ordre fraternel officiel (1 à 12)
         reconciledList.sort((a, b) => {
           const orderA = orderMap.has(a.id) ? orderMap.get(a.id)! : 999;
           const orderB = orderMap.has(b.id) ? orderMap.get(b.id)! : 999;
@@ -532,26 +534,40 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     );
     unsubscribes.push(unsubNews);
 
-    // 7. TRANSACTIONS
+    // 7. TRANSACTIONS (Conservation intégrale et chronologique de l'historique Firestore)
     const unsubTransactions = onSnapshot(
       collection(db, 'transactions'),
       (snapshot) => {
-        const loaded: Transaction[] = [];
-        snapshot.forEach(d => loaded.push({ id: d.id, ...(d.data() as any) }));
-        loaded.sort((a, b) => b.id.localeCompare(a.id));
+        const loaded: Transaction[] = snapshot.docs.map(d => ({
+          ...(d.data() as any),
+          id: d.id,
+        }));
+        loaded.sort((a, b) => {
+          const timeA = (a as any).createdAt || 0;
+          const timeB = (b as any).createdAt || 0;
+          if (timeA && timeB) return timeB - timeA;
+          return b.id.localeCompare(a.id);
+        });
         setTransactions(loaded);
       },
       (err) => console.warn('Transactions listener error:', err)
     );
     unsubscribes.push(unsubTransactions);
 
-    // 8. DÉCAISSEMENTS
+    // 8. DÉCAISSEMENTS (Conservation intégrale de l'historique Firestore)
     const unsubWithdrawals = onSnapshot(
       collection(db, 'withdrawals'),
       (snapshot) => {
-        const loaded: WithdrawalRequest[] = [];
-        snapshot.forEach(d => loaded.push({ id: d.id, ...(d.data() as any) }));
-        loaded.sort((a, b) => b.id.localeCompare(a.id));
+        const loaded: WithdrawalRequest[] = snapshot.docs.map(d => ({
+          ...(d.data() as any),
+          id: d.id,
+        }));
+        loaded.sort((a, b) => {
+          const timeA = (a as any).createdAt || 0;
+          const timeB = (b as any).createdAt || 0;
+          if (timeA && timeB) return timeB - timeA;
+          return b.id.localeCompare(a.id);
+        });
         setWithdrawals(loaded);
       },
       (err) => console.warn('Withdrawals listener error:', err)
@@ -636,67 +652,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
   }, []);
 
-  // Réinitialisation globale de la base Firestore avec les 12 membres officiels
+  // Protection des données réelles : neutralisation des purges destructrices automatiques
   const resetAllData = async () => {
-    const registeredRecords = getStoredRegisteredUsers();
-
-    // Nettoyer les membres obsolètes ou non officiels de Firestore
-    for (const m of members) {
-      if (!INITIAL_ROUAMA_MEMBERS.some(im => im.id === m.id)) {
-        deleteDoc(doc(db, 'members', m.id)).catch(console.warn);
-      }
-    }
-
-    const restoredMembers = INITIAL_ROUAMA_MEMBERS.map(m => {
-      const regRecord = registeredRecords.find(
-        r => r.id === m.id ||
-          normalizeRosterString(r.firstName) === normalizeRosterString(m.firstName) ||
-          normalizeRosterString(r.nickname) === normalizeRosterString(m.nickname)
-      );
-      if (regRecord) {
-        return { ...m, isRegistered: true, pin: regRecord.pin };
-      }
-      return m;
-    });
-
-    for (const m of restoredMembers) {
-      await setDoc(doc(db, 'members', m.id), sanitizeFirestore(m));
-    }
-
-    const defaultBalances = {
-      COTISATION: 0,
-      ANNIVERSAIRE: 0,
-      LOISIRS: 0,
-      AGR: 0,
-      CAS_SOCIAUX: 0,
-    };
-    await setDoc(doc(db, 'treasury', 'balances'), defaultBalances);
-
-    // Nettoyage reçus locaux & storage
-    for (const d of declarations) {
-      deleteDoc(doc(db, 'receipts', d.id)).catch(console.warn);
-      deleteDoc(doc(db, 'declarations', d.id)).catch(console.warn);
-    }
-    for (const a of activities) {
-      deleteDoc(doc(db, 'activities', a.id)).catch(console.warn);
-    }
-    for (const p of projects) {
-      deleteDoc(doc(db, 'projects', p.id)).catch(console.warn);
-    }
-
-    setFundBalances(defaultBalances);
-    setDeclarations([]);
-    setTransactions([]);
-    setWithdrawals([]);
-    setNewsItems([]);
-    setActivities([]);
-    setProjects([]);
-    setArchiveDocs([]);
-    setPvs([]);
-    setBilans([]);
-    setCurrentUser(null);
-    localStorage.removeItem(LOCAL_STORAGE_KEY);
-    localStorage.removeItem(EROUAMA_ACTIVE_SESSION_KEY);
+    console.warn("🛡️ Protection active : les données Firestore existantes (reçus, membres, caisses) sont strictement préservées.");
   };
 
   // Helper pour trouver un membre (accent-insensible et casse-insensible pour les 12 membres officiels)
@@ -1219,23 +1177,27 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     await setDoc(doc(db, 'treasury', 'balances'), sanitizeFirestore(updatedFundBalances), { merge: true }).catch(console.warn);
     setFundBalances(updatedFundBalances);
 
-    // 3. Enregistrer la transaction sur Firestore
+    // 3. Enregistrer la transaction sur Firestore via addDoc (ID unique généré par Firestore)
     const displayRef =
       typeof targetDecl.reference === 'string' && targetDecl.reference.startsWith('data:')
         ? 'Capture de reçu'
         : targetDecl.reference || 'Preuve validée';
 
-    const newTx: Transaction = {
-      id: 'TX-' + Date.now() + '-' + Math.floor(Math.random() * 1000),
-      type: 'DEPOT',
-      fund: targetDecl.fund,
-      amount: targetDecl.amount,
-      description: `Dépôt validé (${FUND_LABELS[targetDecl.fund] || targetDecl.fund}) par ${targetDecl.memberNickname} - Réf: ${displayRef}`,
-      memberNickname: targetDecl.memberNickname,
-      date: new Date().toLocaleDateString('fr-FR'),
-      createdBy: 'TRÉSORIER',
-    };
-    await setDoc(doc(db, 'transactions', newTx.id), sanitizeFirestore(newTx)).catch(console.warn);
+    try {
+      const txRef = await addDoc(collection(db, 'transactions'), sanitizeFirestore({
+        type: 'DEPOT',
+        fund: targetDecl.fund,
+        amount: targetDecl.amount,
+        description: `Dépôt validé (${FUND_LABELS[targetDecl.fund] || targetDecl.fund}) par ${targetDecl.memberNickname} - Réf: ${displayRef}`,
+        memberNickname: targetDecl.memberNickname,
+        date: new Date().toLocaleDateString('fr-FR'),
+        createdBy: 'TRÉSORIER',
+        createdAt: Date.now(),
+      }));
+      await updateDoc(txRef, { id: txRef.id }).catch(() => {});
+    } catch (txErr) {
+      console.warn('Erreur addDoc transaction:', txErr);
+    }
 
     // 4. Déclencher l'alerte fraternelle Cerveau
     try {
@@ -1329,46 +1291,55 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
-  // Décaissements
-  const createWithdrawalRequest = (fund: FundType, amount: number, reason: string) => {
-    const req: WithdrawalRequest = {
-      id: 'WITH-' + Date.now(),
-      requestedBy: 'TRÉSORIER',
-      fund,
-      amount,
-      reason,
-      date: new Date().toLocaleDateString('fr-FR'),
-      status: 'PENDING',
-    };
-    setDoc(doc(db, 'withdrawals', req.id), sanitizeFirestore(req)).catch(console.warn);
-    setWithdrawals(prev => [req, ...prev]);
+  // Décaissements (Sauvegarde addDoc avec identifiant unique Firestore)
+  const createWithdrawalRequest = async (fund: FundType, amount: number, reason: string) => {
+    try {
+      const docRef = await addDoc(collection(db, 'withdrawals'), sanitizeFirestore({
+        requestedBy: 'TRÉSORIER',
+        fund,
+        amount,
+        reason,
+        date: new Date().toLocaleDateString('fr-FR'),
+        status: 'PENDING',
+        createdAt: Date.now(),
+      }));
+      await updateDoc(docRef, { id: docRef.id }).catch(() => {});
+    } catch (e) {
+      console.warn('Erreur addDoc createWithdrawalRequest:', e);
+    }
   };
 
-  const approveWithdrawal = (requestId: string) => {
+  const approveWithdrawal = async (requestId: string) => {
     const req = withdrawals.find(w => w.id === requestId);
     if (!req) return;
 
-    setDoc(doc(db, 'withdrawals', requestId), { status: 'APPROVED' }, { merge: true }).catch(console.warn);
-    setWithdrawals(prev => prev.map(w => w.id === requestId ? { ...w, status: 'APPROVED' } : w));
+    try {
+      await updateDoc(doc(db, 'withdrawals', requestId), { status: 'APPROVED' });
+    } catch (e) {
+      await setDoc(doc(db, 'withdrawals', requestId), { status: 'APPROVED' }, { merge: true }).catch(console.warn);
+    }
 
     const updatedBalances = {
       ...fundBalances,
       [req.fund]: Math.max(0, fundBalances[req.fund] - req.amount),
     };
-    setDoc(doc(db, 'treasury', 'balances'), sanitizeFirestore(updatedBalances), { merge: true }).catch(console.warn);
+    await setDoc(doc(db, 'treasury', 'balances'), sanitizeFirestore(updatedBalances), { merge: true }).catch(console.warn);
     setFundBalances(updatedBalances);
 
-    const newTx: Transaction = {
-      id: 'TX-OUT-' + Date.now(),
-      type: 'DECAISSEMENT',
-      fund: req.fund,
-      amount: req.amount,
-      description: `Décaissement approuvé (${req.fund}) - Motif: ${req.reason}`,
-      date: new Date().toLocaleDateString('fr-FR'),
-      createdBy: 'CERVEAU (Validation)',
-    };
-    setDoc(doc(db, 'transactions', newTx.id), sanitizeFirestore(newTx)).catch(console.warn);
-    setTransactions(prev => [newTx, ...prev]);
+    try {
+      const txRef = await addDoc(collection(db, 'transactions'), sanitizeFirestore({
+        type: 'DECAISSEMENT',
+        fund: req.fund,
+        amount: req.amount,
+        description: `Décaissement approuvé (${req.fund}) - Motif: ${req.reason}`,
+        date: new Date().toLocaleDateString('fr-FR'),
+        createdBy: 'CERVEAU (Validation)',
+        createdAt: Date.now(),
+      }));
+      await updateDoc(txRef, { id: txRef.id }).catch(() => {});
+    } catch (txErr) {
+      console.warn('Erreur addDoc décaissement transaction:', txErr);
+    }
   };
 
   const rejectWithdrawal = (requestId: string) => {
