@@ -418,9 +418,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
           if (existing) {
             // STRICTEMENT CONSERVER LES DONNÉES EN LIGNE (PIN, isRegistered, rôles, etc.)
+            // Synchronisation de l'email si celui-ci a été mis à jour dans le code source
+            const effectiveEmail = official.email || existing.email || '';
+            if (official.email && existing.email !== official.email) {
+              setDoc(doc(db, 'members', existing.id || official.id), { email: official.email }, { merge: true }).catch(console.warn);
+            }
             reconciledList.push({
               ...official,
               ...existing,
+              email: effectiveEmail,
               id: existing.id || official.id,
               isRegistered: Boolean(existing.isRegistered),
               pin: existing.pin || undefined,
@@ -526,7 +532,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       collection(db, 'news'),
       (snapshot) => {
         const loaded: NewsItem[] = [];
-        snapshot.forEach(d => loaded.push({ id: d.id, ...(d.data() as any) }));
+        snapshot.forEach(d => {
+          const item = { id: d.id, ...(d.data() as any) };
+          // Séparation stricte : filtrer les messages exclusifs au canal MAIL
+          if (item.dispatchChannel !== 'MAIL') {
+            loaded.push(item);
+          }
+        });
         loaded.sort((a, b) => b.id.localeCompare(a.id));
         setNewsItems(loaded);
       },
@@ -1268,6 +1280,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       ? rawContent
       : `Information transmise pour ${titleOrMember}.`;
 
+    // SÉPARATION STRICTE : Si le canal est uniquement MAIL, NE PAS enregistrer dans Firestore ni dans l'application
+    if (dispatchChannel === 'MAIL') {
+      return;
+    }
+
     const alertNews: NewsItem = {
       id: 'NEWS-ALERT-' + Date.now() + '-' + Math.floor(Math.random() * 1000),
       title: alertTitle,
@@ -1351,6 +1368,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     linkTab?: TabType,
     targetDocId?: string
   ) => {
+    // SÉPARATION STRICTE : Si le canal est uniquement MAIL, NE PAS enregistrer dans Firestore ('announcements' ou 'news') ni dans le fil public de l'application
+    if (dispatchChannel === 'MAIL') {
+      return;
+    }
+
     const item: NewsItem = {
       id: 'NEWS-' + Date.now(),
       title,
@@ -1365,6 +1387,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       targetDocId,
     };
     setDoc(doc(db, 'news', item.id), sanitizeFirestore(item)).catch(console.warn);
+    setDoc(doc(db, 'announcements', item.id), sanitizeFirestore(item)).catch(console.warn);
     setNewsItems(prev => [item, ...prev]);
   };
 
@@ -1381,8 +1404,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
-  const deleteNewsItem = (newsId: string) => {
-    deleteDoc(doc(db, 'news', newsId)).catch(console.warn);
+  const deleteNewsItem = async (newsId: string) => {
+    try {
+      await deleteDoc(doc(db, 'news', newsId));
+      try {
+        await deleteDoc(doc(db, 'announcements', newsId));
+      } catch (_) {}
+    } catch (err) {
+      console.warn('Erreur lors de la suppression Firestore du communiqué :', err);
+    }
     setNewsItems(prev => prev.filter(n => n.id !== newsId));
   };
 

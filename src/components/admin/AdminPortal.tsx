@@ -1,7 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import emailjs from '@emailjs/browser';
+import { doc, deleteDoc, collection, onSnapshot } from 'firebase/firestore';
+import { db } from '../../firebase';
 import { useApp } from '../../context/AppContext';
-import { AdminRole, FundType, FUND_LABELS, TargetAudience, Committee, AgrProject, FinancialBilan } from '../../types';
+import { AdminRole, FundType, FUND_LABELS, TargetAudience, Committee, AgrProject, FinancialBilan, NewsItem } from '../../types';
 import { ADMIN_USERS } from '../../data/membersData';
 import { sendEmailBroadcastAsync } from '../../utils/emailService';
 import { fetchAELFDailyReadings, AELFDayData } from '../../utils/aelfService';
@@ -164,6 +166,8 @@ export const AdminPortal: React.FC = () => {
   const [cerveauRecipientMode, setCerveauRecipientMode] = useState<'ALL' | 'SPECIFIC'>('ALL');
   const [cerveauSelectedMemberId, setCerveauSelectedMemberId] = useState<string>('');
   const [isSendingEmail, setIsSendingEmail] = useState<boolean>(false);
+  const [announcements, setAnnouncements] = useState<NewsItem[]>([]);
+  const [deletingAnnouncementId, setDeletingAnnouncementId] = useState<string | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [emailModalData, setEmailModalData] = useState<{
     title: string;
@@ -1127,7 +1131,8 @@ export const AdminPortal: React.FC = () => {
   const EMAILJS_TEMPLATE_ID = 'template_z2nyaem';
   const EMAILJS_PUBLIC_KEY = '4uaf30m_mKHnobzKh';
 
-  // LOGIQUE D'ENVOI RÉEL BIC (handlePublishBIC) - DIFFUSION GÉNÉRALE OU SÉLECTION UNIQUE AVEC PAUSE (ANTI-CONNECTION LIMIT)
+  // LOGIQUE D'ENVOI RÉEL BIC (handlePublishBIC) - DIFFUSION GÉNÉRALE OU SÉLECTION UNIQUE AVEC PAUSE
+  // SÉPARATION STRICTE : MAIL vs APP vs GÉNÉRAL
   const handlePublishBIC = async () => {
     // 1. SUPPRESSION DU DOUBLE ENVOI : Vérification d'antécédence immédiate
     if (isSendingEmail) return;
@@ -1142,17 +1147,26 @@ export const AdminPortal: React.FC = () => {
 
     setEmailError(null);
 
-    // 1. Si le canal est uniquement APP (pas d'envoi de courriel)
+    // =========================================================================
+    // CAS 2 : CANAL "PUBLIER DANS L'APP" (App Uniquement)
+    // - Enregistre le communiqué dans la collection Firestore pour qu'il s'affiche dans l'app
+    // - N'exécute AUCUN envoi d'email via EmailJS
+    // =========================================================================
     if (comDispatchChannel === 'APP') {
       publishNews(exactSubject, exactMessage, newsCategory, newsTarget, 'COM', 'APP');
-      setToastMessage("Annonce publiée dans l'application avec succès !");
+      setToastMessage("📲 Communiqué publié dans l'application avec succès !");
       setTimeout(() => setToastMessage(null), 4000);
+      
+      // 2. NETTOYAGE DU FORMULAIRE APRÈS SUCCÈS
       setNewsTitle('');
       setNewsContent('');
+      setComSelectedMemberId('');
       return;
     }
 
-    // 2. Canal MAIL ou GENERAL (APP + MAIL) : Envoi réel séquentiel via EmailJS
+    // =========================================================================
+    // CAS 1 & CAS 3 : CANAL "PUBLIER VIA MAIL" (Mail Seul) ou "ENVOI GÉNÉRAL" (App + Mail)
+    // =========================================================================
     try {
       setIsSendingEmail(true);
       setSendingProgress(null);
@@ -1200,12 +1214,12 @@ export const AdminPortal: React.FC = () => {
 
         successfulRecipients.push(cleanEmail);
 
-        // Enregistrement dans l'application si canal GENERAL (passer 'APP' pour éviter tout double déclenchement EmailJS)
+        // CAS 3 UNIQUEMENT : Enregistrement dans Firestore si canal GENERAL (NE PAS enregistrer si canal MAIL)
         if (comDispatchChannel === 'GENERAL') {
           publishNews(exactSubject, exactMessage, newsCategory, newsTarget, 'COM', 'APP');
         }
 
-        // 3. BILAN : Affiche le message de confirmation uniquement si l'envoi a abouti
+        // 3. BILAN : Confirmation visuelle
         setEmailModalData({
           title: exactSubject,
           content: exactMessage,
@@ -1214,7 +1228,11 @@ export const AdminPortal: React.FC = () => {
           recipients: successfulRecipients,
         });
 
-        setToastMessage(`✉️ 1 mail transmis avec succès à ${memberName} (${cleanEmail}) !`);
+        if (comDispatchChannel === 'MAIL') {
+          setToastMessage(`✉️ 1 courriel transmis avec succès à ${memberName} (${cleanEmail}) sans publication dans l'application !`);
+        } else {
+          setToastMessage(`🌐 1 courriel transmis à ${memberName} (${cleanEmail}) et publié dans l'application avec succès !`);
+        }
         setTimeout(() => setToastMessage(null), 5000);
 
       } else {
@@ -1247,14 +1265,12 @@ export const AdminPortal: React.FC = () => {
           throw new Error(`Aucune adresse email valide trouvée pour la cible sélectionnée (${newsTarget}).`);
         }
 
-        // 1. ENVOI SÉQUENTIEL AVEC PAUSE :
-        // Traite l'envoi des membres avec une boucle 'for...of' de manière séquentielle.
+        // ENVOI SÉQUENTIEL AVEC PAUSE :
         let idx = 0;
         for (const member of membersToNotify) {
           idx++;
           setSendingProgress({ current: idx, total: membersToNotify.length, email: member.email });
 
-          // 2. DONNÉES ENVOYÉES STRICTES : UNIQUEMENT ET STRICTEMENT LE TEXTE SAISI SANS AUCUN AJOUT
           const templateParams = {
             to_email: member.email,
             subject: exactSubject,
@@ -1275,19 +1291,18 @@ export const AdminPortal: React.FC = () => {
 
           successfulRecipients.push(member.email);
 
-          // Ajoute un délai d'attente de 1000ms (1 seconde) entre chaque appel emailjs.send()
+          // Pause de 1000ms (1 seconde) entre chaque appel emailjs.send() anti-limite
           if (idx < membersToNotify.length) {
             await new Promise(resolve => setTimeout(resolve, 1000));
           }
         }
 
-        // Enregistrement dans l'application si canal GENERAL (passer 'APP' pour éviter tout double déclenchement EmailJS)
+        // CAS 3 UNIQUEMENT : Enregistrement dans Firestore si canal GENERAL (NE PAS enregistrer si canal MAIL)
         if (comDispatchChannel === 'GENERAL') {
           publishNews(exactSubject, exactMessage, newsCategory, newsTarget, 'COM', 'APP');
         }
 
         // 3. BILAN :
-        // Affiche le message de confirmation vert uniquement si les envois sont terminés sans erreur bloquante.
         setEmailModalData({
           title: exactSubject,
           content: exactMessage,
@@ -1296,16 +1311,20 @@ export const AdminPortal: React.FC = () => {
           recipients: successfulRecipients,
         });
 
-        setToastMessage(`✉️ ${successfulRecipients.length} mails transmis avec succès sur ${membersToNotify.length} !`);
+        if (comDispatchChannel === 'MAIL') {
+          setToastMessage(`✉️ ${successfulRecipients.length} courriels transmis avec succès sur ${membersToNotify.length} (aucun enregistrement dans l'application) !`);
+        } else {
+          setToastMessage(`🌐 ${successfulRecipients.length} courriels transmis et communiqué publié dans l'application avec succès !`);
+        }
         setTimeout(() => setToastMessage(null), 5000);
       }
 
-      // Réinitialiser les champs du formulaire
+      // 2. NETTOYAGE ET RECHARGEMENT DU FORMULAIRE :
       setNewsTitle('');
       setNewsContent('');
+      setComSelectedMemberId('');
     } catch (err: any) {
       console.error('Erreur transmission EmailJS BIC:', err);
-      // En cas d'échec d'envoi ou d'erreur réseau : masque l'écran de succès et affiche une alerte rouge
       setEmailModalData(null);
       const detail =
         err?.text ||
@@ -1315,6 +1334,109 @@ export const AdminPortal: React.FC = () => {
     } finally {
       setIsSendingEmail(false);
       setSendingProgress(null);
+    }
+  };
+
+  // 1. CHARGEMENT DES DONNÉES DEPUIS FIRESTORE (useEffect / fetchAnnouncements) :
+  // Assure que l'ID Firestore est explicitement inclus dans chaque objet
+  useEffect(() => {
+    const unsubAnnouncements = onSnapshot(
+      collection(db, "announcements"),
+      (snapshot) => {
+        const loadedAnnouncements = snapshot.docs.map(docSnap => ({
+          id: docSnap.id,
+          ...docSnap.data()
+        })) as NewsItem[];
+
+        if (loadedAnnouncements.length > 0) {
+          setAnnouncements(prev => {
+            const map = new Map<string, NewsItem>();
+            prev.forEach(item => map.set(item.id, item));
+            loadedAnnouncements.forEach(item => {
+              if (item.dispatchChannel !== 'MAIL') {
+                map.set(item.id, item);
+              }
+            });
+            const list = Array.from(map.values());
+            list.sort((a, b) => (b.id || '').localeCompare(a.id || ''));
+            return list;
+          });
+        }
+      },
+      (error) => {
+        console.warn("Erreur écoute collection announcements:", error);
+      }
+    );
+
+    const unsubNews = onSnapshot(
+      collection(db, "news"),
+      (snapshot) => {
+        const loadedNews = snapshot.docs.map(docSnap => ({
+          id: docSnap.id,
+          ...docSnap.data()
+        })) as NewsItem[];
+
+        setAnnouncements(prev => {
+          const map = new Map<string, NewsItem>();
+          loadedNews.forEach(item => {
+            if (item.dispatchChannel !== 'MAIL') {
+              map.set(item.id, item);
+            }
+          });
+          prev.forEach(item => {
+            if (item.dispatchChannel !== 'MAIL' && !map.has(item.id)) {
+              map.set(item.id, item);
+            }
+          });
+          const list = Array.from(map.values());
+          list.sort((a, b) => (b.id || '').localeCompare(a.id || ''));
+          return list;
+        });
+      },
+      (error) => {
+        console.warn("Erreur écoute collection news:", error);
+      }
+    );
+
+    return () => {
+      unsubAnnouncements();
+      unsubNews();
+    };
+  }, []);
+
+  // Synchronisation de secours si newsItems est déjà alimenté par le contexte
+  useEffect(() => {
+    if (newsItems.length > 0 && announcements.length === 0) {
+      setAnnouncements(newsItems.map(item => ({ id: item.id, ...item })));
+    }
+  }, [newsItems, announcements.length]);
+
+  // 2. FONCTION DE SUPPRESSION (handleDeleteAnnouncement) :
+  const handleDeleteAnnouncement = async (announcementId: string) => {
+    if (!announcementId) {
+      alert("Erreur : Identifiant du communiqué introuvable.");
+      return;
+    }
+    if (window.confirm("Voulez-vous vraiment supprimer ce communiqué ?")) {
+      try {
+        setDeletingAnnouncementId(announcementId);
+        // Suppression dans Firestore (collections announcements et news)
+        await deleteDoc(doc(db, "announcements", announcementId));
+        try {
+          await deleteDoc(doc(db, "news", announcementId));
+        } catch (_) {}
+
+        // Mise à jour immédiate du state local
+        setAnnouncements(prev => prev.filter(item => item.id !== announcementId));
+        deleteNewsItem(announcementId);
+
+        alert("Communiqué supprimé avec succès.");
+      } catch (error: any) {
+        console.error("Erreur de suppression Firestore :", error);
+        alert("Échec de la suppression : " + (error?.message || error));
+      } finally {
+        setDeletingAnnouncementId(null);
+      }
     }
   };
 
@@ -3820,32 +3942,42 @@ export const AdminPortal: React.FC = () => {
               <span>Gestion & Suppression des Communiqués Publiés</span>
             </h2>
 
-            {newsItems.length === 0 ? (
+            {announcements.length === 0 ? (
               <div className="text-center py-8 text-slate-500 text-sm">
                 Aucun communiqué publié dans le fil.
               </div>
             ) : (
               <div className="space-y-3">
-                {newsItems.map(item => (
+                {announcements.map(announcement => (
                   <div
-                    key={item.id}
+                    key={announcement.id}
                     className="p-4 rounded-2xl bg-slate-950 border border-slate-800 flex items-center justify-between gap-4 text-xs"
                   >
                     <div>
-                      <span className="font-extrabold text-white text-sm">{item.title}</span>
-                      <p className="text-slate-400 text-xs mt-0.5">{item.date} • Auteur: {item.authorRole} • Cible: {item.targetAudience}</p>
+                      <span className="font-extrabold text-white text-sm">{announcement.title}</span>
+                      <p className="text-slate-400 text-xs mt-0.5">
+                        {announcement.date || 'Date non précisée'} • Auteur: {announcement.authorRole || 'BIC'} • Cible: {announcement.targetAudience || 'TOUS'}
+                      </p>
                     </div>
 
                     <button
-                      onClick={() => {
-                        if (confirm(`Voulez-vous vraiment supprimer le communiqué "${item.title}" ?`)) {
-                          deleteNewsItem(item.id);
-                        }
-                      }}
-                      className="bg-rose-600/20 text-rose-300 hover:bg-rose-600 hover:text-white border border-rose-500/30 px-3 py-1.5 rounded-xl font-black flex items-center gap-1 transition-all"
+                      type="button"
+                      disabled={deletingAnnouncementId === announcement.id}
+                      onClick={() => handleDeleteAnnouncement(announcement.id)}
+                      className="bg-rose-600/20 text-rose-300 hover:bg-rose-600 hover:text-white border border-rose-500/30 px-3.5 py-2 rounded-xl font-black flex items-center gap-1.5 transition-all cursor-pointer active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
+                      title="Supprimer définitivement ce communiqué"
                     >
-                      <Trash2 className="w-3.5 h-3.5" />
-                      <span>Supprimer</span>
+                      {deletingAnnouncementId === announcement.id ? (
+                        <>
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          <span>Suppression...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Trash2 className="w-3.5 h-3.5" />
+                          <span>Supprimer</span>
+                        </>
+                      )}
                     </button>
                   </div>
                 ))}

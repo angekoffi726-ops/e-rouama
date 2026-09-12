@@ -38,6 +38,9 @@ service cloud.firestore {
     match /news/{newsId} {
       allow read, write: if true;
     }
+    match /announcements/{announcementId} {
+      allow read, write: if true;
+    }
 
     // 8. Transactions et écritures comptables
     match /transactions/{txId} {
