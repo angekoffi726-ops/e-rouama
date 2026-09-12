@@ -7,6 +7,7 @@ import { sendEmailBroadcastAsync } from '../../utils/emailService';
 import { fetchAELFDailyReadings, AELFDayData } from '../../utils/aelfService';
 import { getDailyVerseForDate } from '../../utils/versesData';
 import { RbacWarningBanner } from './RbacWarningBanner';
+import { EmailRecipientSelector } from '../common/EmailRecipientSelector';
 import {
   Shield,
   CheckCircle2,
@@ -27,6 +28,7 @@ import {
   Printer,
   KeyRound,
   UserCheck,
+  Mail,
   PieChart,
   Trash2,
   Sliders,
@@ -152,11 +154,15 @@ export const AdminPortal: React.FC = () => {
   const [newsCategory, setNewsCategory] = useState<'ANNONCE' | 'RELANCE' | 'ALERTE' | 'AUTRE'>('ANNONCE');
   const [newsTarget, setNewsTarget] = useState<TargetAudience>('TOUS');
   const [comDispatchChannel, setComDispatchChannel] = useState<'APP' | 'MAIL' | 'GENERAL'>('APP');
+  const [comRecipientMode, setComRecipientMode] = useState<'ALL' | 'SPECIFIC'>('ALL');
+  const [comSelectedMemberId, setComSelectedMemberId] = useState<string>('');
 
   // 4. Cerveau Emergency Form & Credentials Management
   const [cerveauAlertTitle, setCerveauAlertTitle] = useState<string>('');
   const [cerveauAlertContent, setCerveauAlertContent] = useState<string>('');
   const [cerveauDispatchChannel, setCerveauDispatchChannel] = useState<'APP' | 'MAIL' | 'GENERAL'>('APP');
+  const [cerveauRecipientMode, setCerveauRecipientMode] = useState<'ALL' | 'SPECIFIC'>('ALL');
+  const [cerveauSelectedMemberId, setCerveauSelectedMemberId] = useState<string>('');
   const [isSendingEmail, setIsSendingEmail] = useState<boolean>(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [emailModalData, setEmailModalData] = useState<{
@@ -167,9 +173,30 @@ export const AdminPortal: React.FC = () => {
     recipients: string[];
   } | null>(null);
   const [emailError, setEmailError] = useState<string | null>(null);
+  const [sendingProgress, setSendingProgress] = useState<{ current: number; total: number; email?: string } | null>(null);
   const [editingAdminRole, setEditingAdminRole] = useState<AdminRole | null>(null);
   const [editLoginId, setEditLoginId] = useState<string>('');
   const [editPin, setEditPin] = useState<string>('');
+
+  // 4b. Relances Email (Trésorerie)
+  const [showEmailRelancePanel, setShowEmailRelancePanel] = useState<boolean>(false);
+  const [relanceEmailSubject, setRelanceEmailSubject] = useState<string>('[E-ROUAMA] Relance Fraternelle - Cotisations Mensuelles');
+  const [relanceEmailContent, setRelanceEmailContent] = useState<string>(
+    "Chers frères et sœurs de la Fraternité E-ROUAMA,\n\nCeci est un rappel fraternel concernant la régularisation de vos cotisations mensuelles auprès de la Trésorerie. Merci de vérifier votre situation sur l'application et de transmettre vos reçus de versement pour validation.\n\nUnion de prières et fidélité fraternelle,\nLa Trésorerie E-ROUAMA"
+  );
+  const [relanceRecipientMode, setRelanceRecipientMode] = useState<'ALL' | 'SPECIFIC'>('ALL');
+  const [relanceSelectedMemberId, setRelanceSelectedMemberId] = useState<string>('');
+
+  // 4c. Notification Reçu Email (Trésorerie)
+  const [receiptEmailModalDecl, setReceiptEmailModalDecl] = useState<any | null>(null);
+  const [receiptEmailSubject, setReceiptEmailSubject] = useState<string>('');
+  const [receiptEmailContent, setReceiptEmailContent] = useState<string>('');
+  const [receiptEmailRecipientMode, setReceiptEmailRecipientMode] = useState<'ALL' | 'SPECIFIC'>('SPECIFIC');
+  const [receiptEmailSelectedMemberId, setReceiptEmailSelectedMemberId] = useState<string>('');
+
+  // 4d. Spiritualité Email Targeting
+  const [spiritualRecipientMode, setSpiritualRecipientMode] = useState<'ALL' | 'SPECIFIC'>('ALL');
+  const [spiritualSelectedMemberId, setSpiritualSelectedMemberId] = useState<string>('');
 
   // 5. Organisation Form
   const [actTitle, setActTitle] = useState<string>('');
@@ -245,29 +272,171 @@ export const AdminPortal: React.FC = () => {
       publishNews(title, content, 'ANNONCE', 'TOUS', 'SPIRITUALITÉ', 'APP');
       setToastMessage("✝️ Publié avec succès sur l'Application E-ROUAMA !");
       setTimeout(() => setToastMessage(null), 4000);
-    } else if (channel === 'MAIL') {
+      return;
+    }
+
+    try {
       setIsSendingEmail(true);
-      const res = await sendEmailBroadcastAsync(title, content, members, 'SPIRITUALITÉ', 'MAIL');
-      setIsSendingEmail(false);
+      setSendingProgress(null);
+      setEmailError(null);
+
+      if (channel === 'GENERAL') {
+        publishNews(title, content, 'ANNONCE', 'TOUS', 'SPIRITUALITÉ', 'APP');
+      }
+
+      const res = await sendEmailBroadcastAsync(
+        title,
+        content,
+        members,
+        'DÉPARTEMENT SPIRITUALITÉ',
+        channel,
+        {
+          recipientMode: spiritualRecipientMode,
+          selectedMemberId: spiritualSelectedMemberId,
+          onProgress: (current, total, email) => setSendingProgress({ current, total, email }),
+        }
+      );
+
       setEmailModalData({
         authorRole: 'DÉPARTEMENT SPIRITUALITÉ',
         title,
         content,
         recipients: res.recipients,
+        channel,
+      });
+
+      if (res.isSingleRecipient) {
+        setToastMessage(`✝️ 1 courriel spirituel transmis avec succès à ${res.recipientName} (${res.recipients[0]}) !`);
+      } else {
+        setToastMessage(`✝️ ${res.recipientCount} courriels spirituels transmis avec succès sur ${res.totalAttempted} !`);
+      }
+      setTimeout(() => setToastMessage(null), 5000);
+    } catch (err: any) {
+      console.error('Erreur spiritual EmailJS:', err);
+      setEmailModalData(null);
+      const detail = err?.text || err?.message || 'Erreur lors de la transmission spirituelle EmailJS.';
+      setEmailError(detail);
+    } finally {
+      setIsSendingEmail(false);
+      setSendingProgress(null);
+    }
+  };
+
+  // Handler pour l'envoi de la Relance de cotisations par courriel (Trésorerie)
+  const handleSendRelanceEmail = async () => {
+    if (!relanceEmailSubject.trim() || !relanceEmailContent.trim()) {
+      alert('Veuillez renseigner le sujet et le message de la relance.');
+      return;
+    }
+
+    try {
+      setIsSendingEmail(true);
+      setSendingProgress(null);
+      setEmailError(null);
+
+      const res = await sendEmailBroadcastAsync(
+        relanceEmailSubject.trim(),
+        relanceEmailContent.trim(),
+        members,
+        'TRÉSORERIE (RELANCE COTISATIONS)',
+        'MAIL',
+        {
+          recipientMode: relanceRecipientMode,
+          selectedMemberId: relanceSelectedMemberId,
+          filterFn: relanceRecipientMode === 'ALL'
+            ? m => getMemberDuesStatus(m.id) === 'RETARD'
+            : undefined,
+          onProgress: (current, total, email) => setSendingProgress({ current, total, email }),
+        }
+      );
+
+      setEmailModalData({
+        title: relanceEmailSubject.trim(),
+        content: relanceEmailContent.trim(),
+        authorRole: 'TRÉSORERIE (RELANCE COTISATIONS)',
         channel: 'MAIL',
-      });
-    } else if (channel === 'GENERAL') {
-      publishNews(title, content, 'ANNONCE', 'TOUS', 'SPIRITUALITÉ', 'GENERAL');
-      setIsSendingEmail(true);
-      const res = await sendEmailBroadcastAsync(title, content, members, 'SPIRITUALITÉ', 'GENERAL');
-      setIsSendingEmail(false);
-      setEmailModalData({
-        authorRole: 'DÉPARTEMENT SPIRITUALITÉ',
-        title,
-        content,
         recipients: res.recipients,
-        channel: 'GENERAL',
       });
+
+      if (res.isSingleRecipient) {
+        setToastMessage(`✉️ 1 relance transmise avec succès à ${res.recipientName} (${res.recipients[0]}) !`);
+      } else {
+        setToastMessage(`✉️ ${res.recipientCount} relances transmises avec succès sur ${res.totalAttempted} membres en retard !`);
+      }
+      setTimeout(() => setToastMessage(null), 5000);
+      setShowEmailRelancePanel(false);
+    } catch (err: any) {
+      console.error('Erreur relance EmailJS:', err);
+      setEmailModalData(null);
+      const detail = err?.text || err?.message || 'Erreur lors de la transmission des relances EmailJS.';
+      setEmailError(detail);
+    } finally {
+      setIsSendingEmail(false);
+      setSendingProgress(null);
+    }
+  };
+
+  // Handler d'ouverture et d'envoi de l'attestation de reçu de versement par courriel (Trésorerie)
+  const handleOpenReceiptEmailModal = (decl: any) => {
+    const member = members.find(m => m.id === decl.memberId);
+    setReceiptEmailModalDecl(decl);
+    setReceiptEmailRecipientMode('SPECIFIC');
+    setReceiptEmailSelectedMemberId(decl.memberId || '');
+    const amountStr = decl.amount ? `${decl.amount.toLocaleString('fr-FR')} F CFA` : 'Montant validé';
+    setReceiptEmailSubject(`[E-ROUAMA] Attestation de Reçu Validé - ${FUND_LABELS[decl.fund as FundType] || decl.fund} (${amountStr})`);
+    setReceiptEmailContent(
+      `Bonjour ${decl.memberNickname || member?.name || 'Frère / Sœur'},\n\nNous vous confirmons la bonne réception et validation de votre versement n° ${decl.id.slice(0, 8)} d'un montant de ${amountStr} pour la caisse « ${FUND_LABELS[decl.fund as FundType] || decl.fund} ».\n\nVotre compte de cotisation a été actualisé avec succès dans l'application E-ROUAMA.\n\nMerci pour votre fidélité et votre contribution à la fraternité.\n\nFraternellement,\nLa Trésorerie E-ROUAMA`
+    );
+  };
+
+  const handleSendReceiptEmail = async () => {
+    if (!receiptEmailSubject.trim() || !receiptEmailContent.trim()) {
+      alert('Veuillez renseigner le sujet et le corps du message.');
+      return;
+    }
+
+    try {
+      setIsSendingEmail(true);
+      setSendingProgress(null);
+      setEmailError(null);
+
+      const res = await sendEmailBroadcastAsync(
+        receiptEmailSubject.trim(),
+        receiptEmailContent.trim(),
+        members,
+        'TRÉSORERIE (NOTIFICATION REÇU)',
+        'MAIL',
+        {
+          recipientMode: receiptEmailRecipientMode,
+          selectedMemberId: receiptEmailSelectedMemberId,
+          onProgress: (current, total, email) => setSendingProgress({ current, total, email }),
+        }
+      );
+
+      setReceiptEmailModalDecl(null);
+
+      setEmailModalData({
+        title: receiptEmailSubject.trim(),
+        content: receiptEmailContent.trim(),
+        authorRole: 'TRÉSORERIE (NOTIFICATION REÇU)',
+        channel: 'MAIL',
+        recipients: res.recipients,
+      });
+
+      if (res.isSingleRecipient) {
+        setToastMessage(`✉️ 1 notification de reçu transmise avec succès à ${res.recipientName} (${res.recipients[0]}) !`);
+      } else {
+        setToastMessage(`✉️ ${res.recipientCount} notifications transmises avec succès sur ${res.totalAttempted} !`);
+      }
+      setTimeout(() => setToastMessage(null), 5000);
+    } catch (err: any) {
+      console.error('Erreur notification reçu EmailJS:', err);
+      setEmailModalData(null);
+      const detail = err?.text || err?.message || 'Erreur lors de la transmission de la notification par courriel.';
+      setEmailError(detail);
+    } finally {
+      setIsSendingEmail(false);
+      setSendingProgress(null);
     }
   };
 
@@ -958,10 +1127,16 @@ export const AdminPortal: React.FC = () => {
   const EMAILJS_TEMPLATE_ID = 'template_z2nyaem';
   const EMAILJS_PUBLIC_KEY = '4uaf30m_mKHnobzKh';
 
-  // LOGIQUE D'ENVOI RÉEL BIC (handleSendMail / handlePublish)
+  // LOGIQUE D'ENVOI RÉEL BIC (handlePublishBIC) - DIFFUSION GÉNÉRALE OU SÉLECTION UNIQUE AVEC PAUSE (ANTI-CONNECTION LIMIT)
   const handlePublishBIC = async () => {
-    if (!newsTitle.trim() || !newsContent.trim()) {
-      alert('Veuillez renseigner le titre et le contenu du communiqué.');
+    // 1. SUPPRESSION DU DOUBLE ENVOI : Vérification d'antécédence immédiate
+    if (isSendingEmail) return;
+
+    const exactSubject = newsTitle.trim();
+    const exactMessage = newsContent.trim();
+
+    if (!exactSubject || !exactMessage) {
+      alert("Veuillez renseigner le Titre ou Motif de l'Alerte ainsi que le Contenu / Message Complet.");
       return;
     }
 
@@ -969,7 +1144,7 @@ export const AdminPortal: React.FC = () => {
 
     // 1. Si le canal est uniquement APP (pas d'envoi de courriel)
     if (comDispatchChannel === 'APP') {
-      publishNews(newsTitle.trim(), newsContent.trim(), newsCategory, newsTarget, 'COM', 'APP');
+      publishNews(exactSubject, exactMessage, newsCategory, newsTarget, 'COM', 'APP');
       setToastMessage("Annonce publiée dans l'application avec succès !");
       setTimeout(() => setToastMessage(null), 4000);
       setNewsTitle('');
@@ -977,43 +1152,114 @@ export const AdminPortal: React.FC = () => {
       return;
     }
 
-    // 2. Canal MAIL ou GENERAL (APP + MAIL) : Envoi réel via EmailJS
+    // 2. Canal MAIL ou GENERAL (APP + MAIL) : Envoi réel séquentiel via EmailJS
     try {
       setIsSendingEmail(true);
+      setSendingProgress(null);
 
-      // Déterminer les membres ciblés selon le ciblage d'audience
-      let targetedMembers = members;
-      if (newsTarget === 'RETARD') {
-        targetedMembers = members.filter(m => getMemberDuesStatus(m.id) === 'RETARD');
-      } else if (newsTarget === 'A_JOUR') {
-        targetedMembers = members.filter(m => getMemberDuesStatus(m.id) === 'A_JOUR');
-      } else if (newsTarget === 'EN_AVANCE') {
-        targetedMembers = members.filter(m => getMemberDuesStatus(m.id) === 'EN_AVANCE');
-      }
-
-      // Extraire la liste des adresses emails valides des membres ciblés
-      const targetEmails = Array.from(
-        new Set(
-          targetedMembers
-            .map(m => m.email?.trim())
-            .filter((email): email is string => Boolean(email && email.includes('@')))
-        )
-      );
-
-      if (targetEmails.length === 0) {
-        throw new Error(`Aucune adresse email valide trouvée pour la cible sélectionnée (${newsTarget}).`);
-      }
+      const successfulRecipients: string[] = [];
 
       // Initialisation EmailJS avec la clé publique officielle
       emailjs.init({ publicKey: EMAILJS_PUBLIC_KEY });
 
-      // Boucle async / Promise.all pour envoyer à chaque membre via emailjs.send
-      const sendResults = await Promise.all(
-        targetEmails.map(async (email) => {
+      // CIBLAGE : SÉLECTION UNIQUE OU TOUS LES MEMBRES
+      if (comRecipientMode === 'SPECIFIC') {
+        // Mode 2 : Un membre spécifique sélectionné dans la liste déroulante
+        if (!comSelectedMemberId) {
+          throw new Error("Veuillez sélectionner un membre destinataire dans la liste déroulante.");
+        }
+
+        const targetMember = members.find(m => m.id === comSelectedMemberId);
+        const cleanEmail = targetMember?.email?.trim();
+        if (!targetMember || !cleanEmail || !cleanEmail.includes('@')) {
+          throw new Error("Le membre sélectionné ne dispose pas d'une adresse email valide.");
+        }
+
+        const memberName = targetMember.name || targetMember.fullRosterName || targetMember.firstName || targetMember.nickname || 'Membre';
+
+        setSendingProgress({ current: 1, total: 1, email: cleanEmail });
+
+        // CONTENU BRUT ET STRICT : UNIQUEMENT ET STRICTEMENT LE TEXTE SAISI SANS AUCUN AJOUT
+        const templateParams = {
+          to_email: cleanEmail,
+          subject: exactSubject,
+          message: exactMessage,
+          name: memberName,
+        };
+
+        const res = await emailjs.send(
+          EMAILJS_SERVICE_ID,
+          EMAILJS_TEMPLATE_ID,
+          templateParams,
+          EMAILJS_PUBLIC_KEY
+        );
+
+        if (res.status !== 200) {
+          throw new Error(`Échec d'envoi vers ${cleanEmail} : statut HTTP ${res.status} (${res.text || 'Erreur'})`);
+        }
+
+        successfulRecipients.push(cleanEmail);
+
+        // Enregistrement dans l'application si canal GENERAL (passer 'APP' pour éviter tout double déclenchement EmailJS)
+        if (comDispatchChannel === 'GENERAL') {
+          publishNews(exactSubject, exactMessage, newsCategory, newsTarget, 'COM', 'APP');
+        }
+
+        // 3. BILAN : Affiche le message de confirmation uniquement si l'envoi a abouti
+        setEmailModalData({
+          title: exactSubject,
+          content: exactMessage,
+          authorRole: "BASE D'INFORMATION ET DE COMMUNICATION (BIC)",
+          channel: comDispatchChannel,
+          recipients: successfulRecipients,
+        });
+
+        setToastMessage(`✉️ 1 mail transmis avec succès à ${memberName} (${cleanEmail}) !`);
+        setTimeout(() => setToastMessage(null), 5000);
+
+      } else {
+        // Mode 1 : Tous les membres (Diffusion générale) avec ciblage de statut optionnel
+        let targetedMembers = members;
+        if (newsTarget === 'RETARD') {
+          targetedMembers = members.filter(m => getMemberDuesStatus(m.id) === 'RETARD');
+        } else if (newsTarget === 'A_JOUR') {
+          targetedMembers = members.filter(m => getMemberDuesStatus(m.id) === 'A_JOUR');
+        } else if (newsTarget === 'EN_AVANCE') {
+          targetedMembers = members.filter(m => getMemberDuesStatus(m.id) === 'EN_AVANCE');
+        }
+
+        // Filtrer et dédoublonner les membres avec adresse email valide
+        const seenEmails = new Set<string>();
+        const membersToNotify: Array<{ email: string; name: string }> = [];
+
+        for (const m of targetedMembers) {
+          const cleanEmail = m.email?.trim();
+          if (cleanEmail && cleanEmail.includes('@') && !seenEmails.has(cleanEmail.toLowerCase())) {
+            seenEmails.add(cleanEmail.toLowerCase());
+            membersToNotify.push({
+              email: cleanEmail,
+              name: m.name || m.fullRosterName || m.firstName || m.nickname || 'Membre',
+            });
+          }
+        }
+
+        if (membersToNotify.length === 0) {
+          throw new Error(`Aucune adresse email valide trouvée pour la cible sélectionnée (${newsTarget}).`);
+        }
+
+        // 1. ENVOI SÉQUENTIEL AVEC PAUSE :
+        // Traite l'envoi des membres avec une boucle 'for...of' de manière séquentielle.
+        let idx = 0;
+        for (const member of membersToNotify) {
+          idx++;
+          setSendingProgress({ current: idx, total: membersToNotify.length, email: member.email });
+
+          // 2. DONNÉES ENVOYÉES STRICTES : UNIQUEMENT ET STRICTEMENT LE TEXTE SAISI SANS AUCUN AJOUT
           const templateParams = {
-            subject: newsTitle.trim(),
-            message: newsContent.trim(),
-            to_email: email,
+            to_email: member.email,
+            subject: exactSubject,
+            message: exactMessage,
+            name: member.name,
           };
 
           const res = await emailjs.send(
@@ -1024,33 +1270,35 @@ export const AdminPortal: React.FC = () => {
           );
 
           if (res.status !== 200) {
-            throw new Error(`Échec d'envoi vers ${email} : statut HTTP ${res.status} (${res.text || 'Erreur'})`);
+            throw new Error(`Échec d'envoi vers ${member.email} : statut HTTP ${res.status} (${res.text || 'Erreur'})`);
           }
 
-          return res;
-        })
-      );
+          successfulRecipients.push(member.email);
 
-      // Vérification stricte que chaque envoi a abouti avec le statut 200
-      const allSuccess = sendResults.length > 0 && sendResults.every(r => r && r.status === 200);
-      if (!allSuccess) {
-        throw new Error("L'envoi d'un ou plusieurs courriels n'a pas retourné le code de succès HTTP 200.");
+          // Ajoute un délai d'attente de 1000ms (1 seconde) entre chaque appel emailjs.send()
+          if (idx < membersToNotify.length) {
+            await new Promise(resolve => setTimeout(resolve, 1000));
+          }
+        }
+
+        // Enregistrement dans l'application si canal GENERAL (passer 'APP' pour éviter tout double déclenchement EmailJS)
+        if (comDispatchChannel === 'GENERAL') {
+          publishNews(exactSubject, exactMessage, newsCategory, newsTarget, 'COM', 'APP');
+        }
+
+        // 3. BILAN :
+        // Affiche le message de confirmation vert uniquement si les envois sont terminés sans erreur bloquante.
+        setEmailModalData({
+          title: exactSubject,
+          content: exactMessage,
+          authorRole: "BASE D'INFORMATION ET DE COMMUNICATION (BIC)",
+          channel: comDispatchChannel,
+          recipients: successfulRecipients,
+        });
+
+        setToastMessage(`✉️ ${successfulRecipients.length} mails transmis avec succès sur ${membersToNotify.length} !`);
+        setTimeout(() => setToastMessage(null), 5000);
       }
-
-      // Enregistrement dans l'application si canal GENERAL
-      publishNews(newsTitle.trim(), newsContent.trim(), newsCategory, newsTarget, 'COM', comDispatchChannel);
-
-      // N'affiche la modal de succès QUE si les envois aboutissent avec le statut 200
-      setEmailModalData({
-        title: newsTitle.trim(),
-        content: newsContent.trim(),
-        authorRole: "BASE D'INFORMATION ET DE COMMUNICATION (BIC)",
-        channel: comDispatchChannel,
-        recipients: targetEmails,
-      });
-
-      setToastMessage("✉️ Courriels transmis avec succès aux membres ciblés (Statut 200 OK) !");
-      setTimeout(() => setToastMessage(null), 5000);
 
       // Réinitialiser les champs du formulaire
       setNewsTitle('');
@@ -1066,10 +1314,11 @@ export const AdminPortal: React.FC = () => {
       setEmailError(detail);
     } finally {
       setIsSendingEmail(false);
+      setSendingProgress(null);
     }
   };
 
-  // LOGIQUE D'ENVOI RÉEL CERVEAU (Diffusion d'Alerte Cerveau)
+  // LOGIQUE D'ENVOI RÉEL CERVEAU (Diffusion d'Alerte Cerveau) - SÉQUENCE AVEC PAUSE (ANTI-CONNECTION LIMIT)
   const handlePublishCerveauAlert = async () => {
     if (!cerveauAlertTitle.trim() || !cerveauAlertContent.trim()) {
       alert("Veuillez renseigner le titre et le contenu de l'alerte.");
@@ -1078,13 +1327,14 @@ export const AdminPortal: React.FC = () => {
 
     setEmailError(null);
 
-    const formattedTitle = cerveauAlertTitle.startsWith('🟢') || cerveauAlertTitle.startsWith('🚨')
+    const alertTitle = cerveauAlertTitle.startsWith('🟢') || cerveauAlertTitle.startsWith('🚨')
       ? cerveauAlertTitle.trim()
       : `🚨 ALERTE CERVEAU : ${cerveauAlertTitle.trim()}`;
+    const alertContent = cerveauAlertContent.trim();
 
     // Si le canal est uniquement APP
     if (cerveauDispatchChannel === 'APP') {
-      broadcastCerveauAlert(cerveauAlertTitle.trim(), cerveauAlertContent.trim(), 'APP');
+      broadcastCerveauAlert(cerveauAlertTitle.trim(), alertContent, 'APP');
       setToastMessage("Alerte Cerveau publiée dans l'application avec succès !");
       setTimeout(() => setToastMessage(null), 4000);
       setCerveauAlertTitle('');
@@ -1092,31 +1342,105 @@ export const AdminPortal: React.FC = () => {
       return;
     }
 
-    // Canal MAIL ou GENERAL (APP + MAIL) : Envoi réel d'emails via EmailJS
+    // Canal MAIL ou GENERAL (APP + MAIL) : Envoi réel séquentiel via EmailJS
     try {
       setIsSendingEmail(true);
-
-      const targetEmails = Array.from(
-        new Set(
-          members
-            .map(m => m.email?.trim())
-            .filter((email): email is string => Boolean(email && email.includes('@')))
-        )
-      );
-
-      if (targetEmails.length === 0) {
-        throw new Error("Aucune adresse email valide trouvée parmi les membres.");
-      }
+      setSendingProgress(null);
 
       // Initialiser EmailJS
       emailjs.init({ publicKey: EMAILJS_PUBLIC_KEY });
 
-      const sendResults = await Promise.all(
-        targetEmails.map(async (email) => {
+      const successfulRecipients: string[] = [];
+
+      // CIBLAGE : SÉLECTION UNIQUE OU TOUS LES MEMBRES
+      if (cerveauRecipientMode === 'SPECIFIC') {
+        if (!cerveauSelectedMemberId) {
+          throw new Error("Veuillez sélectionner un membre destinataire pour l'alerte.");
+        }
+
+        const targetMember = members.find(m => m.id === cerveauSelectedMemberId);
+        const cleanEmail = targetMember?.email?.trim();
+        if (!targetMember || !cleanEmail || !cleanEmail.includes('@')) {
+          throw new Error("Le membre sélectionné ne dispose pas d'une adresse email valide.");
+        }
+
+        const memberName =
+          targetMember.fullRosterName ||
+          `${targetMember.name || ''} ${targetMember.firstName || ''}`.trim() ||
+          targetMember.nickname ||
+          'Membre';
+
+        setSendingProgress({ current: 1, total: 1, email: cleanEmail });
+
+        const templateParams = {
+          to_email: cleanEmail,
+          subject: alertTitle,
+          message: alertContent,
+          name: memberName,
+        };
+
+        const res = await emailjs.send(
+          EMAILJS_SERVICE_ID,
+          EMAILJS_TEMPLATE_ID,
+          templateParams,
+          EMAILJS_PUBLIC_KEY
+        );
+
+        if (res.status !== 200) {
+          throw new Error(`Échec d'envoi vers ${cleanEmail} : statut HTTP ${res.status} (${res.text || 'Erreur'})`);
+        }
+
+        successfulRecipients.push(cleanEmail);
+
+        if (cerveauDispatchChannel === 'GENERAL') {
+          broadcastCerveauAlert(cerveauAlertTitle.trim(), alertContent, 'APP');
+        }
+
+        setEmailModalData({
+          title: alertTitle,
+          content: alertContent,
+          authorRole: 'CERVEAU (EXÉCUTIF)',
+          channel: cerveauDispatchChannel,
+          recipients: successfulRecipients,
+        });
+
+        setToastMessage(`✉️ 1 alerte Cerveau transmise avec succès à ${memberName} (${cleanEmail}) !`);
+        setTimeout(() => setToastMessage(null), 5000);
+      } else {
+        // Filtrer et dédoublonner les membres avec adresse email valide
+        const seenEmails = new Set<string>();
+        const membersToNotify: Array<{ email: string; name: string }> = [];
+
+        for (const m of members) {
+          const cleanEmail = m.email?.trim();
+          if (cleanEmail && cleanEmail.includes('@') && !seenEmails.has(cleanEmail.toLowerCase())) {
+            seenEmails.add(cleanEmail.toLowerCase());
+            membersToNotify.push({
+              email: cleanEmail,
+              name:
+                m.fullRosterName ||
+                `${m.name || ''} ${m.firstName || ''}`.trim() ||
+                m.nickname ||
+                'Membre',
+            });
+          }
+        }
+
+        if (membersToNotify.length === 0) {
+          throw new Error("Aucune adresse email valide trouvée parmi les membres.");
+        }
+
+        // ENVOI SÉQUENTIEL AVEC PAUSE D'UNE SECONDE (ANTI-CONNECTION LIMIT)
+        let idx = 0;
+        for (const member of membersToNotify) {
+          idx++;
+          setSendingProgress({ current: idx, total: membersToNotify.length, email: member.email });
+
           const templateParams = {
-            subject: formattedTitle,
-            message: cerveauAlertContent.trim(),
-            to_email: email,
+            to_email: member.email,
+            subject: alertTitle,
+            message: alertContent,
+            name: member.name,
           };
 
           const res = await emailjs.send(
@@ -1127,31 +1451,32 @@ export const AdminPortal: React.FC = () => {
           );
 
           if (res.status !== 200) {
-            throw new Error(`Échec d'envoi vers ${email} : statut HTTP ${res.status} (${res.text || 'Erreur'})`);
+            throw new Error(`Échec d'envoi vers ${member.email} : statut HTTP ${res.status} (${res.text || 'Erreur'})`);
           }
 
-          return res;
-        })
-      );
+          successfulRecipients.push(member.email);
 
-      const allSuccess = sendResults.length > 0 && sendResults.every(r => r && r.status === 200);
-      if (!allSuccess) {
-        throw new Error("L'envoi des alertes n'a pas retourné le code de succès HTTP 200.");
+          // Ajoute un délai d'attente de 1000ms (1 seconde) entre chaque appel
+          if (idx < membersToNotify.length) {
+            await new Promise(resolve => setTimeout(resolve, 1000));
+          }
+        }
+
+        if (cerveauDispatchChannel === 'GENERAL') {
+          broadcastCerveauAlert(cerveauAlertTitle.trim(), alertContent, 'APP');
+        }
+
+        setEmailModalData({
+          title: alertTitle,
+          content: alertContent,
+          authorRole: 'CERVEAU (EXÉCUTIF)',
+          channel: cerveauDispatchChannel,
+          recipients: successfulRecipients,
+        });
+
+        setToastMessage(`✉️ ${successfulRecipients.length} alertes Cerveau transmises avec succès sur ${membersToNotify.length} !`);
+        setTimeout(() => setToastMessage(null), 5000);
       }
-
-      broadcastCerveauAlert(cerveauAlertTitle.trim(), cerveauAlertContent.trim(), cerveauDispatchChannel);
-
-      // N'affiche la modal de succès QUE si les envois aboutissent avec statut 200
-      setEmailModalData({
-        title: formattedTitle,
-        content: cerveauAlertContent.trim(),
-        authorRole: 'CERVEAU (EXÉCUTIF)',
-        channel: cerveauDispatchChannel,
-        recipients: targetEmails,
-      });
-
-      setToastMessage("✉️ Alertes Cerveau transmises avec succès par courriel (Statut 200 OK) !");
-      setTimeout(() => setToastMessage(null), 5000);
 
       setCerveauAlertTitle('');
       setCerveauAlertContent('');
@@ -1166,6 +1491,7 @@ export const AdminPortal: React.FC = () => {
       setEmailError(detail);
     } finally {
       setIsSendingEmail(false);
+      setSendingProgress(null);
     }
   };
 
@@ -1521,6 +1847,15 @@ export const AdminPortal: React.FC = () => {
                                 </button>
                               </td>
                               <td className="py-3 px-4 text-right space-x-2 whitespace-nowrap">
+                                <button
+                                  type="button"
+                                  onClick={() => handleOpenReceiptEmailModal(d)}
+                                  className="bg-amber-600/80 hover:bg-amber-600 text-white font-black px-3 py-2 rounded-xl text-xs shadow inline-flex items-center gap-1 active:scale-95 transition-all cursor-pointer"
+                                  title="Notifier le membre par courriel (EmailJS)"
+                                >
+                                  <Mail className="w-3.5 h-3.5" />
+                                  <span>Notifier</span>
+                                </button>
                                 <button
                                   type="button"
                                   onClick={() => handleValidateReceipt(d)}
@@ -2533,28 +2868,128 @@ export const AdminPortal: React.FC = () => {
                 <div>
                   <h2 className="text-xl font-black text-white flex items-center gap-2">
                     <MessageSquare className="w-5 h-5 text-emerald-400" />
-                    <span>Tableau de Suivi des Dettes ({members.length} Membres) & Relances WhatsApp</span>
+                    <span>Tableau de Suivi des Dettes ({members.length} Membres) & Relances (WhatsApp & Courriel)</span>
                   </h2>
                   <p className="text-xs text-slate-400 mt-1">
-                    Fenêtre de relance active du 28 du mois en cours au 04 du mois suivant (jusqu'à 23h59 GMT).
+                    Relancez par WhatsApp ou diffusez une campagne d'emailings ciblée (tous les membres en retard ou un membre spécifique).
                   </p>
                 </div>
 
-                <div
-                  className={`px-4 py-2 rounded-2xl font-black text-xs flex items-center gap-2 border ${
-                    isWhatsAppRelanceActive
-                      ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
-                      : 'bg-amber-500/10 text-amber-300 border-amber-500/30'
-                  }`}
-                >
-                  <Clock className="w-4 h-4" />
-                  <span>
-                    {isWhatsAppRelanceActive
-                      ? 'RELANCES ACTIVÉES'
-                      : `RELANCES DÉSACTIVÉES (Aujourd'hui : Jour ${currentDayOfMonth})`}
-                  </span>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowEmailRelancePanel(prev => !prev)}
+                    className={`px-4 py-2 rounded-2xl font-black text-xs flex items-center gap-2 border transition-all cursor-pointer ${
+                      showEmailRelancePanel
+                        ? 'bg-amber-500 text-slate-950 border-amber-400 shadow-lg'
+                        : 'bg-amber-500/20 text-amber-300 border-amber-500/40 hover:bg-amber-500/30'
+                    }`}
+                  >
+                    <Mail className="w-4 h-4" />
+                    <span>{showEmailRelancePanel ? 'Masquer Module Email' : '✉️ Relance par Courriel (EmailJS)'}</span>
+                  </button>
+
+                  <div
+                    className={`px-4 py-2 rounded-2xl font-black text-xs flex items-center gap-2 border ${
+                      isWhatsAppRelanceActive
+                        ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                        : 'bg-slate-800 text-slate-400 border-slate-700'
+                    }`}
+                  >
+                    <Clock className="w-4 h-4" />
+                    <span>
+                      {isWhatsAppRelanceActive
+                        ? 'WHATSAPP ACTIF (28-04)'
+                        : `WHATSAPP EN PAUSE (Jour ${currentDayOfMonth})`}
+                    </span>
+                  </div>
                 </div>
               </div>
+
+              {/* Panneau Déroulant d'Envoi de Relance par Courriel (EmailJS) */}
+              {showEmailRelancePanel && (
+                <div className="p-6 bg-slate-950 border border-amber-500/40 rounded-3xl space-y-5 animate-fadeIn">
+                  <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+                    <h3 className="text-base font-black text-white flex items-center gap-2">
+                      <Mail className="w-5 h-5 text-amber-400" />
+                      <span>Campagne de Relances par Courriel (EmailJS)</span>
+                    </h3>
+                    <span className="text-xs bg-amber-500/20 text-amber-300 px-3 py-1 rounded-full font-bold border border-amber-500/30">
+                      {members.filter(m => getMemberDuesStatus(m.id) === 'RETARD').length} membres en retard
+                    </span>
+                  </div>
+
+                  <div className="space-y-3">
+                    <div>
+                      <label className="block text-xs font-bold text-slate-400 uppercase mb-1">
+                        Objet du Courriel de Relance
+                      </label>
+                      <input
+                        type="text"
+                        value={relanceEmailSubject}
+                        onChange={e => setRelanceEmailSubject(e.target.value)}
+                        className="w-full bg-slate-900 border border-slate-800 focus:border-amber-500 rounded-xl px-3.5 py-2.5 text-xs text-white placeholder-slate-500 focus:outline-none font-bold"
+                        placeholder="Ex: [E-ROUAMA] Relance Fraternelle Cotisations..."
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-bold text-slate-400 uppercase mb-1">
+                        Message de Relance Fraternelle
+                      </label>
+                      <textarea
+                        rows={4}
+                        value={relanceEmailContent}
+                        onChange={e => setRelanceEmailContent(e.target.value)}
+                        className="w-full bg-slate-900 border border-slate-800 focus:border-amber-500 rounded-xl p-3.5 text-xs text-white placeholder-slate-500 focus:outline-none font-medium leading-relaxed"
+                        placeholder="Rédigez le texte de relance..."
+                      />
+                    </div>
+
+                    {/* Contrôle réutilisable de ciblage des destinataires */}
+                    <EmailRecipientSelector
+                      recipientMode={relanceRecipientMode}
+                      onRecipientModeChange={setRelanceRecipientMode}
+                      selectedMemberId={relanceSelectedMemberId}
+                      onSelectedMemberIdChange={setRelanceSelectedMemberId}
+                      members={members}
+                      allLabel="Tous les membres en retard de cotisation (Diffusion séquentielle)"
+                      specificLabel="Sélectionner un membre spécifique"
+                      title="Ciblage des Destinataires pour la Relance par Courriel"
+                      subNotice="ℹ️ En mode 'Tous les membres', le système cible uniquement les membres ayant un statut 'RETARD' et applique une pause de 1 seconde entre chaque transmission EmailJS."
+                    />
+
+                    <div className="pt-2 flex items-center justify-end gap-3">
+                      <button
+                        type="button"
+                        onClick={() => setShowEmailRelancePanel(false)}
+                        className="bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold px-4 py-2.5 rounded-xl text-xs transition-all cursor-pointer"
+                      >
+                        Annuler
+                      </button>
+
+                      <button
+                        type="button"
+                        disabled={isSendingEmail}
+                        onClick={handleSendRelanceEmail}
+                        className="bg-amber-600 hover:bg-amber-500 text-white font-black px-5 py-2.5 rounded-xl text-xs flex items-center gap-2 shadow-lg transition-all active:scale-95 disabled:opacity-50 cursor-pointer"
+                      >
+                        {isSendingEmail ? (
+                          <>
+                            <Loader2 className="w-4 h-4 animate-spin text-white" />
+                            <span>Transmission EmailJS en cours...</span>
+                          </>
+                        ) : (
+                          <>
+                            <Send className="w-4 h-4" />
+                            <span>Transmettre la Relance par Courriel</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
 
               <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
                 {members.map(m => {
@@ -2590,35 +3025,55 @@ export const AdminPortal: React.FC = () => {
                         </div>
                       </div>
 
-                      <a
-                        href={
-                          isWhatsAppRelanceActive && isLate
-                            ? `https://wa.me/${m.phone}?text=Bonjour%20${encodeURIComponent(
-                                m.nickname
-                              )},%20rappel%20fraternel%20E-ROUAMA%20pour%20la%20cotisation%20mensuelle%20(${detail.unpaidMonths}%20mois%20en%20retard).`
-                            : '#'
-                        }
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        onClick={e => {
-                          if (!isWhatsAppRelanceActive || !isLate) {
-                            e.preventDefault();
-                            alert(
-                              !isWhatsAppRelanceActive
-                                ? "Règle Temporelle : La fenêtre de relance WhatsApp est active uniquement du 28 du mois en cours au 04 du mois suivant (jusqu'à 23h59 GMT)."
-                                : 'Ce membre est à jour de ses cotisations.'
+                      <div className="flex items-center gap-1.5">
+                        {/* Bouton de relance Email rapide */}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setShowEmailRelancePanel(true);
+                            setRelanceRecipientMode('SPECIFIC');
+                            setRelanceSelectedMemberId(m.id);
+                            setRelanceEmailSubject(`[E-ROUAMA] Relance Fraternelle Cotisations - ${m.nickname}`);
+                            setRelanceEmailContent(
+                              `Bonjour ${m.nickname},\n\nNous vous contactons concernant votre situation de cotisation pour la fraternité E-ROUAMA (${detail.unpaidMonths} mois en attente de régularisation).\n\nMerci de vous connecter sur votre espace membre pour vérifier vos états de cotisations et déclarer vos versements.\n\nFraternellement,\nLa Trésorerie E-ROUAMA`
                             );
+                          }}
+                          className="p-2 rounded-xl text-xs font-black flex items-center justify-center bg-amber-600/80 hover:bg-amber-600 text-white shadow-md active:scale-95 transition-all cursor-pointer"
+                          title="Envoyer un rappel personnalisé par courriel (EmailJS)"
+                        >
+                          <Mail className="w-3.5 h-3.5" />
+                        </button>
+
+                        <a
+                          href={
+                            isWhatsAppRelanceActive && isLate
+                              ? `https://wa.me/${m.phone}?text=Bonjour%20${encodeURIComponent(
+                                  m.nickname
+                                )},%20rappel%20fraternel%20E-ROUAMA%20pour%20la%20cotisation%20mensuelle%20(${detail.unpaidMonths}%20mois%20en%20retard).`
+                              : '#'
                           }
-                        }}
-                        className={`px-3 py-2 rounded-xl text-xs font-black flex items-center gap-1 transition-all ${
-                          isWhatsAppRelanceActive && isLate
-                            ? 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-md active:scale-95'
-                            : 'bg-slate-800 text-slate-500 cursor-not-allowed'
-                        }`}
-                      >
-                        <MessageSquare className="w-3.5 h-3.5" />
-                        <span>Relancer</span>
-                      </a>
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          onClick={e => {
+                            if (!isWhatsAppRelanceActive || !isLate) {
+                              e.preventDefault();
+                              alert(
+                                !isWhatsAppRelanceActive
+                                  ? "Règle Temporelle : La fenêtre de relance WhatsApp est active uniquement du 28 du mois en cours au 04 du mois suivant (jusqu'à 23h59 GMT)."
+                                  : 'Ce membre est à jour de ses cotisations.'
+                              );
+                            }
+                          }}
+                          className={`px-3 py-2 rounded-xl text-xs font-black flex items-center gap-1 transition-all ${
+                            isWhatsAppRelanceActive && isLate
+                              ? 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-md active:scale-95'
+                              : 'bg-slate-800 text-slate-500 cursor-not-allowed'
+                          }`}
+                        >
+                          <MessageSquare className="w-3.5 h-3.5" />
+                          <span>Relancer</span>
+                        </a>
+                      </div>
                     </div>
                   );
                 })}
@@ -3164,152 +3619,198 @@ export const AdminPortal: React.FC = () => {
               <span>Studio de Publication d'Annonces & Communiqués Officiels</span>
             </h2>
 
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {/* Formulaire BIC avec déclencheur unique anti-double envoi */}
+            <form
+              onSubmit={e => {
+                e.preventDefault();
+                if (!isSendingEmail) {
+                  handlePublishBIC();
+                }
+              }}
+              className="space-y-6"
+            >
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div>
+                  <label className="block text-xs font-bold text-slate-400 uppercase mb-2">
+                    Titre ou Motif de l'Alerte
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="Titre ou motif exact de l'alerte..."
+                    value={newsTitle}
+                    onChange={e => setNewsTitle(e.target.value)}
+                    disabled={isSendingEmail}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-2xl px-4 py-3 text-sm font-bold text-white focus:outline-none focus:border-amber-500 disabled:opacity-50"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-400 uppercase mb-2">Catégorie</label>
+                  <select
+                    value={newsCategory}
+                    onChange={e => setNewsCategory(e.target.value as any)}
+                    disabled={isSendingEmail}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-2xl px-4 py-3 text-sm font-bold text-white focus:outline-none focus:border-amber-500 disabled:opacity-50"
+                  >
+                    <option value="ANNONCE">ANNONCE OFFICIELLE</option>
+                    <option value="RELANCE">RELANCE COTISATION</option>
+                    <option value="ALERTE">ALERTE URGENTE</option>
+                    <option value="AUTRE">DIVERS</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-slate-400 uppercase mb-2">Ciblage Automatique</label>
+                  <select
+                    value={newsTarget}
+                    onChange={e => setNewsTarget(e.target.value as any)}
+                    disabled={isSendingEmail}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-2xl px-4 py-3 text-sm font-bold text-white focus:outline-none focus:border-amber-500 disabled:opacity-50"
+                  >
+                    <option value="TOUS">Tous les Membres</option>
+                    <option value="RETARD">Membres en RETARD</option>
+                    <option value="A_JOUR">Membres À JOUR</option>
+                    <option value="EN_AVANCE">Membres EN AVANCE</option>
+                  </select>
+                </div>
+              </div>
+
               <div>
-                <label className="block text-xs font-bold text-slate-400 uppercase mb-2">Titre du Communiqué</label>
-                <input
-                  type="text"
-                  placeholder="Ex: Convocation Assemblée Générale"
-                  value={newsTitle}
-                  onChange={e => setNewsTitle(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-2xl px-4 py-3 text-sm font-bold text-white focus:outline-none focus:border-amber-500"
+                <label className="block text-xs font-bold text-slate-400 uppercase mb-2">
+                  Contenu / Message Complet de l'Alerte
+                </label>
+                <textarea
+                  rows={4}
+                  placeholder="Contenu / message complet exact de l'alerte..."
+                  value={newsContent}
+                  onChange={e => setNewsContent(e.target.value)}
+                  disabled={isSendingEmail}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-2xl p-4 text-sm font-medium text-white focus:outline-none focus:border-amber-500 disabled:opacity-50"
                 />
               </div>
 
+              {/* 3 Dispatch Channel Options Selector */}
               <div>
-                <label className="block text-xs font-bold text-slate-400 uppercase mb-2">Catégorie</label>
-                <select
-                  value={newsCategory}
-                  onChange={e => setNewsCategory(e.target.value as any)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-2xl px-4 py-3 text-sm font-bold text-white focus:outline-none focus:border-amber-500"
-                >
-                  <option value="ANNONCE">ANNONCE OFFICIELLE</option>
-                  <option value="RELANCE">RELANCE COTISATION</option>
-                  <option value="ALERTE">ALERTE URGENTE</option>
-                  <option value="AUTRE">DIVERS</option>
-                </select>
-              </div>
+                <label className="block text-xs font-bold text-slate-400 uppercase mb-2">
+                  Canal de Diffusion (3 Options)
+                </label>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <button
+                    type="button"
+                    disabled={isSendingEmail}
+                    onClick={() => setComDispatchChannel('APP')}
+                    className={`py-3 px-4 rounded-2xl border text-xs font-black transition-all flex items-center justify-center gap-2 ${
+                      comDispatchChannel === 'APP'
+                        ? 'bg-[#E67E22] border-amber-500 text-white shadow-lg'
+                        : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-white'
+                    } disabled:opacity-50`}
+                  >
+                    <span>📲</span>
+                    <span>PUBLIER DANS L'APP</span>
+                  </button>
 
-              <div>
-                <label className="block text-xs font-bold text-slate-400 uppercase mb-2">Ciblage Automatique</label>
-                <select
-                  value={newsTarget}
-                  onChange={e => setNewsTarget(e.target.value as any)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-2xl px-4 py-3 text-sm font-bold text-white focus:outline-none focus:border-amber-500"
-                >
-                  <option value="TOUS">Tous les Membres</option>
-                  <option value="RETARD">Membres en RETARD</option>
-                  <option value="A_JOUR">Membres À JOUR</option>
-                  <option value="EN_AVANCE">Membres EN AVANCE</option>
-                </select>
-              </div>
-            </div>
+                  <button
+                    type="button"
+                    disabled={isSendingEmail}
+                    onClick={() => setComDispatchChannel('MAIL')}
+                    className={`py-3 px-4 rounded-2xl border text-xs font-black transition-all flex items-center justify-center gap-2 ${
+                      comDispatchChannel === 'MAIL'
+                        ? 'bg-[#E67E22] border-amber-500 text-white shadow-lg'
+                        : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-white'
+                    } disabled:opacity-50`}
+                  >
+                    <span>✉️</span>
+                    <span>PUBLIER VIA MAIL</span>
+                  </button>
 
-            <div>
-              <label className="block text-xs font-bold text-slate-400 uppercase mb-2">Message du Communiqué</label>
-              <textarea
-                rows={4}
-                placeholder="Rédigez le texte officiel du message..."
-                value={newsContent}
-                onChange={e => setNewsContent(e.target.value)}
-                className="w-full bg-slate-950 border border-slate-800 rounded-2xl p-4 text-sm font-medium text-white focus:outline-none focus:border-amber-500"
-              />
-            </div>
-
-            {/* 3 Dispatch Channel Options Selector */}
-            <div>
-              <label className="block text-xs font-bold text-slate-400 uppercase mb-2">
-                Canal de Diffusion (3 Options)
-              </label>
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                <button
-                  type="button"
-                  onClick={() => setComDispatchChannel('APP')}
-                  className={`py-3 px-4 rounded-2xl border text-xs font-black transition-all flex items-center justify-center gap-2 ${
-                    comDispatchChannel === 'APP'
-                      ? 'bg-[#E67E22] border-amber-500 text-white shadow-lg'
-                      : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-white'
-                  }`}
-                >
-                  <span>📲</span>
-                  <span>PUBLIER DANS L'APP</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setComDispatchChannel('MAIL')}
-                  className={`py-3 px-4 rounded-2xl border text-xs font-black transition-all flex items-center justify-center gap-2 ${
-                    comDispatchChannel === 'MAIL'
-                      ? 'bg-[#E67E22] border-amber-500 text-white shadow-lg'
-                      : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-white'
-                  }`}
-                >
-                  <span>✉️</span>
-                  <span>PUBLIER VIA MAIL</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setComDispatchChannel('GENERAL')}
-                  className={`py-3 px-4 rounded-2xl border text-xs font-black transition-all flex items-center justify-center gap-2 ${
-                    comDispatchChannel === 'GENERAL'
-                      ? 'bg-[#E67E22] border-amber-500 text-white shadow-lg'
-                      : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-white'
-                  }`}
-                >
-                  <span>🌐</span>
-                  <span>ENVOI GÉNÉRAL (APP + MAIL)</span>
-                </button>
-              </div>
-            </div>
-
-            {/* Red Error Alert in BIC Studio */}
-            {emailError && (
-              <div className="p-4 bg-rose-950/80 border-2 border-rose-500 rounded-2xl flex items-start justify-between gap-3 text-rose-200 animate-fadeIn">
-                <div className="flex items-start gap-3">
-                  <AlertTriangle className="w-5 h-5 text-rose-400 shrink-0 mt-0.5" />
-                  <div>
-                    <h4 className="font-black text-rose-100 text-sm">Échec de transmission des courriels (EmailJS)</h4>
-                    <p className="text-xs text-rose-300 mt-1 font-mono break-all">{emailError}</p>
-                    <p className="text-[11px] text-rose-400/90 mt-1">
-                      Service ID: <code className="text-amber-300">service_fmxtmw1</code> • Template: <code className="text-amber-300">template_z2nyaem</code>
-                    </p>
-                  </div>
+                  <button
+                    type="button"
+                    disabled={isSendingEmail}
+                    onClick={() => setComDispatchChannel('GENERAL')}
+                    className={`py-3 px-4 rounded-2xl border text-xs font-black transition-all flex items-center justify-center gap-2 ${
+                      comDispatchChannel === 'GENERAL'
+                        ? 'bg-[#E67E22] border-amber-500 text-white shadow-lg'
+                        : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-white'
+                    } disabled:opacity-50`}
+                  >
+                    <span>🌐</span>
+                    <span>ENVOI GÉNÉRAL (APP + MAIL)</span>
+                  </button>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => setEmailError(null)}
-                  className="text-rose-400 hover:text-white p-1 rounded-lg transition-colors cursor-pointer"
-                  title="Fermer l'alerte"
-                >
-                  <XCircle className="w-5 h-5" />
-                </button>
               </div>
-            )}
 
-            <button
-              disabled={isSendingEmail}
-              onClick={handlePublishBIC}
-              className="bg-[#E67E22] hover:bg-[#D35400] text-white font-black py-3.5 px-6 rounded-2xl shadow-lg text-sm flex items-center gap-2 transition-all active:scale-95 disabled:opacity-50 cursor-pointer"
-            >
-              {isSendingEmail ? (
-                <>
-                  <Loader2 className="w-4 h-4 animate-spin text-white" />
-                  <span>Envoi réel des emails en cours (EmailJS)...</span>
-                </>
-              ) : (
-                <>
-                  <Send className="w-4 h-4" />
-                  <span>
-                    {comDispatchChannel === 'MAIL'
-                      ? 'Envoyer le Communiqué par Mail (EmailJS)'
-                      : comDispatchChannel === 'GENERAL'
-                      ? "Diffuser dans l'App & Envoyer par Mail (EmailJS)"
-                      : "Diffuser l'Annonce dans le Fil (App)"}
-                  </span>
-                </>
+              {/* Contrôle réutilisable de ciblage des destinataires (Tous ou membre spécifique) */}
+              {(comDispatchChannel === 'MAIL' || comDispatchChannel === 'GENERAL') && (
+                <EmailRecipientSelector
+                  recipientMode={comRecipientMode}
+                  onRecipientModeChange={setComRecipientMode}
+                  selectedMemberId={comSelectedMemberId}
+                  onSelectedMemberIdChange={setComSelectedMemberId}
+                  members={members}
+                  allLabel="Tous les membres (Diffusion générale)"
+                  specificLabel="Sélectionner un membre spécifique"
+                  title="Ciblage des Destinataires pour l'Envoi par Mail (BIC)"
+                  subNotice={`ℹ️ L'envoi sera effectué de manière séquentielle vers les membres éligibles (cible : ${newsTarget}) avec une temporisation d'1 seconde entre chaque appel EmailJS anti-saturation.`}
+                />
               )}
-            </button>
+
+              {/* Red Error Alert in BIC Studio */}
+              {emailError && (
+                <div className="p-4 bg-rose-950/80 border-2 border-rose-500 rounded-2xl flex items-start justify-between gap-3 text-rose-200 animate-fadeIn">
+                  <div className="flex items-start gap-3">
+                    <AlertTriangle className="w-5 h-5 text-rose-400 shrink-0 mt-0.5" />
+                    <div>
+                      <h4 className="font-black text-rose-100 text-sm">Échec de transmission des courriels (EmailJS)</h4>
+                      <p className="text-xs text-rose-300 mt-1 font-mono break-all">{emailError}</p>
+                      <p className="text-[11px] text-rose-400/90 mt-1">
+                        Service ID: <code className="text-amber-300">service_fmxtmw1</code> • Template: <code className="text-amber-300">template_z2nyaem</code>
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setEmailError(null)}
+                    className="text-rose-400 hover:text-white p-1 rounded-lg transition-colors cursor-pointer"
+                    title="Fermer l'alerte"
+                  >
+                    <XCircle className="w-5 h-5" />
+                  </button>
+                </div>
+              )}
+
+              {/* DÉCLENCHEUR UNIQUE : BOUTON SUBMIT DU FORMULAIRE SANS ONCLICK REDONDANT */}
+              <button
+                type="submit"
+                disabled={isSendingEmail}
+                className="bg-[#E67E22] hover:bg-[#D35400] text-white font-black py-3.5 px-6 rounded-2xl shadow-lg text-sm flex items-center gap-2 transition-all active:scale-95 disabled:opacity-50 cursor-pointer disabled:cursor-not-allowed"
+              >
+                {isSendingEmail ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin text-white" />
+                    <span>
+                      {sendingProgress && sendingProgress.total === 1
+                        ? `Transmission EmailJS en cours vers ${sendingProgress.email || 'le destinataire'}...`
+                        : `Envoi séquentiel EmailJS ${sendingProgress ? `(${sendingProgress.current}/${sendingProgress.total})` : 'en cours'} (pause 1s anti-limite)...`}
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <Send className="w-4 h-4" />
+                    <span>
+                      {comDispatchChannel === 'MAIL'
+                        ? comRecipientMode === 'SPECIFIC'
+                          ? 'Envoyer le Courriel au Membre Sélectionné (EmailJS)'
+                          : 'Envoyer le Communiqué par Mail à Tous (EmailJS)'
+                        : comDispatchChannel === 'GENERAL'
+                        ? comRecipientMode === 'SPECIFIC'
+                          ? "Diffuser dans l'App & Envoyer par Mail au Membre (EmailJS)"
+                          : "Diffuser dans l'App & Envoyer par Mail à Tous (EmailJS)"
+                        : "Diffuser l'Annonce dans le Fil (App)"}
+                    </span>
+                  </>
+                )}
+              </button>
+            </form>
           </div>
 
           {/* Manage Published Announcements (Edit / Delete) */}
@@ -4202,6 +4703,21 @@ export const AdminPortal: React.FC = () => {
                   </button>
                 </div>
               </div>
+
+              {/* Contrôle de sélection du destinataire Cerveau (Tous ou membre spécifique) */}
+              {(cerveauDispatchChannel === 'MAIL' || cerveauDispatchChannel === 'GENERAL') && (
+                <EmailRecipientSelector
+                  recipientMode={cerveauRecipientMode}
+                  onRecipientModeChange={setCerveauRecipientMode}
+                  selectedMemberId={cerveauSelectedMemberId}
+                  onSelectedMemberIdChange={setCerveauSelectedMemberId}
+                  members={members}
+                  allLabel="Tous les membres (Diffusion générale)"
+                  specificLabel="Sélectionner un membre spécifique"
+                  title="Ciblage des Destinataires pour l'Alerte Cerveau par Courriel"
+                  subNotice="ℹ️ En mode 'Tous les membres', une pause de sécurité d'1 seconde est maintenue entre chaque transmission EmailJS."
+                />
+              )}
             </div>
 
             {/* Red Error Alert in Cerveau Cockpit */}
@@ -4236,7 +4752,11 @@ export const AdminPortal: React.FC = () => {
               {isSendingEmail ? (
                 <>
                   <Loader2 className="w-4 h-4 animate-spin text-white" />
-                  <span>Envoi réel des emails en cours (EmailJS)...</span>
+                  <span>
+                    {sendingProgress && sendingProgress.total === 1
+                      ? `Transmission EmailJS vers ${sendingProgress.email || 'le destinataire'}...`
+                      : `Envoi séquentiel EmailJS ${sendingProgress ? `(${sendingProgress.current}/${sendingProgress.total})` : 'en cours'} (pause 1s anti-limite)...`}
+                  </span>
                 </>
               ) : (
                 <>
@@ -4737,6 +5257,19 @@ export const AdminPortal: React.FC = () => {
           <RbacWarningBanner
             roleName="DÉPARTEMENT SPIRITUALITÉ"
             allowedActionsText="Prière ROUAMA, liturgie AELF, événements religieux et verset du jour."
+          />
+
+          {/* Contrôle de ciblage des destinataires pour diffusion par courriel */}
+          <EmailRecipientSelector
+            recipientMode={spiritualRecipientMode}
+            onRecipientModeChange={setSpiritualRecipientMode}
+            selectedMemberId={spiritualSelectedMemberId}
+            onSelectedMemberIdChange={setSpiritualSelectedMemberId}
+            members={members}
+            allLabel="Tous les membres (Diffusion générale)"
+            specificLabel="Sélectionner un membre spécifique"
+            title="Ciblage des Destinataires pour la Diffusion par Courriel (Spiritualité)"
+            subNotice="ℹ️ S'applique aux diffusions par courriel de la Prière ROUAMA et de la Liturgie AELF. En mode 'Tous les membres', une pause d'1 seconde est maintenue entre chaque appel EmailJS."
           />
 
           {/* SECTION 1: PRIÈRE ROUAMA & PRIÈRES AELF */}
@@ -5376,6 +5909,15 @@ export const AdminPortal: React.FC = () => {
                 <div className="flex items-center gap-2">
                   <button
                     type="button"
+                    onClick={() => handleOpenReceiptEmailModal(previewDeclaration)}
+                    className="bg-amber-600/90 hover:bg-amber-600 text-white font-black px-4 py-2.5 rounded-xl text-xs flex items-center gap-1.5 shadow transition-all active:scale-95 cursor-pointer"
+                    title="Envoyer une attestation ou notification de versement par courriel (EmailJS)"
+                  >
+                    <Mail className="w-4 h-4" />
+                    <span>Notifier par Email</span>
+                  </button>
+                  <button
+                    type="button"
                     onClick={() => {
                       setPreviewDeclaration(null);
                       setPreviewReceiptImgError(false);
@@ -5528,6 +6070,107 @@ export const AdminPortal: React.FC = () => {
         </div>
       )}
 
+      {/* ========================================================= */}
+      {/* MODAL ENVOI NOTIFICATION DE REÇU PAR COURRIEL (TRÉSORERIE) */}
+      {/* ========================================================= */}
+      {receiptEmailModalDecl && (
+        <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-center justify-center p-4 animate-fadeIn">
+          <div className="bg-slate-900 border border-amber-500/40 rounded-3xl p-6 sm:p-8 max-w-xl w-full space-y-5 shadow-2xl relative max-h-[90vh] overflow-y-auto">
+            <button
+              type="button"
+              onClick={() => setReceiptEmailModalDecl(null)}
+              className="absolute top-4 right-4 text-slate-400 hover:text-white transition-colors cursor-pointer"
+            >
+              <XCircle className="w-6 h-6" />
+            </button>
+
+            <div className="flex items-center gap-3">
+              <div className="w-12 h-12 rounded-2xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-400 text-xl shrink-0">
+                <Mail className="w-6 h-6" />
+              </div>
+              <div>
+                <h3 className="text-lg font-black text-white">Notification de Reçu / Attestation par Courriel</h3>
+                <p className="text-xs text-slate-400">
+                  {receiptEmailModalDecl.memberNickname} •{' '}
+                  <span className="text-emerald-400 font-bold">
+                    {receiptEmailModalDecl.amount?.toLocaleString('fr-FR')} F CFA ({FUND_LABELS[receiptEmailModalDecl.fund] || receiptEmailModalDecl.fund})
+                  </span>
+                </p>
+              </div>
+            </div>
+
+            <div className="space-y-4">
+              <div>
+                <label className="block text-xs font-bold text-slate-400 uppercase mb-1">
+                  Objet du Courriel
+                </label>
+                <input
+                  type="text"
+                  value={receiptEmailSubject}
+                  onChange={e => setReceiptEmailSubject(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 focus:border-amber-500 rounded-xl px-3.5 py-2.5 text-xs text-white placeholder-slate-500 focus:outline-none font-bold"
+                  placeholder="Objet du message..."
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-400 uppercase mb-1">
+                  Message / Attestation de Versement
+                </label>
+                <textarea
+                  rows={5}
+                  value={receiptEmailContent}
+                  onChange={e => setReceiptEmailContent(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 focus:border-amber-500 rounded-xl p-3.5 text-xs text-white placeholder-slate-500 focus:outline-none font-medium leading-relaxed"
+                  placeholder="Contenu du message..."
+                />
+              </div>
+
+              {/* Contrôle de ciblage réutilisable */}
+              <EmailRecipientSelector
+                recipientMode={receiptEmailRecipientMode}
+                onRecipientModeChange={setReceiptEmailRecipientMode}
+                selectedMemberId={receiptEmailSelectedMemberId}
+                onSelectedMemberIdChange={setReceiptEmailSelectedMemberId}
+                members={members}
+                allLabel="Tous les membres (Diffusion générale)"
+                specificLabel="Sélectionner un membre spécifique"
+                title="Ciblage du Destinataire pour l'Attestation de Reçu"
+                subNotice="ℹ️ Par défaut, le membre à l'origine du versement est présélectionné. En mode 'Tous les membres', une temporisation d'1 seconde est maintenue entre chaque transmission EmailJS."
+              />
+            </div>
+
+            <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-800">
+              <button
+                type="button"
+                onClick={() => setReceiptEmailModalDecl(null)}
+                className="bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold px-4 py-2.5 rounded-xl text-xs transition-colors cursor-pointer"
+              >
+                Annuler
+              </button>
+              <button
+                type="button"
+                disabled={isSendingEmail}
+                onClick={handleSendReceiptEmail}
+                className="bg-amber-600 hover:bg-amber-500 text-white font-black px-5 py-2.5 rounded-xl text-xs flex items-center gap-2 shadow-lg transition-all active:scale-95 disabled:opacity-50 cursor-pointer"
+              >
+                {isSendingEmail ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin text-white" />
+                    <span>Transmission EmailJS en cours...</span>
+                  </>
+                ) : (
+                  <>
+                    <Send className="w-4 h-4" />
+                    <span>Transmettre par Courriel</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* EMAIL BROADCAST CONFIRMATION MODAL */}
       {emailModalData && (
         <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 animate-fadeIn">
@@ -5559,7 +6202,7 @@ export const AdminPortal: React.FC = () => {
             <div className="space-y-3 bg-slate-950 p-4 rounded-2xl border border-slate-800 text-xs text-slate-300">
               <p><strong className="text-white">Émetteur :</strong> {emailModalData.authorRole}</p>
               <p><strong className="text-white">Objet :</strong> <span className="text-amber-300 font-bold">{emailModalData.title}</span></p>
-              <p><strong className="text-white">Adresses Email Destinataires ({emailModalData.recipients.length} membres) :</strong></p>
+              <p><strong className="text-white">Adresses Email Destinataires ({emailModalData.recipients.length === 1 ? '1 destinataire unique' : `${emailModalData.recipients.length} membres`}) :</strong></p>
               <div className="max-h-28 overflow-y-auto bg-slate-900 p-2.5 rounded-xl border border-slate-800 font-mono text-[11px] text-emerald-300 space-y-1">
                 {emailModalData.recipients.map((email, idx) => (
                   <div key={idx} className="flex items-center gap-1.5">
@@ -5573,7 +6216,9 @@ export const AdminPortal: React.FC = () => {
             <div className="p-3 bg-emerald-950/40 border border-emerald-800/60 rounded-2xl flex items-center gap-2.5">
               <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />
               <p className="text-xs text-emerald-200 font-medium leading-relaxed">
-                Le courriel a été transmis directement et avec succès via EmailJS API aux {emailModalData.recipients.length} membres (Code HTTP 200 OK validé).
+                {emailModalData.recipients.length === 1
+                  ? `1 mail transmis avec succès via EmailJS API au destinataire (${emailModalData.recipients[0]}) (Code HTTP 200 OK validé).`
+                  : `${emailModalData.recipients.length} mails transmis avec succès via EmailJS API (Code HTTP 200 OK validé avec temporisation anti-limite d'1 seconde).`}
               </p>
             </div>
 
@@ -5594,7 +6239,16 @@ export const AdminPortal: React.FC = () => {
       {isSendingEmail && (
         <div className="fixed top-6 right-6 z-50 bg-slate-900/95 border border-amber-500/60 text-amber-300 px-5 py-4 rounded-2xl shadow-2xl flex items-center gap-3 animate-bounce">
           <Loader2 className="w-5 h-5 animate-spin text-amber-400 shrink-0" />
-          <span className="text-xs font-bold">Envoi réel des emails via EmailJS en cours...</span>
+          <div className="text-xs font-bold space-y-0.5">
+            <div>
+              Envoi séquentiel EmailJS {sendingProgress ? `(${sendingProgress.current}/${sendingProgress.total})` : 'en cours'}...
+            </div>
+            {sendingProgress?.email && (
+              <div className="text-[10px] text-amber-400/80 font-mono font-normal">
+                Vers: {sendingProgress.email} (pause 1s anti-limite)
+              </div>
+            )}
+          </div>
         </div>
       )}
 

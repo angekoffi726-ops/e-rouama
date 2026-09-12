@@ -1261,11 +1261,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       ? titleOrMember
       : `🚨 ALERTE CERVEAU : ${titleOrMember}`;
 
+    // STRICT: Ne rajoute aucune mention automatique si un contenu est déjà fourni
     const alertContent = isFormattedMonth
       ? `${titleOrMember} vient de s'acquitter de sa cotisation pour le mois de ${formattedDate}. Bravo pour l'engagement fraternel !`
       : rawContent
-      ? `${titleOrMember} a effectué un versement pour ${rawContent}. Validé par le Trésorier.`
-      : `Versement validé par le Trésorier pour ${titleOrMember}.`;
+      ? rawContent
+      : `Information transmise pour ${titleOrMember}.`;
 
     const alertNews: NewsItem = {
       id: 'NEWS-ALERT-' + Date.now() + '-' + Math.floor(Math.random() * 1000),
@@ -1281,14 +1282,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     setDoc(doc(db, 'news', alertNews.id), sanitizeFirestore(alertNews)).catch(console.warn);
     setNewsItems(prev => [alertNews, ...prev]);
-
-    if (dispatchChannel === 'MAIL' || dispatchChannel === 'GENERAL') {
-      try {
-        sendEmailBroadcastAsync(alertTitle, alertContent, members, 'CERVEAU', dispatchChannel);
-      } catch (e) {
-        console.warn('sendEmailBroadcastAsync non abouti:', e);
-      }
-    }
   };
 
   // Décaissements (Sauvegarde addDoc avec identifiant unique Firestore)
@@ -1373,10 +1366,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
     setDoc(doc(db, 'news', item.id), sanitizeFirestore(item)).catch(console.warn);
     setNewsItems(prev => [item, ...prev]);
-
-    if (dispatchChannel === 'MAIL' || dispatchChannel === 'GENERAL') {
-      sendEmailBroadcastAsync(title, content, members, authorRole, dispatchChannel);
-    }
   };
 
   const markNewsAsRead = (newsId: string) => {

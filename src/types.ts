@@ -29,6 +29,7 @@ export interface ReligiousEvent {
 
 export interface RouamaMember {
   id: string;
+  name?: string;
   firstName: string;
   fullRosterName: string;
   nickname: string;
