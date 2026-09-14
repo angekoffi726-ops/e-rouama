@@ -58,6 +58,13 @@ export const Header: React.FC<{ onOpenAdminModal?: () => void }> = ({ onOpenAdmi
     ? currentUser?.member?.fullRosterName || ''
     : 'Administrateur Système';
 
+  const memberPhoto = isMember
+    ? (currentUser?.member?.photoUrl || currentUser?.member?.avatar ||
+       (currentUser?.member?.nickname.toUpperCase() === 'CAPELO' || currentUser?.member?.firstName.toUpperCase() === 'WILFRIED'
+         ? '/PP-CAPELO.jpeg'
+         : undefined))
+    : undefined;
+
   return (
     <header className="sticky top-0 z-40 bg-forest-moss text-white shadow-xl rounded-b-[2rem] border-b border-emerald-800/50 backdrop-blur-md">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3.5">
@@ -98,8 +105,16 @@ export const Header: React.FC<{ onOpenAdminModal?: () => void }> = ({ onOpenAdmi
           <div className="flex items-center gap-2 sm:gap-3 w-full md:w-auto justify-between md:justify-end border-t md:border-t-0 pt-2.5 md:pt-0 border-emerald-800/60">
             {/* Prominent Nickname Display */}
             <div className="bg-emerald-900/90 border border-amber-300/40 rounded-2xl px-3.5 py-1.5 flex items-center gap-2 shadow-inner">
-              <div className="w-8 h-8 rounded-xl bg-amber-400 text-forest-moss font-bold flex items-center justify-center text-sm shadow">
-                {isMember ? <User className="w-4 h-4" /> : <Shield className="w-4 h-4" />}
+              <div className="w-8 h-8 rounded-xl overflow-hidden bg-amber-400 text-forest-moss font-bold flex items-center justify-center text-sm shadow shrink-0 border border-amber-300/60">
+                {isMember ? (
+                  memberPhoto ? (
+                    <img src={memberPhoto} alt={nicknameDisplay} className="w-full h-full object-cover" />
+                  ) : (
+                    <User className="w-4 h-4" />
+                  )
+                ) : (
+                  <Shield className="w-4 h-4" />
+                )}
               </div>
               <div>
                 <p className="text-[10px] text-emerald-200 uppercase font-semibold tracking-wider">

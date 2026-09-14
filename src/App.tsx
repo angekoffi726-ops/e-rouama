@@ -161,7 +161,7 @@ function MainLayout() {
   // MEMBER VIEW (Logged in as MEMBER)
   const memberNickname = currentUser?.member?.nickname || 'MEMBRE';
   const memberFirstName = currentUser?.member?.firstName || '';
-  const userAvatar = currentUser?.member?.avatar ||
+  const userAvatar = currentUser?.member?.photoUrl || currentUser?.member?.avatar ||
     (memberNickname.toUpperCase() === 'CAPELO' || memberFirstName.toUpperCase() === 'WILFRIED'
       ? '/PP-CAPELO.jpeg'
       : undefined);

@@ -36,6 +36,7 @@ import {
   deleteDoc,
   onSnapshot,
   addDoc,
+  getDoc,
 } from 'firebase/firestore';
 import { db, testFirestoreConnection, sanitizeFirestore } from '../firebase';
 import { compressReceiptImage } from '../utils/imageCompressor';
@@ -179,7 +180,7 @@ interface AppContextType {
   deleteNewsItem: (newsId: string) => void;
   assignMemberRole: (memberId: string, role?: AdminRole) => void;
   resetMemberPin: (memberId: string) => void;
-  updateMemberAvatar: (memberId: string, avatarDataUrl: string) => void;
+  updateMemberAvatar: (memberId: string, avatarDataUrl: string) => Promise<boolean>;
   resetAllData: () => void;
 }
 
@@ -389,6 +390,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const firestoreDocsMap = new Map<string, RouamaMember>();
         snapshot.docs.forEach((docSnap) => {
           const data = docSnap.data() as any;
+          const photo = data.photoUrl || data.avatar || undefined;
           firestoreDocsMap.set(docSnap.id, {
             id: docSnap.id,
             firstName: data.firstName || '',
@@ -397,7 +399,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             phone: data.phone || '',
             email: data.email || '',
             assignedRole: data.assignedRole,
-            avatar: data.avatar,
+            avatar: photo,
+            photoUrl: photo,
             isRegistered: Boolean(data.isRegistered),
             pin: data.pin || undefined,
             ...data,
@@ -429,9 +432,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             if (official.email && existing.email !== official.email) {
               setDoc(doc(db, 'members', existing.id || official.id), { email: official.email }, { merge: true }).catch(console.warn);
             }
+            const photo = existing.photoUrl || existing.avatar || official.photoUrl || official.avatar;
             reconciledList.push({
               ...official,
               ...existing,
+              avatar: photo,
+              photoUrl: photo,
               email: effectiveEmail,
               id: existing.id || official.id,
               isRegistered: Boolean(existing.isRegistered),
@@ -461,7 +467,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
         setMembers(reconciledList);
 
-        // Mettre à jour l'utilisateur actif si c'est un membre
+        // Mettre à jour l'utilisateur actif si c'est un membre et rafraîchir sa photo de profil
         setCurrentUser((prev) => {
           if (prev && prev.type === 'MEMBER' && prev.member) {
             const fresh = reconciledList.find(m =>
@@ -470,7 +476,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               normalizeRosterString(m.nickname) === normalizeRosterString(prev.member!.nickname)
             );
             if (fresh) {
-              return { ...prev, member: fresh };
+              const photo = fresh.photoUrl || fresh.avatar || prev.member.photoUrl || prev.member.avatar;
+              const updatedMember = {
+                ...prev.member,
+                ...fresh,
+                avatar: photo,
+                photoUrl: photo,
+              };
+              try {
+                localStorage.setItem(EROUAMA_ACTIVE_SESSION_KEY, JSON.stringify({ ...prev, member: updatedMember }));
+              } catch (e) {}
+              return { ...prev, member: updatedMember };
             }
           }
           return prev;
@@ -699,6 +715,49 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       unsubscribes.forEach(u => u());
     };
   }, []);
+
+  // CHARGEMENT AUTOMATIQUE AU RECHARGEMENT / RECONNEXION DU MEMBRE DEPUIS FIRESTORE
+  useEffect(() => {
+    if (currentUser?.type === 'MEMBER' && currentUser.member?.id) {
+      const currentUserId = currentUser.member.id;
+      const memberRef = doc(db, 'members', currentUserId);
+      getDoc(memberRef)
+        .then((docSnap) => {
+          if (docSnap.exists()) {
+            const data = docSnap.data();
+            const photo = data.photoUrl || data.avatar;
+            if (photo) {
+              setCurrentUser((prev) => {
+                if (prev && prev.type === 'MEMBER' && prev.member && prev.member.id === currentUserId) {
+                  if (prev.member.photoUrl === photo && prev.member.avatar === photo) {
+                    return prev;
+                  }
+                  const updatedMember = {
+                    ...prev.member,
+                    photoUrl: photo,
+                    avatar: photo,
+                  };
+                  try {
+                    localStorage.setItem(
+                      EROUAMA_ACTIVE_SESSION_KEY,
+                      JSON.stringify({ ...prev, member: updatedMember })
+                    );
+                  } catch (e) {}
+                  return {
+                    ...prev,
+                    member: updatedMember,
+                  };
+                }
+                return prev;
+              });
+            }
+          }
+        })
+        .catch((err) => {
+          console.warn('Erreur chargement photo profil membre depuis Firestore:', err);
+        });
+    }
+  }, [currentUser?.type, currentUser?.member?.id]);
 
   // Protection des données réelles : neutralisation des purges destructrices automatiques
   const resetAllData = async () => {
@@ -1819,24 +1878,59 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
-  const updateMemberAvatar = (memberId: string, avatarDataUrl: string) => {
-    setDoc(doc(db, 'members', memberId), { avatar: avatarDataUrl }, { merge: true }).catch(console.warn);
-    setMembers(prev =>
-      prev.map(m => (m.id === memberId ? { ...m, avatar: avatarDataUrl } : m))
-    );
+  const updateMemberAvatar = async (memberId: string, avatarDataUrl: string): Promise<boolean> => {
+    try {
+      // 1. SAUVEGARDE DE LA PHOTO DANS FIRESTORE
+      // Écrit photoUrl et avatar pour assurer la compatibilité ascendante
+      const memberRef = doc(db, 'members', memberId);
+      await setDoc(
+        memberRef,
+        {
+          photoUrl: avatarDataUrl,
+          avatar: avatarDataUrl,
+          updatedAt: new Date().toISOString(),
+        },
+        { merge: true }
+      );
 
-    setCurrentUser(prev => {
-      if (prev && prev.type === 'MEMBER' && prev.member && prev.member.id === memberId) {
-        return {
-          ...prev,
-          member: {
+      // 2. Mise à jour de la liste locale des membres
+      setMembers(prev =>
+        prev.map(m =>
+          m.id === memberId
+            ? { ...m, avatar: avatarDataUrl, photoUrl: avatarDataUrl }
+            : m
+        )
+      );
+
+      // 3. Mise à jour du state local de l'utilisateur connecté et persistance en session
+      setCurrentUser(prev => {
+        if (prev && prev.type === 'MEMBER' && prev.member && prev.member.id === memberId) {
+          const updatedMember = {
             ...prev.member,
             avatar: avatarDataUrl,
-          },
-        };
-      }
-      return prev;
-    });
+            photoUrl: avatarDataUrl,
+          };
+          try {
+            localStorage.setItem(
+              EROUAMA_ACTIVE_SESSION_KEY,
+              JSON.stringify({ ...prev, member: updatedMember })
+            );
+          } catch (e) {
+            console.warn('Erreur persistance session localStorage:', e);
+          }
+          return {
+            ...prev,
+            member: updatedMember,
+          };
+        }
+        return prev;
+      });
+
+      return true;
+    } catch (err) {
+      console.error('Erreur updateMemberAvatar dans Firestore:', err);
+      return false;
+    }
   };
 
   const assignMemberRole = (memberId: string, role?: AdminRole) => {

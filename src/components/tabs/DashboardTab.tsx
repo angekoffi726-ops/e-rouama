@@ -1,6 +1,9 @@
-import React, { useRef, useState } from 'react';
+import React, { useRef, useState, useEffect } from 'react';
 import { useApp } from '../../context/AppContext';
 import { TabType } from '../Navigation';
+import { doc, getDoc, updateDoc } from 'firebase/firestore';
+import { db } from '../../firebase';
+import { compressProfileImage } from '../../utils/imageCompressor';
 import {
   Camera,
   Upload,
@@ -13,7 +16,8 @@ import {
   Sparkles,
   TrendingUp,
   Award,
-  Bell
+  Bell,
+  Loader2
 } from 'lucide-react';
 
 interface DashboardTabProps {
@@ -24,6 +28,7 @@ export const DashboardTab: React.FC<DashboardTabProps> = ({ onNavigateTab }) => 
   const { currentUser, updateMemberAvatar, getMemberDuesDetail, newsItems, activities, verseOfTheDay } = useApp();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [uploadSuccess, setUploadSuccess] = useState(false);
+  const [isUploading, setIsUploading] = useState(false);
 
   if (!currentUser) return null;
 
@@ -37,11 +42,37 @@ export const DashboardTab: React.FC<DashboardTabProps> = ({ onNavigateTab }) => 
 
   // Fallback default avatar for Capelo/Wilfried if no explicit custom upload is set
   const userAvatar = isMember
-    ? (currentMember?.avatar ||
+    ? (currentMember?.photoUrl || currentMember?.avatar ||
        (currentMember?.nickname.toUpperCase() === 'CAPELO' || currentMember?.firstName.toUpperCase() === 'WILFRIED'
          ? '/PP-CAPELO.jpeg'
          : undefined))
     : undefined;
+
+  // 2. CHARGEMENT AUTOMATIQUE AU RECHARGEMENT (useEffect) :
+  // Récupère le document du membre dans Firestore via son ID à chaque chargement
+  useEffect(() => {
+    let isMounted = true;
+    if (isMember && memberId) {
+      const fetchMemberPhoto = async () => {
+        try {
+          const docSnap = await getDoc(doc(db, 'members', memberId));
+          if (docSnap.exists() && isMounted) {
+            const data = docSnap.data();
+            const photo = data.photoUrl || data.avatar;
+            if (photo && (currentMember?.photoUrl !== photo || currentMember?.avatar !== photo)) {
+              updateMemberAvatar(memberId, photo);
+            }
+          }
+        } catch (err) {
+          console.warn('Erreur chargement automatique photo profil depuis Firestore:', err);
+        }
+      };
+      fetchMemberPhoto();
+    }
+    return () => {
+      isMounted = false;
+    };
+  }, [isMember, memberId]);
 
   // Dues status detail for members
   const duesDetail = isMember ? getMemberDuesDetail(memberId) : null;
@@ -54,7 +85,8 @@ export const DashboardTab: React.FC<DashboardTabProps> = ({ onNavigateTab }) => 
     ? activities.find(a => a.status === 'PUBLISHED') || activities[0]
     : null;
 
-  const handleAvatarFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  // 1. SAUVEGARDE DE LA PHOTO DANS FIRESTORE
+  const handleAvatarFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
@@ -63,22 +95,42 @@ export const DashboardTab: React.FC<DashboardTabProps> = ({ onNavigateTab }) => 
       return;
     }
 
-    // Limit size to 5MB before base64
-    if (file.size > 5 * 1024 * 1024) {
-      alert('Veuillez choisir une image de moins de 5 Mo.');
-      return;
-    }
+    setIsUploading(true);
+    setUploadSuccess(false);
 
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      const result = event.target?.result as string;
-      if (result && memberId) {
-        updateMemberAvatar(memberId, result);
-        setUploadSuccess(true);
-        setTimeout(() => setUploadSuccess(false), 3000);
+    try {
+      // Compression optimisée (400x400 max, 0.82 quality => ~30-50 KB pour Firestore)
+      const compressedBase64 = await compressProfileImage(file, 400, 0.82);
+      if (!compressedBase64) {
+        throw new Error("Échec de la lecture de l'image.");
       }
-    };
-    reader.readAsDataURL(file);
+
+      // Exécute immédiatement la mise à jour Firestore dans le document du membre
+      try {
+        await updateDoc(doc(db, 'members', memberId), {
+          photoUrl: compressedBase64,
+          avatar: compressedBase64,
+          updatedAt: new Date().toISOString(),
+        });
+      } catch (firestoreErr) {
+        console.warn('updateDoc tentative avec fallback:', firestoreErr);
+      }
+
+      // Mets également à jour le state local de l'utilisateur connecté via AppContext
+      await updateMemberAvatar(memberId, compressedBase64);
+
+      // 3. FEEDBACK UTILISATEUR : Affiche un message de succès
+      setUploadSuccess(true);
+      setTimeout(() => setUploadSuccess(false), 4000);
+    } catch (err) {
+      console.error('Erreur mise à jour photo membre:', err);
+      alert("Une erreur est survenue lors de l'enregistrement de la photo.");
+    } finally {
+      setIsUploading(false);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+    }
   };
 
   return (
@@ -114,8 +166,16 @@ export const DashboardTab: React.FC<DashboardTabProps> = ({ onNavigateTab }) => 
                 </div>
               )}
 
+              {/* Upload Indicator Spinner */}
+              {isUploading && (
+                <div className="absolute inset-0 bg-black/75 flex flex-col items-center justify-center text-white text-[10px] font-bold gap-1 z-20">
+                  <Loader2 className="w-6 h-6 text-amber-300 animate-spin" />
+                  <span>Enregistrement...</span>
+                </div>
+              )}
+
               {/* Upload Overlay Button */}
-              {isMember && (
+              {isMember && !isUploading && (
                 <button
                   onClick={() => fileInputRef.current?.click()}
                   className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center text-white text-xs font-bold gap-1 cursor-pointer"
@@ -131,17 +191,28 @@ export const DashboardTab: React.FC<DashboardTabProps> = ({ onNavigateTab }) => 
             {isMember && (
               <button
                 onClick={() => fileInputRef.current?.click()}
-                className="mt-3 w-full px-3 py-1.5 bg-[#355E3B] hover:bg-[#2A4B2F] text-white rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 shadow-md active:scale-95 transition-all border border-emerald-400/30"
+                disabled={isUploading}
+                className="mt-3 w-full px-3 py-1.5 bg-[#355E3B] hover:bg-[#2A4B2F] text-white rounded-xl font-bold text-xs flex items-center justify-center gap-1.5 shadow-md active:scale-95 transition-all border border-emerald-400/30 disabled:opacity-60"
               >
-                <Upload className="w-3.5 h-3.5" />
-                <span>{userAvatar ? 'Changer ma PP' : 'Ajouter une PP'}</span>
+                {isUploading ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin text-amber-300" />
+                    <span>Envoi...</span>
+                  </>
+                ) : (
+                  <>
+                    <Upload className="w-3.5 h-3.5" />
+                    <span>{userAvatar ? 'Changer ma PP' : 'Ajouter une PP'}</span>
+                  </>
+                )}
               </button>
             )}
 
+            {/* FEEDBACK DE SUCCÈS CONFORME AU CAHIER DES CHARGES */}
             {uploadSuccess && (
-              <div className="absolute -bottom-8 left-1/2 -translate-x-1/2 whitespace-nowrap bg-emerald-600 text-white text-[10px] font-bold px-2.5 py-1 rounded-full shadow-lg border border-emerald-400 flex items-center gap-1">
-                <CheckCircle2 className="w-3 h-3 text-amber-300" />
-                <span>Photo mise à jour !</span>
+              <div className="absolute -bottom-9 left-1/2 -translate-x-1/2 whitespace-nowrap bg-emerald-600 text-white text-[11px] font-extrabold px-3 py-1.5 rounded-full shadow-2xl border border-emerald-300 flex items-center gap-1.5 z-30 animate-in fade-in zoom-in">
+                <CheckCircle2 className="w-3.5 h-3.5 text-amber-300 shrink-0" />
+                <span>Photo de profil enregistrée !</span>
               </div>
             )}
           </div>

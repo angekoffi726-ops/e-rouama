@@ -130,9 +130,6 @@ export const ChangePasswordModal: React.FC<ChangePasswordModalProps> = ({
 
         {/* Corps du Formulaire */}
         <form onSubmit={handleSubmit} className="p-6 space-y-4">
-          <p className="text-xs text-slate-300 font-normal leading-relaxed">
-            Votre nouveau mot de passe sera synchronisé instantanément avec <strong className="text-amber-400 font-semibold">Firestore</strong> et consultable en temps réel par le <strong className="text-emerald-400 font-semibold">CERVEAU</strong>.
-          </p>
 
           {/* Message d'erreur clair en rouge */}
           {errorMessage && (

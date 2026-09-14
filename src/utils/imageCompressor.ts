@@ -106,3 +106,87 @@ export async function compressReceiptImage(
     }
   });
 }
+
+/**
+ * Utilitaire de compression optimisé pour les photos de profil membre
+ * Dimensions : max 400x400px (format carré ou centré)
+ * Qualité : 0.82
+ * Poids résultant : ~30 - 60 KB (garantit 100% de succès dans Firestore sans dépasser la limite de 1MB)
+ */
+export async function compressProfileImage(
+  input: File | Blob | string,
+  maxDimension = 400,
+  quality = 0.82
+): Promise<string> {
+  return new Promise((resolve) => {
+    try {
+      if (!input) {
+        resolve('');
+        return;
+      }
+
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+
+      img.onload = () => {
+        try {
+          let { width, height } = img;
+
+          if (width > maxDimension || height > maxDimension) {
+            if (width >= height) {
+              height = Math.round((height * maxDimension) / width);
+              width = maxDimension;
+            } else {
+              width = Math.round((width * maxDimension) / height);
+              height = maxDimension;
+            }
+          }
+
+          const canvas = document.createElement('canvas');
+          canvas.width = Math.max(1, width);
+          canvas.height = Math.max(1, height);
+
+          const ctx = canvas.getContext('2d');
+          if (!ctx) {
+            resolve(typeof input === 'string' ? input : '');
+            return;
+          }
+
+          ctx.fillStyle = '#FFFFFF';
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+          const compressed = canvas.toDataURL('image/jpeg', quality);
+          resolve(compressed);
+        } catch (err) {
+          console.warn('Erreur compression photo profil:', err);
+          resolve(typeof input === 'string' ? input : '');
+        }
+      };
+
+      img.onerror = (err) => {
+        console.warn('Erreur chargement photo profil:', err);
+        resolve(typeof input === 'string' ? input : '');
+      };
+
+      if (typeof input === 'string') {
+        if (input.startsWith('data:') || input.startsWith('http') || input.startsWith('blob')) {
+          img.src = input;
+        } else {
+          img.src = `data:image/jpeg;base64,${input}`;
+        }
+      } else {
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          img.src = (e.target?.result as string) || '';
+        };
+        reader.onerror = () => resolve('');
+        reader.readAsDataURL(input);
+      }
+    } catch (err) {
+      console.warn('Erreur globale compressProfileImage:', err);
+      resolve(typeof input === 'string' ? input : '');
+    }
+  });
+}
+

@@ -38,6 +38,7 @@ export interface RouamaMember {
   pin?: string;
   isRegistered: boolean;
   avatar?: string;
+  photoUrl?: string;
   assignedRole?: AdminRole;
 }
 
