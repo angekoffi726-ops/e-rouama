@@ -80,7 +80,7 @@ export function getDailyVerseForDate(date: Date = new Date()): DailyVerse {
  */
 export const PRAYER_ROUAMA = {
   title: "Prière ROUAMA (Saint Augustin)",
-  subtitle: "Prière officielle permanente de la fraternité E-ROUAMA",
+  subtitle: "Prière officielle permanente des ROUAMA",
   saint: "Saint Augustin",
   paragraphs: [
     "« Seigneur notre Dieu, notre unique espérance, exauce-nous de peur que par découragement nous ne voulions plus te chercher. Tu as fait que nous te trouvions et tu nous as donné l'espoir de te trouver de plus en plus. »",

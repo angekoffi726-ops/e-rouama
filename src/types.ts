@@ -1,6 +1,6 @@
 export type AdminRole = 'TRESORIER' | 'CERVEAU' | 'PAYOR' | 'SECRETARIAT' | 'COM' | 'ORGANISATION' | 'PROJET' | 'SPIRITUALITE';
 
-export type TabType = 'DASHBOARD' | 'FINANCES' | 'NOUVELLES' | 'ACTIVITES' | 'PROJETS' | 'ARCHIVES';
+export type TabType = 'DASHBOARD' | 'PRIERE_ROUAMA' | 'FINANCES' | 'NOUVELLES' | 'ACTIVITES' | 'PROJETS' | 'ARCHIVES';
 
 export interface VerseOfTheDay {
   verse: string;

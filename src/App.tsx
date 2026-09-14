@@ -2,6 +2,7 @@ import React, { Component, useState } from 'react';
 import { AppProvider, useApp } from './context/AppContext';
 import { AuthScreen } from './components/AuthScreen';
 import { DashboardTab } from './components/tabs/DashboardTab';
+import { PriereRouamaTab } from './components/tabs/PriereRouamaTab';
 import { FinancesTab } from './components/tabs/FinancesTab';
 import { NouvellesTab } from './components/tabs/NouvellesTab';
 import { ActivitesTab } from './components/tabs/ActivitesTab';
@@ -10,7 +11,7 @@ import { ArchivesTab } from './components/tabs/ArchivesTab';
 import { AdminPortal } from './components/admin/AdminPortal';
 import { TabType } from './components/Navigation';
 import { AdminRole } from './types';
-import { LayoutDashboard, CreditCard, Newspaper, Tent, Rocket, FileText, Shield, LogOut, Download, User, Sparkles, KeyRound } from 'lucide-react';
+import { LayoutDashboard, Church, CreditCard, Newspaper, Tent, Rocket, FileText, Shield, LogOut, Download, User, Sparkles, KeyRound } from 'lucide-react';
 import { ADMIN_USERS } from './data/membersData';
 import { ChangePasswordModal } from './components/admin/ChangePasswordModal';
 
@@ -179,6 +180,12 @@ function MainLayout() {
       badge: null,
     },
     {
+      id: 'PRIERE_ROUAMA' as TabType,
+      label: 'PRIÈRE ROUAMA',
+      icon: Church,
+      badge: null,
+    },
+    {
       id: 'FINANCES' as TabType,
       label: 'DJAÏ',
       icon: CreditCard,
@@ -307,6 +314,7 @@ function MainLayout() {
       {/* Tab Content */}
       <main className="flex-1 p-4 sm:p-6 lg:p-8 max-w-7xl w-full mx-auto">
         {activeTab === 'DASHBOARD' && <DashboardTab onNavigateTab={setActiveTab} />}
+        {activeTab === 'PRIERE_ROUAMA' && <PriereRouamaTab />}
         {activeTab === 'FINANCES' && <FinancesTab />}
         {activeTab === 'NOUVELLES' && <NouvellesTab onNavigateTab={handleNavigateTab} />}
         {activeTab === 'ACTIVITES' && <ActivitesTab />}

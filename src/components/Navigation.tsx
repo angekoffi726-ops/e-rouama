@@ -1,8 +1,8 @@
 import React from 'react';
 import { useApp } from '../context/AppContext';
-import { LayoutDashboard, CreditCard, Newspaper, Tent, Rocket, FileText, Shield } from 'lucide-react';
+import { LayoutDashboard, Church, CreditCard, Newspaper, Tent, Rocket, FileText, Shield } from 'lucide-react';
 
-export type TabType = 'DASHBOARD' | 'FINANCES' | 'NOUVELLES' | 'ACTIVITES' | 'PROJETS' | 'ARCHIVES' | 'ADMIN_CONSOLE';
+export type TabType = 'DASHBOARD' | 'PRIERE_ROUAMA' | 'FINANCES' | 'NOUVELLES' | 'ACTIVITES' | 'PROJETS' | 'ARCHIVES' | 'ADMIN_CONSOLE';
 
 interface NavigationProps {
   activeTab: TabType;
@@ -27,6 +27,12 @@ export const Navigation: React.FC<NavigationProps> = ({ activeTab, setActiveTab 
       id: 'DASHBOARD' as TabType,
       label: 'ACCUEIL',
       icon: LayoutDashboard,
+      badge: null,
+    },
+    {
+      id: 'PRIERE_ROUAMA' as TabType,
+      label: 'PRIÈRE ROUAMA',
+      icon: Church,
       badge: null,
     },
     {

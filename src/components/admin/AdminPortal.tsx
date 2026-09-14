@@ -5471,7 +5471,7 @@ export const AdminPortal: React.FC = () => {
                   </div>
                   <div className="flex items-center gap-1.5">
                     <span className="bg-emerald-500/20 text-emerald-300 text-[10px] font-black px-2.5 py-1 rounded-full border border-emerald-500/30">
-                      Fixe sur GBAÏRAÏ
+                      Volet Dédié PRIÈRE ROUAMA
                     </span>
                     <span className="bg-amber-500/20 text-amber-300 text-[10px] font-black px-2.5 py-1 rounded-full border border-amber-500/30">
                       Officielle
@@ -5487,7 +5487,7 @@ export const AdminPortal: React.FC = () => {
                   </p>
                 </div>
                 <p className="mt-2 text-[11px] text-slate-400">
-                  ℹ️ La prière est intégrée de façon permanente et fixe dans le volet GBAÏRAÏ des membres. La diffusion manuelle depuis cet espace s'effectue exclusivement par courriel via EmailJS.
+                  ℹ️ La prière est intégrée de façon permanente dans l'onglet dédié « PRIÈRE ROUAMA » des membres. La diffusion manuelle depuis cet espace s'effectue exclusivement par courriel via EmailJS.
                 </p>
               </div>
 
