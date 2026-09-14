@@ -144,6 +144,8 @@ interface AppContextType {
   markNewsAsRead: (newsId: string) => void;
 
   createActivity: (activity: Omit<EventActivity, 'id' | 'status' | 'budgetStatus'>) => void;
+  updateActivity: (activityId: string, updatedData: Partial<EventActivity>) => Promise<void>;
+  deleteActivity: (activityId: string) => Promise<void>;
   approveActivityPayor: (activityId: string) => void;
   approveActivityBudgetTresorier: (activityId: string) => void;
 
@@ -1628,10 +1630,33 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       ...activity,
       id: 'ACT-' + Date.now(),
       status: 'PENDING_PAYOR',
-      budgetStatus: activity.budget > 0 ? 'PENDING_TRESORIER' : 'NONE',
+      budgetStatus: (activity.budget && activity.budget > 0) ? 'PENDING_TRESORIER' : 'NONE',
+      createdAt: new Date().toISOString(),
     };
     setDoc(doc(db, 'activities', newAct.id), sanitizeFirestore(newAct)).catch(console.warn);
     setActivities(prev => [newAct, ...prev]);
+  };
+
+  const updateActivity = async (activityId: string, updatedData: Partial<EventActivity>) => {
+    try {
+      await setDoc(doc(db, 'activities', activityId), sanitizeFirestore(updatedData), { merge: true });
+      setActivities(prev =>
+        prev.map(a => (a.id === activityId ? { ...a, ...updatedData } : a))
+      );
+    } catch (err) {
+      console.warn('Erreur lors de la mise à jour de l\'activité :', err);
+      throw err;
+    }
+  };
+
+  const deleteActivity = async (activityId: string) => {
+    try {
+      await deleteDoc(doc(db, 'activities', activityId));
+      setActivities(prev => prev.filter(a => a.id !== activityId));
+    } catch (err) {
+      console.warn('Erreur lors de la suppression de l\'activité :', err);
+      throw err;
+    }
   };
 
   const approveActivityPayor = (activityId: string) => {
@@ -2074,6 +2099,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         dismissNewsForMember,
         markNewsAsRead,
         createActivity,
+        updateActivity,
+        deleteActivity,
         approveActivityPayor,
         approveActivityBudgetTresorier,
         createFinancialEvent,

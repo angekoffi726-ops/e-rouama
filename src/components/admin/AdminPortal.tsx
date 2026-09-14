@@ -3,7 +3,7 @@ import emailjs from '@emailjs/browser';
 import { doc, deleteDoc, collection, onSnapshot } from 'firebase/firestore';
 import { db } from '../../firebase';
 import { useApp } from '../../context/AppContext';
-import { AdminRole, FundType, FUND_LABELS, TargetAudience, Committee, AgrProject, FinancialBilan, NewsItem } from '../../types';
+import { AdminRole, FundType, FUND_LABELS, TargetAudience, Committee, AgrProject, FinancialBilan, NewsItem, AdHocCommitteeRoles, EventActivity } from '../../types';
 import { ADMIN_USERS } from '../../data/membersData';
 import { sendEmailBroadcastAsync } from '../../utils/emailService';
 import { fetchAELFDailyReadings, AELFDayData } from '../../utils/aelfService';
@@ -44,7 +44,184 @@ import {
   ImageIcon,
   ExternalLink,
   AlertCircle,
+  MapPin,
+  Edit3,
+  Utensils,
+  Wine,
+  Truck,
+  Box,
+  X,
 } from 'lucide-react';
+
+// Helper pour normaliser les rôles Ad-Hoc en tableau de chaînes
+const normalizeRoleArray = (val?: string[] | string): string[] => {
+  if (!val) return [];
+  if (Array.isArray(val)) return val.filter(Boolean);
+  if (typeof val === 'string' && val.trim() && val.trim() !== 'Non désigné') {
+    if (val.includes(',')) {
+      return val.split(',').map(s => s.trim()).filter(Boolean);
+    }
+    return [val.trim()];
+  }
+  return [];
+};
+
+// Composant de sélection multiple pour les postes du Comité Ad-hoc
+const AdHocRoleSelector: React.FC<{
+  title: string;
+  icon: React.ReactNode;
+  color: 'amber' | 'emerald' | 'sky';
+  selected: string[];
+  onChange: (updated: string[]) => void;
+  allMembers: { id: string; nickname: string; firstName: string }[];
+}> = ({ title, icon, color, selected, onChange, allMembers }) => {
+  const [showGrid, setShowGrid] = useState(false);
+
+  const toggleMember = (nickname: string) => {
+    if (selected.includes(nickname)) {
+      onChange(selected.filter(n => n !== nickname));
+    } else {
+      onChange([...selected, nickname]);
+    }
+  };
+
+  const removeMember = (nickname: string) => {
+    onChange(selected.filter(n => n !== nickname));
+  };
+
+  const colorStyles = {
+    amber: {
+      border: 'border-amber-500/30',
+      label: 'text-amber-400',
+      badge: 'bg-amber-500/20 text-amber-300 border-amber-500/40 hover:bg-amber-500/30',
+      chipActive: 'bg-amber-500 text-slate-950 font-black border-amber-400 shadow-sm',
+      focus: 'focus:border-amber-500',
+    },
+    emerald: {
+      border: 'border-emerald-500/30',
+      label: 'text-emerald-400',
+      badge: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40 hover:bg-emerald-500/30',
+      chipActive: 'bg-emerald-500 text-slate-950 font-black border-emerald-400 shadow-sm',
+      focus: 'focus:border-emerald-500',
+    },
+    sky: {
+      border: 'border-sky-500/30',
+      label: 'text-sky-400',
+      badge: 'bg-sky-500/20 text-sky-300 border-sky-500/40 hover:bg-sky-500/30',
+      chipActive: 'bg-sky-500 text-slate-950 font-black border-sky-400 shadow-sm',
+      focus: 'focus:border-sky-500',
+    },
+  }[color];
+
+  return (
+    <div className={`bg-slate-900/90 rounded-2xl p-3.5 border ${colorStyles.border} space-y-2.5 flex flex-col justify-between`}>
+      <div className="space-y-2">
+        <div className="flex items-center justify-between gap-1.5 flex-wrap">
+          <label className={`text-[11px] font-black uppercase flex items-center gap-1.5 ${colorStyles.label}`}>
+            {icon}
+            <span>{title}</span>
+          </label>
+          {selected.length > 0 && (
+            <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 border border-slate-700">
+              {selected.length} sélectionné{selected.length > 1 ? 's' : ''}
+            </span>
+          )}
+        </div>
+
+        {/* Badges des membres sélectionnés avec bouton de retrait [ x ] */}
+        <div className="min-h-[42px] p-2 bg-slate-950/90 rounded-xl border border-slate-800/90 flex flex-wrap gap-1.5 items-center">
+          {selected.length === 0 ? (
+            <span className="text-[11px] text-slate-500 italic px-1">Aucun membre sélectionné</span>
+          ) : (
+            selected.map(nickname => (
+              <span
+                key={nickname}
+                className={`inline-flex items-center gap-1 text-xs font-black px-2.5 py-1 rounded-lg border transition-all ${colorStyles.badge}`}
+              >
+                <span>{nickname}</span>
+                <button
+                  type="button"
+                  onClick={() => removeMember(nickname)}
+                  className="hover:text-rose-400 p-0.5 rounded hover:bg-slate-800/70 transition-colors cursor-pointer"
+                  title={`Retirer ${nickname}`}
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              </span>
+            ))
+          )}
+        </div>
+      </div>
+
+      <div className="space-y-2 pt-1 border-t border-slate-800/60">
+        {/* Menu déroulant pour ajouter un membre + Bouton d'affichage grille */}
+        <div className="flex items-center gap-1.5">
+          <select
+            value=""
+            onChange={e => {
+              if (e.target.value) {
+                toggleMember(e.target.value);
+              }
+            }}
+            className={`w-full bg-slate-950 border border-slate-800 rounded-xl px-2.5 py-2 text-xs font-bold text-white ${colorStyles.focus} focus:outline-none cursor-pointer`}
+          >
+            <option value="">+ Ajouter un membre...</option>
+            {allMembers.map(m => {
+              const isSelected = selected.includes(m.nickname);
+              return (
+                <option key={m.id} value={m.nickname} disabled={isSelected}>
+                  {isSelected ? `✓ ${m.nickname} (Déjà sélectionné)` : `${m.nickname} (${m.firstName})`}
+                </option>
+              );
+            })}
+          </select>
+
+          <button
+            type="button"
+            onClick={() => setShowGrid(!showGrid)}
+            className={`shrink-0 text-[10px] font-extrabold px-2.5 py-2 rounded-xl border transition-colors cursor-pointer ${
+              showGrid
+                ? 'bg-slate-700 text-white border-slate-600'
+                : 'bg-slate-800 hover:bg-slate-700 text-slate-300 border-slate-700'
+            }`}
+            title="Afficher/Masquer les 12 puces cliquables"
+          >
+            {showGrid ? 'Masquer' : 'Puces'}
+          </button>
+        </div>
+
+        {/* Puces cliquables rapides (12 membres) */}
+        {showGrid && (
+          <div className="bg-slate-950 p-2 rounded-xl border border-slate-800/90 space-y-1.5">
+            <span className="text-[9px] uppercase font-bold text-slate-400 block">
+              Cliquer sur un nom pour sélectionner / désélectionner :
+            </span>
+            <div className="flex flex-wrap gap-1">
+              {allMembers.map(m => {
+                const isChecked = selected.includes(m.nickname);
+                return (
+                  <button
+                    key={m.id}
+                    type="button"
+                    onClick={() => toggleMember(m.nickname)}
+                    className={`text-[10px] font-bold px-2 py-0.5 rounded-md border transition-all cursor-pointer ${
+                      isChecked
+                        ? colorStyles.chipActive
+                        : 'bg-slate-900 hover:bg-slate-800 text-slate-400 border-slate-800'
+                    }`}
+                  >
+                    {isChecked ? '✓ ' : ''}
+                    {m.nickname}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
 
 export const AdminPortal: React.FC = () => {
   const {
@@ -81,6 +258,8 @@ export const AdminPortal: React.FC = () => {
     approvePVPayor,
     activities,
     createActivity,
+    updateActivity,
+    deleteActivity,
     approveActivityPayor,
     projects,
     createProject,
@@ -205,9 +384,17 @@ export const AdminPortal: React.FC = () => {
   // 5. Organisation Form
   const [actTitle, setActTitle] = useState<string>('');
   const [actDate, setActDate] = useState<string>('');
+  const [actLocation, setActLocation] = useState<string>('');
   const [actDesc, setActDesc] = useState<string>('');
   const [actProgram, setActProgram] = useState<string>('');
-  const [actBudgetInput, setActBudgetInput] = useState<string>('');
+  const [pcoRoles, setPcoRoles] = useState<string[]>([]);
+  const [pcoAdjRoles, setPcoAdjRoles] = useState<string[]>([]);
+  const [restaurationRoles, setRestaurationRoles] = useState<string[]>([]);
+  const [cambuseRoles, setCambuseRoles] = useState<string[]>([]);
+  const [logistiqueRoles, setLogistiqueRoles] = useState<string[]>([]);
+  const [transportRoles, setTransportRoles] = useState<string[]>([]);
+  const [editingActivityId, setEditingActivityId] = useState<string | null>(null);
+  const [isDeletingActivityId, setIsDeletingActivityId] = useState<string | null>(null);
 
   // 6. Projet Form
   const [projTitle, setProjTitle] = useState<string>('');
@@ -4493,7 +4680,10 @@ export const AdminPortal: React.FC = () => {
                     <div key={a.id} className="bg-slate-950 p-4 rounded-2xl border border-slate-800 flex items-center justify-between gap-3 text-xs">
                       <div>
                         <p className="font-extrabold text-white">{a.title}</p>
-                        <p className="text-slate-400">Date: {a.eventDate} • Budget: {a.budget} F CFA</p>
+                        <p className="text-slate-400">
+                          Date: {a.eventDate}
+                          {a.location ? ` • Lieu: ${a.location}` : ''}
+                        </p>
                       </div>
                       <button
                         onClick={() => {
@@ -5023,107 +5213,539 @@ export const AdminPortal: React.FC = () => {
         <div className="space-y-8">
           <RbacWarningBanner
             roleName="COMMISSION ORGANISATION"
-            allowedActionsText="Planification des événements, gestion de la logistique, des comités et des dossiers d'activités."
+            allowedActionsText="Planification des événements, désignation du Comité Ad-hoc par poste, détails logistiques et suivi d'activités."
           />
-          <div className="bg-slate-900 rounded-[2.5rem] p-6 sm:p-8 border border-slate-800 shadow-xl space-y-6">
-          <h2 className="text-xl font-black text-white flex items-center gap-2">
-            <Users className="w-5 h-5 text-amber-500" />
-            <span>Création d'Événement & Dossier Unifié Programme (Envoi au PAYOR)</span>
-          </h2>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <div>
-              <label className="block text-xs font-bold text-slate-400 uppercase mb-2">Titre Événement</label>
-              <input
-                type="text"
-                placeholder="Ex: Sortie Annuelle Grand-Bassam"
-                value={actTitle}
-                onChange={e => setActTitle(e.target.value)}
-                className="w-full bg-slate-950 border border-slate-800 rounded-2xl px-4 py-3 text-sm font-bold text-white focus:outline-none"
-              />
-            </div>
-
-            <div>
-              <label className="block text-xs font-bold text-slate-400 uppercase mb-2">Date Événement</label>
-              <input
-                type="date"
-                value={actDate}
-                onChange={e => setActDate(e.target.value)}
-                className="w-full bg-slate-950 border border-slate-800 rounded-2xl px-4 py-3 text-sm font-bold text-white focus:outline-none"
-              />
-            </div>
-
-            <div>
-              <label className="block text-xs font-bold text-slate-400 uppercase mb-2">Budget Prévisionnel (F CFA)</label>
-              <input
-                type="number"
-                placeholder="Ex: 150000"
-                value={actBudgetInput}
-                onChange={e => setActBudgetInput(e.target.value)}
-                className="w-full bg-slate-950 border border-slate-800 rounded-2xl px-4 py-3 text-sm font-bold text-white focus:outline-none"
-              />
-            </div>
-          </div>
-
-          <div>
-            <label className="block text-xs font-bold text-slate-400 uppercase mb-2">Description & Objectifs</label>
-            <textarea
-              rows={2}
-              placeholder="Ex: Journée récréative et fraternelle..."
-              value={actDesc}
-              onChange={e => setActDesc(e.target.value)}
-              className="w-full bg-slate-950 border border-slate-800 rounded-2xl p-4 text-sm font-medium text-white focus:outline-none"
-            />
-          </div>
-
-          <div>
-            <label className="block text-xs font-bold text-slate-400 uppercase mb-2">Programme Déroulé</label>
-            <textarea
-              rows={3}
-              placeholder="Rédigez le programme d'activités..."
-              value={actProgram}
-              onChange={e => setActProgram(e.target.value)}
-              className="w-full bg-slate-950 border border-slate-800 rounded-2xl p-4 text-sm font-medium text-white focus:outline-none"
-            />
-          </div>
-
-          <button
-            onClick={() => {
-              if (!actTitle.trim() || !actDate.trim()) {
-                alert('Veuillez renseigner le titre et la date.');
-                return;
-              }
-
-              const defaultCommittees: Committee[] = [
-                { name: 'CAMBUSE', leaderNickname: 'CAPELO', memberNicknames: ['CAPELO', 'TYPO'], description: 'Gestion boissons et réserves' },
-                { name: 'RESTAURATION', leaderNickname: 'LA MADRE', memberNicknames: ['LA MADRE', 'SOUKA', 'NOUNOURS'], description: 'Repas et buffet' },
-                { name: 'LOGISTIQUE', leaderNickname: 'ESPRIT', memberNicknames: ['ESPRIT', 'DOJON'], description: 'Matériel et installation' },
-                { name: 'TRANSPORT', leaderNickname: 'KOSSONGBETO', memberNicknames: ['KOSSONGBETO', 'SYLAS'], description: 'Déplacements' },
-              ];
-
-              createActivity({
-                title: actTitle,
-                eventDate: actDate,
-                description: actDesc,
-                program: actProgram,
-                budget: Number(actBudgetInput) || 0,
-                committees: defaultCommittees,
-                createdBy: 'COMMISSION ORGANISATION',
-              });
-
-              alert('Dossier Unifié créé et transmis au PAYOR pour validation !');
-              setActTitle('');
-              setActDate('');
-              setActDesc('');
-              setActProgram('');
-              setActBudgetInput('');
-            }}
-            className="bg-[#E67E22] hover:bg-[#D35400] text-white font-black py-3.5 px-6 rounded-2xl shadow-lg text-sm flex items-center gap-2 active:scale-95 transition-all"
+          {/* Formulaire de création / modification */}
+          <div
+            id="organisation-event-form"
+            className="bg-slate-900 rounded-[2.5rem] p-6 sm:p-8 border border-slate-800 shadow-xl space-y-6"
           >
-            <Send className="w-4 h-4" />
-            <span>Transmettre au PAYOR</span>
-          </button>
-        </div>
+            <div className="flex items-center justify-between gap-3 flex-wrap border-b border-slate-800 pb-4">
+              <h2 className="text-xl font-black text-white flex items-center gap-2">
+                <Users className="w-5 h-5 text-amber-500" />
+                <span>
+                  {editingActivityId
+                    ? "Modification de l'Événement & Comité Ad-hoc"
+                    : "Planification d'Événement & Nomination du Comité Ad-hoc"}
+                </span>
+              </h2>
+              {editingActivityId && (
+                <span className="bg-amber-500/20 text-amber-300 text-xs font-black px-3 py-1 rounded-full border border-amber-500/30">
+                  Mode Édition Actif
+                </span>
+              )}
+            </div>
+
+            {/* 1. Coordonnées de l'événement (Titre, Date, Lieu) */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div>
+                <label className="block text-xs font-bold text-slate-400 uppercase mb-2">
+                  Titre de l'Événement *
+                </label>
+                <input
+                  type="text"
+                  placeholder="Ex: Sortie Détente Fraternelle"
+                  value={actTitle}
+                  onChange={e => setActTitle(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-2xl px-4 py-3 text-sm font-bold text-white focus:outline-none focus:border-amber-500 transition-colors"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-400 uppercase mb-2">
+                  Date de l'Événement *
+                </label>
+                <input
+                  type="date"
+                  value={actDate}
+                  onChange={e => setActDate(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-2xl px-4 py-3 text-sm font-bold text-white focus:outline-none focus:border-amber-500 transition-colors"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-400 uppercase mb-2 flex items-center gap-1">
+                  <MapPin className="w-3.5 h-3.5 text-amber-500" />
+                  <span>Lieu de l'Événement</span>
+                </label>
+                <input
+                  type="text"
+                  placeholder="Ex: Plage d'Assinie / Espace Rouama"
+                  value={actLocation}
+                  onChange={e => setActLocation(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-2xl px-4 py-3 text-sm font-bold text-white focus:outline-none focus:border-amber-500 transition-colors"
+                />
+              </div>
+            </div>
+
+            {/* 2. Description & Objectifs */}
+            <div>
+              <label className="block text-xs font-bold text-slate-400 uppercase mb-2">
+                Description & Objectifs
+              </label>
+              <textarea
+                rows={2}
+                placeholder="Ex: Renforcer les liens fraternels, faire le point annuel dans un cadre convivial..."
+                value={actDesc}
+                onChange={e => setActDesc(e.target.value)}
+                className="w-full bg-slate-950 border border-slate-800 rounded-2xl p-4 text-sm font-medium text-white focus:outline-none focus:border-amber-500 transition-colors"
+              />
+            </div>
+
+            {/* 3. Programme Déroulé */}
+            <div>
+              <label className="block text-xs font-bold text-slate-400 uppercase mb-2">
+                Programme Déroulé
+              </label>
+              <textarea
+                rows={3}
+                placeholder="Ex: 08h00 : Rassemblement - 09h30 : Départ du convoi - 12h30 : Déjeuner fraternel - 15h00 : Activités ludiques..."
+                value={actProgram}
+                onChange={e => setActProgram(e.target.value)}
+                className="w-full bg-slate-950 border border-slate-800 rounded-2xl p-4 text-sm font-medium text-white focus:outline-none focus:border-amber-500 transition-colors"
+              />
+            </div>
+
+            {/* 4. SECTION DÉDIÉE : ATTRIBUTION DU COMITÉ AD-HOC (SÉLECTION MULTIPLE) */}
+            <div className="bg-slate-950/70 rounded-3xl p-5 sm:p-6 border border-slate-800/80 space-y-4">
+              <div className="flex items-center gap-2 pb-2 border-b border-slate-800/60">
+                <Users className="w-5 h-5 text-amber-500" />
+                <div>
+                  <h3 className="text-sm font-black text-white uppercase tracking-wide">
+                    Attribution du Comité Ad-Hoc
+                  </h3>
+                  <p className="text-[11px] text-slate-400">
+                    Sélectionnez 1 ou plusieurs membres parmi les 12 pour chaque poste opérationnel (badges retirables & puces cliquables).
+                  </p>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                {/* 1. PCO */}
+                <AdHocRoleSelector
+                  title="PCO (Président du Comité)"
+                  icon={<UserCheck className="w-3.5 h-3.5 text-amber-400" />}
+                  color="amber"
+                  selected={pcoRoles}
+                  onChange={setPcoRoles}
+                  allMembers={members}
+                />
+
+                {/* 2. PCO Adjoint */}
+                <AdHocRoleSelector
+                  title="PCO Adjoint"
+                  icon={<UserCheck className="w-3.5 h-3.5 text-amber-400" />}
+                  color="amber"
+                  selected={pcoAdjRoles}
+                  onChange={setPcoAdjRoles}
+                  allMembers={members}
+                />
+
+                {/* 3. Responsable Restauration */}
+                <AdHocRoleSelector
+                  title="Responsable Restauration"
+                  icon={<Utensils className="w-3.5 h-3.5 text-emerald-400" />}
+                  color="emerald"
+                  selected={restaurationRoles}
+                  onChange={setRestaurationRoles}
+                  allMembers={members}
+                />
+
+                {/* 4. Responsable Cambuse */}
+                <AdHocRoleSelector
+                  title="Responsable Cambuse"
+                  icon={<Wine className="w-3.5 h-3.5 text-emerald-400" />}
+                  color="emerald"
+                  selected={cambuseRoles}
+                  onChange={setCambuseRoles}
+                  allMembers={members}
+                />
+
+                {/* 5. Responsable Logistique */}
+                <AdHocRoleSelector
+                  title="Responsable Logistique"
+                  icon={<Box className="w-3.5 h-3.5 text-sky-400" />}
+                  color="sky"
+                  selected={logistiqueRoles}
+                  onChange={setLogistiqueRoles}
+                  allMembers={members}
+                />
+
+                {/* 6. Responsable Transport */}
+                <AdHocRoleSelector
+                  title="Responsable Transport"
+                  icon={<Truck className="w-3.5 h-3.5 text-sky-400" />}
+                  color="sky"
+                  selected={transportRoles}
+                  onChange={setTransportRoles}
+                  allMembers={members}
+                />
+              </div>
+            </div>
+
+            {/* Boutons d'action du formulaire */}
+            <div className="flex items-center gap-3 pt-2">
+              <button
+                type="button"
+                onClick={async () => {
+                  if (!actTitle.trim() || !actDate.trim()) {
+                    alert("Veuillez renseigner le titre et la date de l'événement.");
+                    return;
+                  }
+
+                  const adHocRoles: AdHocCommitteeRoles = {
+                    pco: pcoRoles,
+                    pcoAdjoint: pcoAdjRoles,
+                    restauration: restaurationRoles,
+                    cambuse: cambuseRoles,
+                    logistique: logistiqueRoles,
+                    transport: transportRoles,
+                  };
+
+                  const structuredCommittees: Committee[] = [
+                    {
+                      name: 'COORDINATION GÉNÉRALE',
+                      leaderNickname: pcoRoles[0] || 'Non désigné',
+                      memberNicknames: [...pcoRoles, ...pcoAdjRoles],
+                      description: "PCO & PCO Adjoint - Supervision & pilotage de l'événement",
+                    },
+                    {
+                      name: 'RESTAURATION',
+                      leaderNickname: restaurationRoles[0] || 'Non désigné',
+                      memberNicknames: restaurationRoles,
+                      description: 'Gestion des menus, repas et buffet',
+                    },
+                    {
+                      name: 'CAMBUSE',
+                      leaderNickname: cambuseRoles[0] || 'Non désigné',
+                      memberNicknames: cambuseRoles,
+                      description: 'Gestion des boissons, rafraîchissements et réserves',
+                    },
+                    {
+                      name: 'LOGISTIQUE',
+                      leaderNickname: logistiqueRoles[0] || 'Non désigné',
+                      memberNicknames: logistiqueRoles,
+                      description: 'Installation du site, sonorisation et matériel',
+                    },
+                    {
+                      name: 'TRANSPORT',
+                      leaderNickname: transportRoles[0] || 'Non désigné',
+                      memberNicknames: transportRoles,
+                      description: 'Convoi, déplacements et logistique transport',
+                    },
+                  ];
+
+                  try {
+                    if (editingActivityId) {
+                      await updateActivity(editingActivityId, {
+                        title: actTitle.trim(),
+                        eventDate: actDate,
+                        location: actLocation.trim(),
+                        description: actDesc.trim(),
+                        program: actProgram.trim(),
+                        adHocRoles,
+                        committees: structuredCommittees,
+                      });
+                      alert("Événement mis à jour avec succès !");
+                    } else {
+                      createActivity({
+                        title: actTitle.trim(),
+                        eventDate: actDate,
+                        location: actLocation.trim(),
+                        description: actDesc.trim(),
+                        program: actProgram.trim(),
+                        adHocRoles,
+                        committees: structuredCommittees,
+                        createdBy: 'COMMISSION ORGANISATION',
+                      });
+                      alert("Dossier d'Événement créé et transmis au PAYOR pour validation !");
+                    }
+
+                    // Reset form
+                    setActTitle('');
+                    setActDate('');
+                    setActLocation('');
+                    setActDesc('');
+                    setActProgram('');
+                    setPcoRoles([]);
+                    setPcoAdjRoles([]);
+                    setRestaurationRoles([]);
+                    setCambuseRoles([]);
+                    setLogistiqueRoles([]);
+                    setTransportRoles([]);
+                    setEditingActivityId(null);
+                  } catch (err) {
+                    console.error(err);
+                    alert("Une erreur est survenue lors de l'enregistrement de l'événement.");
+                  }
+                }}
+                className="bg-[#E67E22] hover:bg-[#D35400] text-white font-black py-3.5 px-6 rounded-2xl shadow-lg text-sm flex items-center gap-2 active:scale-95 transition-all cursor-pointer"
+              >
+                {editingActivityId ? (
+                  <>
+                    <CheckCircle2 className="w-4 h-4" />
+                    <span>Enregistrer les Modifications</span>
+                  </>
+                ) : (
+                  <>
+                    <Send className="w-4 h-4" />
+                    <span>Transmettre au PAYOR</span>
+                  </>
+                )}
+              </button>
+
+              {editingActivityId && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActTitle('');
+                    setActDate('');
+                    setActLocation('');
+                    setActDesc('');
+                    setActProgram('');
+                    setPcoRoles([]);
+                    setPcoAdjRoles([]);
+                    setRestaurationRoles([]);
+                    setCambuseRoles([]);
+                    setLogistiqueRoles([]);
+                    setTransportRoles([]);
+                    setEditingActivityId(null);
+                  }}
+                  className="bg-slate-800 hover:bg-slate-700 text-slate-300 font-black py-3.5 px-6 rounded-2xl text-sm flex items-center gap-2 active:scale-95 transition-all cursor-pointer"
+                >
+                  <XCircle className="w-4 h-4" />
+                  <span>Annuler l'Édition</span>
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* 5. SECTION HISTORIQUE ET SUIVI DES ÉVÉNEMENTS */}
+          <div className="bg-slate-900 rounded-[2.5rem] p-6 sm:p-8 border border-slate-800 shadow-xl space-y-6">
+            <div className="flex items-center justify-between gap-3 flex-wrap border-b border-slate-800 pb-4">
+              <div className="flex items-center gap-3">
+                <Calendar className="w-6 h-6 text-amber-500" />
+                <div>
+                  <h2 className="text-xl font-black text-white">
+                    Historique & Suivi des Événements
+                  </h2>
+                  <p className="text-xs text-slate-400">
+                    Suivi logistique, composition du Comité Ad-hoc, déroulé du programme et statut PAYOR.
+                  </p>
+                </div>
+              </div>
+              <span className="bg-amber-500/20 text-amber-300 text-xs font-black px-3.5 py-1.5 rounded-full border border-amber-500/30">
+                {activities.length} événement{activities.length > 1 ? 's' : ''}
+              </span>
+            </div>
+
+            {activities.length === 0 ? (
+              <div className="text-center py-12 bg-slate-950/60 rounded-3xl border border-dashed border-slate-800 text-slate-500 text-sm">
+                Aucun événement planifié pour le moment. Remplissez le formulaire ci-dessus pour soumettre une activité.
+              </div>
+            ) : (
+              <div className="space-y-6">
+                {activities.map(act => {
+                  const pcoList = normalizeRoleArray(act.adHocRoles?.pco);
+                  const pcoAdjList = normalizeRoleArray(act.adHocRoles?.pcoAdjoint);
+                  const restList = normalizeRoleArray(act.adHocRoles?.restauration);
+                  const cambList = normalizeRoleArray(act.adHocRoles?.cambuse);
+                  const logList = normalizeRoleArray(act.adHocRoles?.logistique);
+                  const transList = normalizeRoleArray(act.adHocRoles?.transport);
+
+                  const pcoDisplay = pcoList.length > 0
+                    ? pcoList.join(', ')
+                    : (act.committees?.find(c => c.name.toUpperCase().includes('COORDINATION'))?.leaderNickname || 'Non désigné');
+                  const pcoAdjDisplay = pcoAdjList.length > 0 ? pcoAdjList.join(', ') : 'Non désigné';
+                  const restDisplay = restList.length > 0
+                    ? restList.join(', ')
+                    : (act.committees?.find(c => c.name.toUpperCase().includes('RESTAURATION'))?.memberNicknames?.join(', ') || act.committees?.find(c => c.name.toUpperCase().includes('RESTAURATION'))?.leaderNickname || 'Non désigné');
+                  const cambDisplay = cambList.length > 0
+                    ? cambList.join(', ')
+                    : (act.committees?.find(c => c.name.toUpperCase().includes('CAMBUSE'))?.memberNicknames?.join(', ') || act.committees?.find(c => c.name.toUpperCase().includes('CAMBUSE'))?.leaderNickname || 'Non désigné');
+                  const logDisplay = logList.length > 0
+                    ? logList.join(', ')
+                    : (act.committees?.find(c => c.name.toUpperCase().includes('LOGISTIQUE'))?.memberNicknames?.join(', ') || act.committees?.find(c => c.name.toUpperCase().includes('LOGISTIQUE'))?.leaderNickname || 'Non désigné');
+                  const transDisplay = transList.length > 0
+                    ? transList.join(', ')
+                    : (act.committees?.find(c => c.name.toUpperCase().includes('TRANSPORT'))?.memberNicknames?.join(', ') || act.committees?.find(c => c.name.toUpperCase().includes('TRANSPORT'))?.leaderNickname || 'Non désigné');
+
+                  return (
+                    <div
+                      key={act.id}
+                      className="bg-slate-950 rounded-3xl p-5 sm:p-6 border border-slate-800 shadow-lg space-y-5 transition-all hover:border-slate-700"
+                    >
+                      {/* Header de l'événement */}
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-slate-800/80">
+                        <div>
+                          <div className="flex flex-wrap items-center gap-2 mb-2">
+                            <span className="bg-amber-500/20 text-amber-300 text-xs font-black px-3 py-1 rounded-full border border-amber-500/30 flex items-center gap-1.5">
+                              <Calendar className="w-3.5 h-3.5" />
+                              <span>Date : {act.eventDate}</span>
+                            </span>
+                            {act.location && (
+                              <span className="bg-emerald-500/20 text-emerald-300 text-xs font-black px-3 py-1 rounded-full border border-emerald-500/30 flex items-center gap-1.5">
+                                <MapPin className="w-3.5 h-3.5" />
+                                <span>{act.location}</span>
+                              </span>
+                            )}
+                            {act.status === 'PUBLISHED' || act.status === 'APPROVED' ? (
+                              <span className="bg-emerald-600/20 text-emerald-400 text-xs font-bold px-3 py-1 rounded-full border border-emerald-500/30 flex items-center gap-1">
+                                <CheckCircle2 className="w-3.5 h-3.5" />
+                                <span>Validé PAYOR / Publié</span>
+                              </span>
+                            ) : (
+                              <span className="bg-amber-600/20 text-amber-400 text-xs font-bold px-3 py-1 rounded-full border border-amber-500/30 flex items-center gap-1">
+                                <Clock className="w-3.5 h-3.5" />
+                                <span>En attente validation PAYOR</span>
+                              </span>
+                            )}
+                          </div>
+                          <h3 className="text-xl font-black text-white">{act.title}</h3>
+                        </div>
+
+                        {/* Actions : Modifier / Supprimer */}
+                        <div className="flex items-center gap-2 self-start sm:self-auto shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditingActivityId(act.id);
+                              setActTitle(act.title || '');
+                              setActDate(act.eventDate || '');
+                              setActLocation(act.location || '');
+                              setActDesc(act.description || '');
+                              setActProgram(act.program || '');
+                              setPcoRoles(pcoList.length > 0 ? pcoList : (pcoDisplay !== 'Non désigné' ? [pcoDisplay] : []));
+                              setPcoAdjRoles(pcoAdjList.length > 0 ? pcoAdjList : (pcoAdjDisplay !== 'Non désigné' ? [pcoAdjDisplay] : []));
+                              setRestaurationRoles(restList.length > 0 ? restList : (restDisplay !== 'Non désigné' ? [restDisplay] : []));
+                              setCambuseRoles(cambList.length > 0 ? cambList : (cambDisplay !== 'Non désigné' ? [cambDisplay] : []));
+                              setLogistiqueRoles(logList.length > 0 ? logList : (logDisplay !== 'Non désigné' ? [logDisplay] : []));
+                              setTransportRoles(transList.length > 0 ? transList : (transDisplay !== 'Non désigné' ? [transDisplay] : []));
+
+                              const formEl = document.getElementById('organisation-event-form');
+                              if (formEl) {
+                                formEl.scrollIntoView({ behavior: 'smooth' });
+                              }
+                            }}
+                            className="bg-amber-500/20 text-amber-300 hover:bg-amber-500 hover:text-slate-950 border border-amber-500/40 px-3.5 py-2 rounded-xl text-xs font-black flex items-center gap-1.5 transition-all cursor-pointer active:scale-95"
+                            title="Modifier cet événement avant sa tenue"
+                          >
+                            <Edit3 className="w-3.5 h-3.5" />
+                            <span>Modifier</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            disabled={isDeletingActivityId === act.id}
+                            onClick={async () => {
+                              if (!window.confirm(`Confirmez-vous la suppression définitive de l'événement « ${act.title} » ?`)) {
+                                return;
+                              }
+                              setIsDeletingActivityId(act.id);
+                              try {
+                                await deleteActivity(act.id);
+                                if (editingActivityId === act.id) {
+                                  setActTitle('');
+                                  setActDate('');
+                                  setActLocation('');
+                                  setActDesc('');
+                                  setActProgram('');
+                                  setPcoRoles([]);
+                                  setPcoAdjRoles([]);
+                                  setRestaurationRoles([]);
+                                  setCambuseRoles([]);
+                                  setLogistiqueRoles([]);
+                                  setTransportRoles([]);
+                                  setEditingActivityId(null);
+                                }
+                                alert("Événement supprimé avec succès.");
+                              } catch (err) {
+                                console.error(err);
+                                alert("Erreur lors de la suppression de l'événement.");
+                              } finally {
+                                setIsDeletingActivityId(null);
+                              }
+                            }}
+                            className="bg-rose-600/20 text-rose-300 hover:bg-rose-600 hover:text-white border border-rose-500/30 px-3.5 py-2 rounded-xl text-xs font-black flex items-center gap-1.5 transition-all cursor-pointer active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
+                            title="Supprimer définitivement cet événement"
+                          >
+                            {isDeletingActivityId === act.id ? (
+                              <>
+                                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                <span>Suppression...</span>
+                              </>
+                            ) : (
+                              <>
+                                <Trash2 className="w-3.5 h-3.5" />
+                                <span>Supprimer</span>
+                              </>
+                            )}
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Récapitulatif du Comité Ad-hoc désigné */}
+                      <div className="bg-slate-900/80 rounded-2xl p-4 border border-slate-800/80 space-y-3">
+                        <div className="flex items-center gap-2">
+                          <Users className="w-4 h-4 text-amber-500" />
+                          <h4 className="text-xs font-black text-amber-400 uppercase tracking-wide">
+                            Comité Ad-Hoc Désigné
+                          </h4>
+                        </div>
+                        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 text-xs">
+                          <div className="bg-slate-950 p-2.5 rounded-xl border border-slate-800">
+                            <span className="text-[10px] uppercase font-bold text-amber-400/80 block">PCO</span>
+                            <span className="font-extrabold text-white text-xs break-words">{pcoDisplay}</span>
+                          </div>
+                          <div className="bg-slate-950 p-2.5 rounded-xl border border-slate-800">
+                            <span className="text-[10px] uppercase font-bold text-amber-400/80 block">PCO Adjoint</span>
+                            <span className="font-extrabold text-white text-xs break-words">{pcoAdjDisplay}</span>
+                          </div>
+                          <div className="bg-slate-950 p-2.5 rounded-xl border border-slate-800">
+                            <span className="text-[10px] uppercase font-bold text-emerald-400/80 block">Restauration</span>
+                            <span className="font-extrabold text-white text-xs break-words">{restDisplay}</span>
+                          </div>
+                          <div className="bg-slate-950 p-2.5 rounded-xl border border-slate-800">
+                            <span className="text-[10px] uppercase font-bold text-emerald-400/80 block">Cambuse</span>
+                            <span className="font-extrabold text-white text-xs break-words">{cambDisplay}</span>
+                          </div>
+                          <div className="bg-slate-950 p-2.5 rounded-xl border border-slate-800">
+                            <span className="text-[10px] uppercase font-bold text-sky-400/80 block">Logistique</span>
+                            <span className="font-extrabold text-white text-xs break-words">{logDisplay}</span>
+                          </div>
+                          <div className="bg-slate-950 p-2.5 rounded-xl border border-slate-800">
+                            <span className="text-[10px] uppercase font-bold text-sky-400/80 block">Transport</span>
+                            <span className="font-extrabold text-white text-xs break-words">{transDisplay}</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Détails logistiques : Description & Programme Déroulé */}
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
+                        <div className="bg-slate-900/60 p-4 rounded-2xl border border-slate-800 space-y-1.5">
+                          <span className="font-black text-slate-400 uppercase text-[10px] tracking-wider block">
+                            Description & Objectifs
+                          </span>
+                          <p className="text-slate-300 leading-relaxed whitespace-pre-line">
+                            {act.description || 'Aucune description fournie.'}
+                          </p>
+                        </div>
+                        <div className="bg-slate-900/60 p-4 rounded-2xl border border-slate-800 space-y-1.5">
+                          <span className="font-black text-slate-400 uppercase text-[10px] tracking-wider block">
+                            Programme Déroulé
+                          </span>
+                          <p className="text-slate-300 leading-relaxed whitespace-pre-line">
+                            {act.program || 'Aucun programme détaillé renseigné.'}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
         </div>
       )}
 

@@ -160,17 +160,29 @@ export interface Committee {
   description: string;
 }
 
+export interface AdHocCommitteeRoles {
+  pco?: string[] | string;
+  pcoAdjoint?: string[] | string;
+  restauration?: string[] | string;
+  cambuse?: string[] | string;
+  logistique?: string[] | string;
+  transport?: string[] | string;
+}
+
 export interface EventActivity {
   id: string;
   title: string;
   eventDate: string;
+  location?: string;
   description: string;
   committees: Committee[];
+  adHocRoles?: AdHocCommitteeRoles;
   program: string;
-  budget: number;
+  budget?: number;
   status: 'DRAFT' | 'PENDING_PAYOR' | 'APPROVED' | 'PUBLISHED';
   createdBy: string;
   budgetStatus?: 'NONE' | 'PENDING_TRESORIER' | 'APPROVED_TRESORIER';
+  createdAt?: string;
 }
 
 export interface FinancialEvent {
