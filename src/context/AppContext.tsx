@@ -1556,6 +1556,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       category,
       targetAudience,
       authorRole,
+      author: authorRole,
+      createdBy: authorRole,
       date: new Date().toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }),
       readBy: [],
       dispatchChannel,

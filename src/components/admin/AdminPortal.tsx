@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import emailjs from '@emailjs/browser';
 import { doc, deleteDoc, collection, onSnapshot } from 'firebase/firestore';
 import { db } from '../../firebase';
@@ -1392,15 +1392,23 @@ export const AdminPortal: React.FC = () => {
   };
 
   // 1. CHARGEMENT DES DONNÉES DEPUIS FIRESTORE (useEffect / fetchAnnouncements) :
-  // Assure que l'ID Firestore est explicitement inclus dans chaque objet
+  // 1. CHARGEMENT DES DONNÉES DEPUIS FIRESTORE (useEffect / fetchAnnouncements) :
+  // Assure que l'ID Firestore et les champs author / createdBy sont explicitement inclus dans chaque objet
   useEffect(() => {
     const unsubAnnouncements = onSnapshot(
       collection(db, "announcements"),
       (snapshot) => {
-        const loadedAnnouncements = snapshot.docs.map(docSnap => ({
-          id: docSnap.id,
-          ...docSnap.data()
-        })) as NewsItem[];
+        const loadedAnnouncements = snapshot.docs.map(docSnap => {
+          const data = docSnap.data();
+          const authorVal = data.author || data.authorRole || data.createdBy || '';
+          const createdByVal = data.createdBy || data.authorRole || data.author || '';
+          return {
+            id: docSnap.id,
+            ...data,
+            author: authorVal,
+            createdBy: createdByVal,
+          };
+        }) as NewsItem[];
 
         if (loadedAnnouncements.length > 0) {
           setAnnouncements(prev => {
@@ -1425,10 +1433,17 @@ export const AdminPortal: React.FC = () => {
     const unsubNews = onSnapshot(
       collection(db, "news"),
       (snapshot) => {
-        const loadedNews = snapshot.docs.map(docSnap => ({
-          id: docSnap.id,
-          ...docSnap.data()
-        })) as NewsItem[];
+        const loadedNews = snapshot.docs.map(docSnap => {
+          const data = docSnap.data();
+          const authorVal = data.author || data.authorRole || data.createdBy || '';
+          const createdByVal = data.createdBy || data.authorRole || data.author || '';
+          return {
+            id: docSnap.id,
+            ...data,
+            author: authorVal,
+            createdBy: createdByVal,
+          };
+        }) as NewsItem[];
 
         setAnnouncements(prev => {
           const map = new Map<string, NewsItem>();
@@ -1461,28 +1476,63 @@ export const AdminPortal: React.FC = () => {
   // Synchronisation de secours si newsItems est déjà alimenté par le contexte
   useEffect(() => {
     if (newsItems.length > 0 && announcements.length === 0) {
-      setAnnouncements(newsItems.map(item => ({ id: item.id, ...item })));
+      setAnnouncements(newsItems.map(item => ({
+        id: item.id,
+        ...item,
+        author: item.author || item.authorRole || item.createdBy || '',
+        createdBy: item.createdBy || item.authorRole || item.author || '',
+      })));
     }
   }, [newsItems, announcements.length]);
 
-  // 2. FONCTION DE SUPPRESSION (handleDeleteAnnouncement) :
-  const handleDeleteAnnouncement = async (announcementId: string) => {
-    if (!announcementId) {
-      alert("Erreur : Identifiant du communiqué introuvable.");
+  // FILTRAGE STRICT PAR AUTEUR POUR LE COM (comAnnouncements) :
+  // Seuls les communiqués émis par le COM (author === 'COM' || createdBy === 'COM') apparaissent.
+  // Les messages publiés par "CERVEAU", "SPIRITUALITÉ", "TRÉSORERIE" ou d'autres administrateurs
+  // NE DOIVENT PAS apparaître dans le tableau de bord du COM.
+  const comAnnouncements = useMemo(() => {
+    return announcements.filter(item => {
+      const author = ((item.author || item.createdBy || item.authorRole || '') as string).trim().toUpperCase();
+      // Exclusion stricte des messages d'autres administrateurs
+      if (
+        author.includes('CERVEAU') ||
+        author.includes('SPIRIT') ||
+        author.includes('TRESOR') ||
+        author.includes('ORGANISATION') ||
+        author.includes('PROJET') ||
+        author.includes('SECRETAR')
+      ) {
+        return false;
+      }
+      return (
+        item.author === 'COM' ||
+        item.createdBy === 'COM' ||
+        item.authorRole === 'COM' ||
+        item.author === 'BIC' ||
+        item.createdBy === 'BIC' ||
+        item.authorRole === 'BIC' ||
+        author.includes('COM') ||
+        author.includes('BIC')
+      );
+    });
+  }, [announcements]);
+
+  // 2. LOGIQUE DU BOUTON SUPPRIMER (handleDeleteAnnouncement) :
+  const handleDeleteAnnouncement = async (id: string) => {
+    if (!id) {
+      alert("Erreur : ID du document introuvable.");
       return;
     }
     if (window.confirm("Voulez-vous vraiment supprimer ce communiqué ?")) {
       try {
-        setDeletingAnnouncementId(announcementId);
-        // Suppression dans Firestore (collections announcements et news)
-        await deleteDoc(doc(db, "announcements", announcementId));
+        setDeletingAnnouncementId(id);
+        await deleteDoc(doc(db, "announcements", id));
         try {
-          await deleteDoc(doc(db, "news", announcementId));
+          await deleteDoc(doc(db, "news", id));
         } catch (_) {}
 
         // Mise à jour immédiate du state local
-        setAnnouncements(prev => prev.filter(item => item.id !== announcementId));
-        deleteNewsItem(announcementId);
+        setAnnouncements(prev => prev.filter(a => a.id !== id));
+        deleteNewsItem(id);
 
         alert("Communiqué supprimé avec succès.");
       } catch (error: any) {
@@ -3991,18 +4041,23 @@ export const AdminPortal: React.FC = () => {
 
           {/* Manage Published Announcements (Edit / Delete) */}
           <div className="bg-slate-900 rounded-[2.5rem] p-6 sm:p-8 border border-slate-800 shadow-xl space-y-6">
-            <h2 className="text-xl font-black text-white flex items-center gap-2">
-              <Trash2 className="w-5 h-5 text-amber-500" />
-              <span>Gestion & Suppression des Communiqués Publiés</span>
-            </h2>
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <h2 className="text-xl font-black text-white flex items-center gap-2">
+                <Trash2 className="w-5 h-5 text-amber-500" />
+                <span>Gestion & Suppression des Communiqués Publiés</span>
+              </h2>
+              <span className="bg-amber-500/20 text-amber-300 text-[11px] font-black px-3 py-1 rounded-full border border-amber-500/30">
+                {comAnnouncements.length} communiqué{comAnnouncements.length > 1 ? 's' : ''} COM
+              </span>
+            </div>
 
-            {announcements.length === 0 ? (
+            {comAnnouncements.length === 0 ? (
               <div className="text-center py-8 text-slate-500 text-sm">
-                Aucun communiqué publié dans le fil.
+                Aucun communiqué publié par la COM dans le fil.
               </div>
             ) : (
               <div className="space-y-3">
-                {announcements.map(announcement => (
+                {comAnnouncements.map(announcement => (
                   <div
                     key={announcement.id}
                     className="p-4 rounded-2xl bg-slate-950 border border-slate-800 flex items-center justify-between gap-4 text-xs"
@@ -4010,7 +4065,7 @@ export const AdminPortal: React.FC = () => {
                     <div>
                       <span className="font-extrabold text-white text-sm">{announcement.title}</span>
                       <p className="text-slate-400 text-xs mt-0.5">
-                        {announcement.date || 'Date non précisée'} • Auteur: {announcement.authorRole || 'BIC'} • Cible: {announcement.targetAudience || 'TOUS'}
+                        {announcement.date || 'Date non précisée'} • Auteur: {announcement.author || announcement.authorRole || 'COM'} • Cible: {announcement.targetAudience || 'TOUS'}
                       </p>
                     </div>
 
@@ -4018,7 +4073,7 @@ export const AdminPortal: React.FC = () => {
                       type="button"
                       disabled={deletingAnnouncementId === announcement.id}
                       onClick={() => handleDeleteAnnouncement(announcement.id)}
-                      className="bg-rose-600/20 text-rose-300 hover:bg-rose-600 hover:text-white border border-rose-500/30 px-3.5 py-2 rounded-xl font-black flex items-center gap-1.5 transition-all cursor-pointer active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
+                      className="bg-rose-600/20 text-rose-300 hover:bg-rose-600 hover:text-white border border-rose-500/30 px-3.5 py-2 rounded-xl font-black flex items-center gap-1.5 transition-all cursor-pointer active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
                       title="Supprimer définitivement ce communiqué"
                     >
                       {deletingAnnouncementId === announcement.id ? (

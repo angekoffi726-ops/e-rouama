@@ -141,6 +141,8 @@ export interface NewsItem {
   title: string;
   content: string;
   authorRole: string;
+  author?: string;
+  createdBy?: string;
   targetAudience: TargetAudience;
   date: string;
   category: 'ANNONCE' | 'RELANCE' | 'ALERTE' | 'AUTRE';
