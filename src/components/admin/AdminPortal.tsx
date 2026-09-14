@@ -7,7 +7,7 @@ import { AdminRole, FundType, FUND_LABELS, TargetAudience, Committee, AgrProject
 import { ADMIN_USERS } from '../../data/membersData';
 import { sendEmailBroadcastAsync } from '../../utils/emailService';
 import { fetchAELFDailyReadings, AELFDayData } from '../../utils/aelfService';
-import { getDailyVerseForDate } from '../../utils/versesData';
+import { getDailyVerseForDate, PRAYER_ROUAMA } from '../../utils/versesData';
 import { RbacWarningBanner } from './RbacWarningBanner';
 import { EmailRecipientSelector } from '../common/EmailRecipientSelector';
 import {
@@ -266,6 +266,60 @@ export const AdminPortal: React.FC = () => {
       }
     }
   }, [activeRole]);
+
+  const [prayerEmailSuccessAlert, setPrayerEmailSuccessAlert] = useState(false);
+
+  // Envoi exclusif par courriel de la Prière ROUAMA (Saint Augustin) sans écriture dans Firestore announcements
+  const handlePublishPrayerByMail = async () => {
+    try {
+      setIsSendingEmail(true);
+      setSendingProgress(null);
+      setEmailError(null);
+      setPrayerEmailSuccessAlert(false);
+
+      // Exécute la boucle EmailJS (1 seconde d'intervalle entre chaque destinataire)
+      const res = await sendEmailBroadcastAsync(
+        PRAYER_ROUAMA.title,
+        PRAYER_ROUAMA.fullText,
+        members,
+        'DÉPARTEMENT SPIRITUALITÉ',
+        'MAIL',
+        {
+          recipientMode: spiritualRecipientMode,
+          selectedMemberId: spiritualSelectedMemberId,
+          onProgress: (current, total, email) => setSendingProgress({ current, total, email }),
+        }
+      );
+
+      // N'enregistre AUCUN nouveau document dans la collection Firestore 'announcements' ni 'news'
+      // Affiche l'alerte de confirmation demandée
+      setPrayerEmailSuccessAlert(true);
+      setToastMessage("Prière ROUAMA envoyée par mail avec succès !");
+      try {
+        window.alert("Prière ROUAMA envoyée par mail avec succès !");
+      } catch (_) {}
+
+      setEmailModalData({
+        authorRole: 'DÉPARTEMENT SPIRITUALITÉ',
+        title: PRAYER_ROUAMA.title,
+        content: PRAYER_ROUAMA.fullText,
+        recipients: res.recipients,
+        channel: 'MAIL',
+      });
+
+      setTimeout(() => {
+        setPrayerEmailSuccessAlert(false);
+      }, 8000);
+    } catch (err: any) {
+      console.error('Erreur spiritual EmailJS (Prière ROUAMA) :', err);
+      setEmailModalData(null);
+      const detail = err?.text || err?.message || 'Erreur lors de la transmission de la prière par email.';
+      setEmailError(detail);
+    } finally {
+      setIsSendingEmail(false);
+      setSendingProgress(null);
+    }
+  };
 
   const handleSpiritualPublish = async (
     title: string,
@@ -5407,16 +5461,22 @@ export const AdminPortal: React.FC = () => {
           {/* SECTION 1: PRIÈRE ROUAMA & PRIÈRES AELF */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             {/* Prière ROUAMA Card */}
-            <div className="bg-slate-900 border border-amber-500/30 rounded-3xl p-6 shadow-xl flex flex-col justify-between space-y-4">
+            <div className="bg-slate-900 border border-amber-500/30 rounded-3xl p-6 shadow-xl flex flex-col justify-between space-y-4 relative overflow-hidden">
+              <div className="absolute -top-10 -right-10 w-32 h-32 bg-amber-500/5 rounded-full blur-2xl pointer-events-none" />
               <div>
                 <div className="flex items-center justify-between gap-2 mb-3">
                   <div className="flex items-center gap-2 text-amber-400 font-black text-lg">
                     <span className="text-2xl">✝️</span>
                     <span>Prière ROUAMA (Saint Augustin)</span>
                   </div>
-                  <span className="bg-amber-500/20 text-amber-300 text-[10px] font-black px-3 py-1 rounded-full border border-amber-500/30">
-                    Officielle
-                  </span>
+                  <div className="flex items-center gap-1.5">
+                    <span className="bg-emerald-500/20 text-emerald-300 text-[10px] font-black px-2.5 py-1 rounded-full border border-emerald-500/30">
+                      Fixe sur GBAÏRAÏ
+                    </span>
+                    <span className="bg-amber-500/20 text-amber-300 text-[10px] font-black px-2.5 py-1 rounded-full border border-amber-500/30">
+                      Officielle
+                    </span>
+                  </div>
                 </div>
                 <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800 text-xs sm:text-sm text-slate-200 italic leading-relaxed space-y-2">
                   <p>
@@ -5426,50 +5486,40 @@ export const AdminPortal: React.FC = () => {
                     « Accorde à tous les membres de la famille ROUAMA la grâce d'aimer sans mesure, de fortifier notre fraternité et de cheminer ensemble dans la foi, l'entraide et la charité. Amen. »
                   </p>
                 </div>
+                <p className="mt-2 text-[11px] text-slate-400">
+                  ℹ️ La prière est intégrée de façon permanente et fixe dans le volet GBAÏRAÏ des membres. La diffusion manuelle depuis cet espace s'effectue exclusivement par courriel via EmailJS.
+                </p>
               </div>
 
-              <div className="space-y-2 pt-2 border-t border-slate-800">
-                <p className="text-[11px] text-slate-400 font-bold uppercase tracking-wider">
-                  Diffusion de la Prière ROUAMA Aux Membres :
-                </p>
-                <div className="grid grid-cols-3 gap-2">
-                  <button
-                    onClick={() =>
-                      handleSpiritualPublish(
-                        "Prière ROUAMA (Saint Augustin)",
-                        "« Seigneur notre Dieu, notre unique espérance, exauce-nous de peur que par découragement nous ne voulions plus te chercher. Tu as fait que nous te trouvions et tu nous as donné l'espoir de te trouver de plus en plus. »\n\n« Accorde à tous les membres de la famille ROUAMA la grâce d'aimer sans mesure, de fortifier notre fraternité et de cheminer ensemble dans la foi, l'entraide et la charité. Amen. »",
-                        'APP'
-                      )
-                    }
-                    className="bg-amber-600/80 hover:bg-amber-600 text-white font-black py-2.5 px-2 rounded-xl text-xs flex items-center justify-center gap-1 shadow transition-all active:scale-95"
-                  >
-                    <span>[Publier App]</span>
-                  </button>
-                  <button
-                    onClick={() =>
-                      handleSpiritualPublish(
-                        "Prière ROUAMA (Saint Augustin)",
-                        "« Seigneur notre Dieu, notre unique espérance, exauce-nous de peur que par découragement nous ne voulions plus te chercher. Tu as fait que nous te trouvions et tu nous as donné l'espoir de te trouver de plus en plus. »\n\n« Accorde à tous les membres de la famille ROUAMA la grâce d'aimer sans mesure, de fortifier notre fraternité et de cheminer ensemble dans la foi, l'entraide et la charité. Amen. »",
-                        'MAIL'
-                      )
-                    }
-                    className="bg-emerald-600/80 hover:bg-emerald-600 text-white font-black py-2.5 px-2 rounded-xl text-xs flex items-center justify-center gap-1 shadow transition-all active:scale-95"
-                  >
-                    <span>[Publier Mail]</span>
-                  </button>
-                  <button
-                    onClick={() =>
-                      handleSpiritualPublish(
-                        "Prière ROUAMA (Saint Augustin)",
-                        "« Seigneur notre Dieu, notre unique espérance, exauce-nous de peur que par découragement nous ne voulions plus te chercher. Tu as fait que nous te trouvions et tu nous as donné l'espoir de te trouver de plus en plus. »\n\n« Accorde à tous les membres de la famille ROUAMA la grâce d'aimer sans mesure, de fortifier notre fraternité et de cheminer ensemble dans la foi, l'entraide et la charité. Amen. »",
-                        'GENERAL'
-                      )
-                    }
-                    className="bg-gradient-to-r from-amber-600 to-emerald-600 hover:opacity-90 text-white font-black py-2.5 px-2 rounded-xl text-xs flex items-center justify-center gap-1 shadow transition-all active:scale-95"
-                  >
-                    <span>[Publier App + Mail]</span>
-                  </button>
+              {/* Confirmation Alert Banner */}
+              {prayerEmailSuccessAlert && (
+                <div className="bg-emerald-950/90 border-2 border-emerald-400 text-emerald-200 p-3.5 rounded-2xl flex items-center gap-3 shadow-lg animate-fadeIn">
+                  <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />
+                  <span className="text-xs sm:text-sm font-extrabold text-white">
+                    Prière ROUAMA envoyée par mail avec succès !
+                  </span>
                 </div>
+              )}
+
+              <div className="space-y-2 pt-2 border-t border-slate-800">
+                <button
+                  type="button"
+                  onClick={handlePublishPrayerByMail}
+                  disabled={isSendingEmail}
+                  className="w-full bg-gradient-to-r from-emerald-600 via-emerald-500 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-black py-3.5 px-4 rounded-2xl text-xs sm:text-sm flex items-center justify-center gap-2.5 shadow-xl hover:shadow-emerald-500/25 transition-all active:scale-[0.98] border border-emerald-400/40 disabled:opacity-50 cursor-pointer"
+                >
+                  {isSendingEmail ? (
+                    <>
+                      <RefreshCw className="w-4 h-4 animate-spin text-amber-300" />
+                      <span>ENVOI EN COURS DE LA PRIÈRE...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Mail className="w-4 h-4 text-amber-300" />
+                      <span>PUBLIER VIA MAIL</span>
+                    </>
+                  )}
+                </button>
               </div>
             </div>
 

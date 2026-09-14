@@ -145,6 +145,7 @@ export interface NewsItem {
   date: string;
   category: 'ANNONCE' | 'RELANCE' | 'ALERTE' | 'AUTRE';
   readBy: string[];
+  dismissedBy?: string[];
   dispatchChannel?: 'APP' | 'MAIL' | 'GENERAL';
   linkTab?: TabType;
   targetDocId?: string;

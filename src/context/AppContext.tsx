@@ -178,6 +178,7 @@ interface AppContextType {
     dispatchChannel?: 'APP' | 'MAIL' | 'GENERAL'
   ) => void;
   deleteNewsItem: (newsId: string) => void;
+  dismissNewsForMember: (newsId: string) => void;
   assignMemberRole: (memberId: string, role?: AdminRole) => void;
   resetMemberPin: (memberId: string) => void;
   updateMemberAvatar: (memberId: string, avatarDataUrl: string) => Promise<boolean>;
@@ -1591,6 +1592,34 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setNewsItems(prev => prev.filter(n => n.id !== newsId));
   };
 
+  const dismissNewsForMember = (newsId: string) => {
+    if (!currentUser?.member) return;
+    const memberId = currentUser.member.id;
+    const item = newsItems.find(n => n.id === newsId);
+    const existingDismissed = item?.dismissedBy || [];
+    const updatedDismissedBy = Array.from(new Set([...existingDismissed, memberId]));
+
+    // Persistance Firestore dans 'news' et 'announcements'
+    setDoc(doc(db, 'news', newsId), { dismissedBy: updatedDismissedBy }, { merge: true }).catch(console.warn);
+    setDoc(doc(db, 'announcements', newsId), { dismissedBy: updatedDismissedBy }, { merge: true }).catch(console.warn);
+
+    // Persistance locale de secours pour le membre
+    try {
+      const storageKey = `erouama_dismissed_news_${memberId}`;
+      const saved = JSON.parse(localStorage.getItem(storageKey) || '[]');
+      if (!saved.includes(newsId)) {
+        localStorage.setItem(storageKey, JSON.stringify([...saved, newsId]));
+      }
+    } catch (e) {
+      console.warn('Erreur localStorage dismissed news:', e);
+    }
+
+    // Mise à jour de l'état local
+    setNewsItems(prev =>
+      prev.map(n => (n.id === newsId ? { ...n, dismissedBy: updatedDismissedBy } : n))
+    );
+  };
+
   // Activités & Sorties
   const createActivity = (activity: Omit<EventActivity, 'id' | 'status' | 'budgetStatus'>) => {
     const newAct: EventActivity = {
@@ -2040,6 +2069,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         rejectWithdrawal,
         publishNews,
         deleteNewsItem,
+        dismissNewsForMember,
         markNewsAsRead,
         createActivity,
         approveActivityPayor,

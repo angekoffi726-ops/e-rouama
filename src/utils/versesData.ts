@@ -74,3 +74,19 @@ export function getDailyVerseForDate(date: Date = new Date()): DailyVerse {
   const index = Math.abs(dayOfYear) % DAILY_INSPIRATIONAL_VERSES.length;
   return DAILY_INSPIRATIONAL_VERSES[index];
 }
+
+/**
+ * Prière officielle ROUAMA inspirée de Saint Augustin
+ */
+export const PRAYER_ROUAMA = {
+  title: "Prière ROUAMA (Saint Augustin)",
+  subtitle: "Prière officielle permanente de la fraternité E-ROUAMA",
+  saint: "Saint Augustin",
+  paragraphs: [
+    "« Seigneur notre Dieu, notre unique espérance, exauce-nous de peur que par découragement nous ne voulions plus te chercher. Tu as fait que nous te trouvions et tu nous as donné l'espoir de te trouver de plus en plus. »",
+    "« Accorde à tous les membres de la famille ROUAMA la grâce d'aimer sans mesure, de fortifier notre fraternité et de cheminer ensemble dans la foi, l'entraide et la charité. Amen. »",
+  ],
+  fullText: `« Seigneur notre Dieu, notre unique espérance, exauce-nous de peur que par découragement nous ne voulions plus te chercher. Tu as fait que nous te trouvions et tu nous as donné l'espoir de te trouver de plus en plus. »
+
+« Accorde à tous les membres de la famille ROUAMA la grâce d'aimer sans mesure, de fortifier notre fraternité et de cheminer ensemble dans la foi, l'entraide et la charité. Amen. »`,
+};
