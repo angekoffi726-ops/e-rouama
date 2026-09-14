@@ -10,14 +10,16 @@ import { ArchivesTab } from './components/tabs/ArchivesTab';
 import { AdminPortal } from './components/admin/AdminPortal';
 import { TabType } from './components/Navigation';
 import { AdminRole } from './types';
-import { LayoutDashboard, CreditCard, Newspaper, Tent, Rocket, FileText, Shield, LogOut, Download, User, Sparkles } from 'lucide-react';
+import { LayoutDashboard, CreditCard, Newspaper, Tent, Rocket, FileText, Shield, LogOut, Download, User, Sparkles, KeyRound } from 'lucide-react';
 import { ADMIN_USERS } from './data/membersData';
+import { ChangePasswordModal } from './components/admin/ChangePasswordModal';
 
 function MainLayout() {
   const { currentUser, logout, members, newsItems } = useApp();
   const [activeTab, setActiveTab] = useState<TabType>('DASHBOARD');
   const [targetDocId, setTargetDocId] = useState<string | undefined>(undefined);
   const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
+  const [isAdminChangePasswordOpen, setIsAdminChangePasswordOpen] = useState(false);
 
   const handleNavigateTab = (tab: TabType, docId?: string) => {
     setActiveTab(tab);
@@ -96,7 +98,16 @@ function MainLayout() {
             </p>
           </div>
 
-          <div className="flex items-center gap-3 ml-auto">
+          <div className="flex items-center gap-3 ml-auto flex-wrap justify-end">
+            <button
+              onClick={() => setIsAdminChangePasswordOpen(true)}
+              className="flex items-center space-x-2 px-4 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 rounded-full font-black text-xs shadow-md transition-all active:scale-95 border border-amber-300"
+              title="Modifier mon mot de passe"
+            >
+              <KeyRound className="w-4 h-4" />
+              <span>MODIFIER MON MOT DE PASSE</span>
+            </button>
+
             {!isInstalled && (
               <button
                 onClick={handleInstallClick}
@@ -121,6 +132,13 @@ function MainLayout() {
         <main className="flex-1 p-4 sm:p-6 lg:p-8 max-w-7xl w-full mx-auto">
           <AdminPortal />
         </main>
+
+        {/* Modale de modification de mot de passe administrateur */}
+        <ChangePasswordModal
+          isOpen={isAdminChangePasswordOpen}
+          onClose={() => setIsAdminChangePasswordOpen(false)}
+          adminRole={currentUser?.adminRole}
+        />
 
         {/* Footer */}
         <footer className="bg-[#355E3B] text-white/90 px-4 sm:px-8 py-3.5 flex flex-col sm:flex-row items-center justify-between text-[11px] font-extrabold uppercase tracking-wider gap-2 border-t border-emerald-800">
@@ -156,37 +174,37 @@ function MainLayout() {
   const navItems = [
     {
       id: 'DASHBOARD' as TabType,
-      label: '📊 TABLEAU DE BORD',
+      label: 'ACCUEIL',
       icon: LayoutDashboard,
       badge: null,
     },
     {
       id: 'FINANCES' as TabType,
-      label: '💳 FINANCES',
+      label: 'DJAÏ',
       icon: CreditCard,
       badge: null,
     },
     {
       id: 'NOUVELLES' as TabType,
-      label: '📰 NOUVELLES',
+      label: 'GBAÏRAÏ',
       icon: Newspaper,
       badge: unreadNewsCount > 0 ? unreadNewsCount : null,
     },
     {
       id: 'ACTIVITES' as TabType,
-      label: '⛺ ACTIVITÉS',
+      label: 'SHOW',
       icon: Tent,
       badge: null,
     },
     {
       id: 'PROJETS' as TabType,
-      label: '🚀 PROJETS',
+      label: 'GAGNE PAIN',
       icon: Rocket,
       badge: null,
     },
     {
       id: 'ARCHIVES' as TabType,
-      label: '📑 ARCHIVES',
+      label: 'GRENIER',
       icon: FileText,
       badge: null,
     },

@@ -421,7 +421,7 @@ export const FinancesTab: React.FC = () => {
               <span>ESPACE FINANCES MEMBRE</span>
             </span>
             <span className="bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 px-3 py-1 rounded-full text-xs font-bold">
-              14 Membres E-ROUAMA
+              {members?.length || 12} Membres E-ROUAMA
             </span>
           </div>
 

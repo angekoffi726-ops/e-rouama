@@ -4709,7 +4709,7 @@ export const AdminPortal: React.FC = () => {
                             />
                           ) : (
                             <span className="font-mono text-xs font-bold bg-slate-950 text-amber-300 px-3 py-1.5 rounded-xl border border-slate-800">
-                              {admin.pin}
+                              {admin.password || admin.pin}
                             </span>
                           )}
                         </td>
@@ -4743,7 +4743,7 @@ export const AdminPortal: React.FC = () => {
                               onClick={() => {
                                 setEditingAdminRole(admin.id);
                                 setEditLoginId(admin.loginId || admin.id);
-                                setEditPin(admin.pin);
+                                setEditPin(admin.password || admin.pin);
                               }}
                               className="bg-amber-500/20 text-amber-300 hover:bg-amber-500 hover:text-white border border-amber-500/30 px-3.5 py-1.5 rounded-xl text-xs font-black inline-flex items-center gap-1.5 transition-all shadow-sm"
                             >

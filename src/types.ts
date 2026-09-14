@@ -45,6 +45,7 @@ export interface AdminUser {
   id: AdminRole;
   roleName: string;
   pin: string;
+  password?: string;
   loginId: string;
   description: string;
 }

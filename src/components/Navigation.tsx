@@ -25,37 +25,37 @@ export const Navigation: React.FC<NavigationProps> = ({ activeTab, setActiveTab 
   const navItems = [
     {
       id: 'DASHBOARD' as TabType,
-      label: 'Tableau de bord',
+      label: 'ACCUEIL',
       icon: LayoutDashboard,
       badge: null,
     },
     {
       id: 'FINANCES' as TabType,
-      label: 'Finances',
+      label: 'DJAÏ',
       icon: CreditCard,
       badge: null,
     },
     {
       id: 'NOUVELLES' as TabType,
-      label: 'Nouvelles',
+      label: 'GBAÏRAÏ',
       icon: Newspaper,
       badge: unreadNewsCount > 0 ? unreadNewsCount : null,
     },
     {
       id: 'ACTIVITES' as TabType,
-      label: 'Activités',
+      label: 'SHOW',
       icon: Tent,
       badge: null,
     },
     {
       id: 'PROJETS' as TabType,
-      label: 'Projets AGR',
+      label: 'GAGNE PAIN',
       icon: Rocket,
       badge: null,
     },
     {
       id: 'ARCHIVES' as TabType,
-      label: 'Archives',
+      label: 'GRENIER',
       icon: FileText,
       badge: null,
     },

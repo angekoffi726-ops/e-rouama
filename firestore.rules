@@ -91,6 +91,12 @@ service cloud.firestore {
     match /admin/{docId} {
       allow read, write: if true;
     }
+    match /admins/{adminId} {
+      allow read, write: if true;
+    }
+    match /users/{userId} {
+      allow read, write: if true;
+    }
 
     // Refus par défaut pour toute autre collection non répertoriée
     match /{document=**} {

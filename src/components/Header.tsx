@@ -1,12 +1,14 @@
 import React, { useState, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
-import { LogOut, Download, Shield, User } from 'lucide-react';
+import { LogOut, Download, Shield, User, KeyRound } from 'lucide-react';
 import { ADMIN_USERS } from '../data/membersData';
+import { ChangePasswordModal } from './admin/ChangePasswordModal';
 
 export const Header: React.FC<{ onOpenAdminModal?: () => void }> = ({ onOpenAdminModal }) => {
   const { currentUser, logout, members, isFirebaseConnected } = useApp();
   const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
   const [isInstalled, setIsInstalled] = useState(false);
+  const [isChangePasswordOpen, setIsChangePasswordOpen] = useState(false);
 
   const registeredCount = members ? members.filter(m => m.isRegistered).length : 1;
   const totalMembers = members && members.length > 0 ? members.length : 12;
@@ -133,6 +135,18 @@ export const Header: React.FC<{ onOpenAdminModal?: () => void }> = ({ onOpenAdmi
                 </button>
               )}
 
+              {isAdmin && (
+                <button
+                  onClick={() => setIsChangePasswordOpen(true)}
+                  className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-black px-3 py-2 rounded-xl text-xs flex items-center gap-1.5 transition-all shadow-md active:scale-95 border border-amber-300"
+                  title="Modifier mon mot de passe"
+                >
+                  <KeyRound className="w-4 h-4" />
+                  <span className="hidden sm:inline">MODIFIER MON MOT DE PASSE</span>
+                  <span className="sm:hidden">Mot de passe</span>
+                </button>
+              )}
+
               <button
                 onClick={logout}
                 className="bg-rose-600/90 hover:bg-rose-600 text-white font-bold px-3 py-2 rounded-xl text-xs flex items-center gap-1.5 transition-all shadow-md active:scale-95 border border-rose-400/30"
@@ -145,6 +159,13 @@ export const Header: React.FC<{ onOpenAdminModal?: () => void }> = ({ onOpenAdmi
           </div>
         </div>
       </div>
+
+      {/* Modale de modification de mot de passe */}
+      <ChangePasswordModal
+        isOpen={isChangePasswordOpen}
+        onClose={() => setIsChangePasswordOpen(false)}
+        adminRole={currentUser?.adminRole}
+      />
     </header>
   );
 };

@@ -70,6 +70,12 @@ interface AppContextType {
   loginMember: (firstNameOrRosterName: string, pin: string) => { success: boolean; message: string };
   loginAdmin: (adminId: string, pin: string) => { success: boolean; message: string };
   updateAdminCredentials: (roleId: AdminRole, newLoginId: string, newPin: string) => { success: boolean; message: string };
+  updateAdminPassword: (
+    roleId: AdminRole,
+    currentPasswordInput: string,
+    newPasswordInput: string,
+    confirmPasswordInput: string
+  ) => Promise<{ success: boolean; message: string }>;
   logout: () => void;
 
   // Helper
@@ -648,16 +654,46 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
     unsubscribes.push(unsubArchives);
 
-    // 12. IDENTIFIANTS ADMINISTRATEURS
+    // 12. IDENTIFIANTS ADMINISTRATEURS (Écoute doc admin/credentials + collection admins)
     const unsubAdmins = onSnapshot(doc(db, 'admin', 'credentials'), (docSnap) => {
       if (docSnap.exists()) {
         const data = docSnap.data();
         if (data && Array.isArray(data.list) && data.list.length > 0) {
-          setAdminUsers(data.list);
+          setAdminUsers(prev => {
+            return data.list.map((item: any) => ({
+              ...item,
+              pin: item.password || item.pin,
+              password: item.password || item.pin,
+            }));
+          });
         }
       }
     });
     unsubscribes.push(unsubAdmins);
+
+    const unsubAdminsColl = onSnapshot(collection(db, 'admins'), (snapshot) => {
+      if (!snapshot.empty) {
+        setAdminUsers(prev => {
+          const map = new Map<string, AdminUser>();
+          prev.forEach(a => map.set(a.id, a));
+          snapshot.forEach(d => {
+            const data = d.data() as any;
+            const existing = map.get(d.id as any);
+            const pwd = data.password || data.pin || (existing ? (existing.password || existing.pin) : '');
+            if (existing) {
+              map.set(d.id as any, {
+                ...existing,
+                loginId: data.loginId || existing.loginId,
+                pin: pwd,
+                password: pwd,
+              });
+            }
+          });
+          return Array.from(map.values());
+        });
+      }
+    });
+    unsubscribes.push(unsubAdminsColl);
 
     return () => {
       unsubscribes.forEach(u => u());
@@ -803,7 +839,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return { success: false, message: 'Identifiant Administrateur invalide.' };
     }
 
-    if (!pin || adminDef.pin !== pin) {
+    const expectedPassword = adminDef.password || adminDef.pin;
+    if (!pin || (expectedPassword !== pin && adminDef.pin !== pin)) {
       return { success: false, message: 'Mot de passe Administrateur incorrect.' };
     }
 
@@ -819,19 +856,98 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return { success: false, message: "Le mot de passe / PIN ne peut pas être vide." };
     }
 
+    const cleanPin = newPin.trim();
+    const cleanLogin = newLoginId.trim();
+
     const updatedAdmins = adminUsers.map(a =>
       a.id === roleId
-        ? { ...a, loginId: newLoginId.trim(), pin: newPin.trim() }
+        ? { ...a, loginId: cleanLogin, pin: cleanPin, password: cleanPin }
         : a
     );
 
     setAdminUsers(updatedAdmins);
     saveStoredAdminCredentials(updatedAdmins);
 
-    // Synchronisation Firestore
+    // Synchronisation Firestore (admin/credentials + collections admins et users)
+    const targetAdmin = updatedAdmins.find(a => a.id === roleId);
     setDoc(doc(db, 'admin', 'credentials'), { list: sanitizeFirestore(updatedAdmins) }, { merge: true }).catch(console.warn);
+    if (targetAdmin) {
+      const adminPayload = {
+        id: roleId,
+        roleName: targetAdmin.roleName,
+        loginId: cleanLogin,
+        pin: cleanPin,
+        password: cleanPin,
+        updatedAt: new Date().toISOString(),
+      };
+      setDoc(doc(db, 'admins', roleId), adminPayload, { merge: true }).catch(console.warn);
+      setDoc(doc(db, 'users', roleId), adminPayload, { merge: true }).catch(console.warn);
+    }
 
     return { success: true, message: `Identifiants pour le poste ${roleId} mis à jour et enregistrés avec succès !` };
+  };
+
+  // Mise à jour sécurisée du mot de passe par l'administrateur connecté
+  const updateAdminPassword = async (
+    roleId: AdminRole,
+    currentPasswordInput: string,
+    newPasswordInput: string,
+    confirmPasswordInput: string
+  ): Promise<{ success: boolean; message: string }> => {
+    if (!currentPasswordInput || !currentPasswordInput.trim()) {
+      return { success: false, message: "Veuillez saisir votre mot de passe actuel." };
+    }
+    if (!newPasswordInput || !newPasswordInput.trim()) {
+      return { success: false, message: "Le nouveau mot de passe ne peut pas être vide." };
+    }
+    if (newPasswordInput !== confirmPasswordInput) {
+      return { success: false, message: "Le nouveau mot de passe et la confirmation ne correspondent pas." };
+    }
+
+    const currentAdmins = adminUsers && adminUsers.length > 0 ? adminUsers : getStoredAdminCredentials();
+    const adminDef = currentAdmins.find(a => a.id === roleId);
+    if (!adminDef) {
+      return { success: false, message: "Compte administrateur introuvable." };
+    }
+
+    const expectedCurrentPassword = adminDef.password || adminDef.pin || '';
+    if (currentPasswordInput.trim() !== expectedCurrentPassword.trim()) {
+      return { success: false, message: "Mot de passe actuel incorrect." };
+    }
+
+    const cleanNewPassword = newPasswordInput.trim();
+    const updatedAdmins = currentAdmins.map(a =>
+      a.id === roleId
+        ? { ...a, pin: cleanNewPassword, password: cleanNewPassword }
+        : a
+    );
+
+    // 1. Mise à jour du state d'authentification local
+    setAdminUsers(updatedAdmins);
+    saveStoredAdminCredentials(updatedAdmins);
+
+    // 2. Synchronisation en direct avec la collection Firestore (admins, users, admin/credentials)
+    try {
+      const nowIso = new Date().toISOString();
+      const adminPayload = {
+        id: roleId,
+        roleName: adminDef.roleName,
+        loginId: adminDef.loginId || roleId,
+        pin: cleanNewPassword,
+        password: cleanNewPassword,
+        updatedAt: nowIso,
+      };
+
+      await Promise.allSettled([
+        setDoc(doc(db, 'admins', roleId), adminPayload, { merge: true }),
+        setDoc(doc(db, 'users', roleId), adminPayload, { merge: true }),
+        setDoc(doc(db, 'admin', 'credentials'), { list: sanitizeFirestore(updatedAdmins) }, { merge: true }),
+      ]);
+    } catch (err) {
+      console.error("Erreur synchronisation Firestore nouveau mot de passe:", err);
+    }
+
+    return { success: true, message: "Mot de passe modifié avec succès !" };
   };
 
   const logout = () => {
@@ -1812,6 +1928,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         loginMember,
         loginAdmin,
         updateAdminCredentials,
+        updateAdminPassword,
         logout,
         getMemberDuesStatus,
         getMemberDuesDetail,
