@@ -368,7 +368,6 @@ export const AuthScreen: React.FC = () => {
               </label>
               <input
                 type="text"
-                placeholder="Votre prénom officiel (ex: Ange, Capelo...)"
                 value={memberLoginName}
                 onChange={e => setMemberLoginName(e.target.value)}
                 className="w-full bg-[#F5EEDC]/50 border-2 border-[#E67E22]/30 rounded-2xl px-4 py-3 text-sm font-semibold text-slate-800 focus:outline-none focus:border-[#E67E22] transition-all"
@@ -411,7 +410,6 @@ export const AuthScreen: React.FC = () => {
               </label>
               <input
                 type="text"
-                placeholder="Votre prénom officiel (ex: Ange, Capelo...)"
                 value={regMemberName}
                 onChange={e => setRegMemberName(e.target.value)}
                 className="w-full bg-[#F5EEDC]/50 border-2 border-[#355E3B]/20 rounded-2xl px-4 py-3 text-sm font-semibold text-slate-800 focus:outline-none focus:border-[#355E3B] transition-all"

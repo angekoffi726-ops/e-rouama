@@ -295,6 +295,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [fundBalances, setFundBalances] = useState<Record<FundType, number>>({
     COTISATION: 0,
     ANNIVERSAIRE: 0,
+    SOIREE_ROUAMA: 0,
     LOISIRS: 0,
     AGR: 0,
     CAS_SOCIAUX: 0,
@@ -550,12 +551,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         if (docSnap.exists()) {
           setFundBalances(docSnap.data() as Record<FundType, number>);
         } else {
-          const defaultBalances = {
+          const defaultBalances: Record<FundType, number> = {
             COTISATION: 0,
             ANNIVERSAIRE: 0,
             LOISIRS: 0,
             AGR: 0,
             CAS_SOCIAUX: 0,
+            SOIREE_ROUAMA: 0,
           };
           setDoc(doc(db, 'treasury', 'balances'), defaultBalances).catch(console.warn);
           setFundBalances(defaultBalances);
@@ -1202,6 +1204,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     switch (fund) {
       case 'ANNIVERSAIRE':
         return 10000;
+      case 'SOIREE_ROUAMA': {
+        const soireeAct = activities.find(a => a.status === 'PUBLISHED' && (a.fixedType === 'SOIREE_ROUAMA' || a.title?.toLowerCase().includes('soirée') || a.title?.toLowerCase().includes('soiree')));
+        if (soireeAct && soireeAct.budget && soireeAct.budget > 0) {
+          return Math.round(soireeAct.budget / (members.length || 12));
+        }
+        return 10000;
+      }
       case 'LOISIRS': {
         const activeEvt = financialEvents.find(e => e.fund === 'LOISIRS' && e.status === 'PUBLISHED');
         return activeEvt ? activeEvt.requiredAmountPerMember : 0;
@@ -1762,16 +1771,25 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   // Activités & Sorties
-  const createActivity = (activity: Omit<EventActivity, 'id' | 'status' | 'budgetStatus'>) => {
+  const createActivity = (activity: Omit<EventActivity, 'id' | 'status' | 'budgetStatus'> & { status?: 'DRAFT' | 'PENDING_PAYOR' | 'APPROVED' | 'PUBLISHED' }) => {
     const newAct: EventActivity = {
       ...activity,
       id: 'ACT-' + Date.now(),
-      status: 'PENDING_PAYOR',
+      status: activity.status || 'PUBLISHED',
       budgetStatus: (activity.budget && activity.budget > 0) ? 'PENDING_TRESORIER' : 'NONE',
       createdAt: new Date().toISOString(),
     };
     setDoc(doc(db, 'activities', newAct.id), sanitizeFirestore(newAct)).catch(console.warn);
     setActivities(prev => [newAct, ...prev]);
+
+    // Annonce automatique aux membres
+    publishNews(
+      `⛺ ÉVÉNEMENT PUBLIÉ : ${newAct.title}`,
+      `L'événement « ${newAct.title} » (${newAct.eventDate}) a été planifié et publié par la Commission Organisation ! Retrouvez le programme et le décompte dans l'onglet SHOW.`,
+      'ANNONCE',
+      'TOUS',
+      'COMMISSION ORGANISATION'
+    );
   };
 
   const updateActivity = async (activityId: string, updatedData: Partial<EventActivity>) => {

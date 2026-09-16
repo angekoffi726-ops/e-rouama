@@ -57,11 +57,12 @@ export interface CurrentUser {
   adminRole?: AdminRole;
 }
 
-export type FundType = 'COTISATION' | 'ANNIVERSAIRE' | 'LOISIRS' | 'AGR' | 'CAS_SOCIAUX';
+export type FundType = 'COTISATION' | 'ANNIVERSAIRE' | 'SOIREE_ROUAMA' | 'LOISIRS' | 'AGR' | 'CAS_SOCIAUX';
 
 export const FUND_LABELS: Record<FundType, string> = {
   COTISATION: 'Cotisation Mensuelle',
   ANNIVERSAIRE: 'Anniversaire 21 Mars',
+  SOIREE_ROUAMA: 'Soirée Rouama',
   LOISIRS: 'Sorties & Loisirs',
   AGR: 'Projets AGR',
   CAS_SOCIAUX: 'Cas Sociaux',
@@ -169,10 +170,18 @@ export interface AdHocCommitteeRoles {
   transport?: string[] | string;
 }
 
+export type EventCategoryType = 'FIXE' | 'SIMPLE';
+
 export interface EventActivity {
   id: string;
   title: string;
   eventDate: string;
+  eventType?: EventCategoryType;
+  fixedType?: 'ANNIVERSAIRE' | 'SOIREE_ROUAMA' | 'AUTRE';
+  eventDay?: string; // '1'..'31' or 'LATER'
+  eventMonth?: string; // '1'..'12' or 'LATER'
+  eventYear?: string; // '2026', '2027', etc. or 'LATER'
+  isDayPending?: boolean;
   location?: string;
   description: string;
   committees: Committee[];

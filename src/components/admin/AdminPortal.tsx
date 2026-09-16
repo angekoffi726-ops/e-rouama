@@ -52,6 +52,10 @@ import {
   Truck,
   Box,
   X,
+  Sparkles,
+  Palmtree,
+  Cake,
+  Crown,
 } from 'lucide-react';
 
 // Helper pour normaliser les rôles Ad-Hoc en tableau de chaînes
@@ -384,7 +388,12 @@ export const AdminPortal: React.FC = () => {
   const [spiritualSelectedMemberId, setSpiritualSelectedMemberId] = useState<string>('');
 
   // 5. Organisation Form
-  const [actTitle, setActTitle] = useState<string>('');
+  const [actCategoryType, setActCategoryType] = useState<'FIXE' | 'SIMPLE'>('FIXE');
+  const [actFixedType, setActFixedType] = useState<'ANNIVERSAIRE' | 'SOIREE_ROUAMA' | 'AUTRE'>('SOIREE_ROUAMA');
+  const [actTitle, setActTitle] = useState<string>('Soirée Rouama 2026');
+  const [actDay, setActDay] = useState<string>('LATER');
+  const [actMonth, setActMonth] = useState<string>('12');
+  const [actYear, setActYear] = useState<string>('2026');
   const [actDate, setActDate] = useState<string>('');
   const [actLocation, setActLocation] = useState<string>('');
   const [actDesc, setActDesc] = useState<string>('');
@@ -5308,15 +5317,133 @@ export const AdminPortal: React.FC = () => {
               )}
             </div>
 
-            {/* 1. Coordonnées de l'événement (Titre, Date, Lieu) */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {/* SÉLECTEUR DE BLOC : ÉVÉNEMENT FIXE VS ÉVÉNEMENT SIMPLE */}
+            <div className="space-y-3">
+              <label className="block text-xs font-bold text-slate-400 uppercase">
+                Type de Planification (Sélectionnez le bloc)
+              </label>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActCategoryType('FIXE');
+                    if (actFixedType === 'SOIREE_ROUAMA' && (!actTitle || actTitle.includes('Sortie'))) {
+                      setActTitle('Soirée Rouama 2026');
+                    }
+                  }}
+                  className={`p-4 rounded-2xl border-2 text-left transition-all cursor-pointer ${
+                    actCategoryType === 'FIXE'
+                      ? 'bg-amber-500/15 border-amber-500 text-white shadow-lg'
+                      : 'bg-slate-950/60 border-slate-800 text-slate-400 hover:border-slate-700'
+                  }`}
+                >
+                  <div className="flex items-center gap-2 mb-1.5">
+                    <Sparkles className={`w-5 h-5 ${actCategoryType === 'FIXE' ? 'text-amber-400' : 'text-slate-500'}`} />
+                    <span className="font-black text-sm uppercase tracking-wide">
+                      BLOC 1 : Événement Fixe
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-400 leading-relaxed">
+                    Événements institutionnels annuels du groupe (Soirée Rouama, Anniversaire 21 Mars, Célébrations Statutaires).
+                  </p>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActCategoryType('SIMPLE');
+                    if (actTitle.includes('Soirée') || actTitle.includes('Anniversaire')) {
+                      setActTitle('Sortie Détente Fraternelle');
+                    }
+                  }}
+                  className={`p-4 rounded-2xl border-2 text-left transition-all cursor-pointer ${
+                    actCategoryType === 'SIMPLE'
+                      ? 'bg-sky-500/15 border-sky-500 text-white shadow-lg'
+                      : 'bg-slate-950/60 border-slate-800 text-slate-400 hover:border-slate-700'
+                  }`}
+                >
+                  <div className="flex items-center gap-2 mb-1.5">
+                    <Palmtree className={`w-5 h-5 ${actCategoryType === 'SIMPLE' ? 'text-sky-400' : 'text-slate-500'}`} />
+                    <span className="font-black text-sm uppercase tracking-wide">
+                      BLOC 2 : Événement Simple
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-400 leading-relaxed">
+                    Sorties & Loisirs, activités récréatives ponctuelles, retraites fraternelles et journées sportives.
+                  </p>
+                </button>
+              </div>
+            </div>
+
+            {/* OPTIONS DU BLOC 1 (FIXE) */}
+            {actCategoryType === 'FIXE' && (
+              <div className="bg-amber-500/10 border border-amber-500/30 rounded-2xl p-4 space-y-3">
+                <label className="block text-xs font-black text-amber-300 uppercase">
+                  Catégorie d'Événement Fixe
+                </label>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActFixedType('SOIREE_ROUAMA');
+                      setActTitle(`Soirée Rouama ${actYear !== 'LATER' ? actYear : '2026'}`);
+                    }}
+                    className={`px-3.5 py-2.5 rounded-xl text-xs font-bold text-left border transition-all cursor-pointer flex items-center gap-2 ${
+                      actFixedType === 'SOIREE_ROUAMA'
+                        ? 'bg-amber-500 text-slate-950 border-amber-400 shadow'
+                        : 'bg-slate-900 text-slate-300 border-slate-800 hover:border-slate-700'
+                    }`}
+                  >
+                    <Sparkles className="w-4 h-4 shrink-0" />
+                    <span>Soirée Rouama (Gala)</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActFixedType('ANNIVERSAIRE');
+                      setActTitle(`Anniversaire Rouama (21 Mars ${actYear !== 'LATER' ? actYear : '2027'})`);
+                      setActDay('21');
+                      setActMonth('3');
+                    }}
+                    className={`px-3.5 py-2.5 rounded-xl text-xs font-bold text-left border transition-all cursor-pointer flex items-center gap-2 ${
+                      actFixedType === 'ANNIVERSAIRE'
+                        ? 'bg-amber-500 text-slate-950 border-amber-400 shadow'
+                        : 'bg-slate-900 text-slate-300 border-slate-800 hover:border-slate-700'
+                    }`}
+                  >
+                    <Cake className="w-4 h-4 shrink-0" />
+                    <span>Anniversaire (21 Mars)</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActFixedType('AUTRE');
+                      setActTitle('Célébration Statutaire Rouama');
+                    }}
+                    className={`px-3.5 py-2.5 rounded-xl text-xs font-bold text-left border transition-all cursor-pointer flex items-center gap-2 ${
+                      actFixedType === 'AUTRE'
+                        ? 'bg-amber-500 text-slate-950 border-amber-400 shadow'
+                        : 'bg-slate-900 text-slate-300 border-slate-800 hover:border-slate-700'
+                    }`}
+                  >
+                    <Users className="w-4 h-4 shrink-0" />
+                    <span>Autre Événement Fixe</span>
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* 1. Titre & Lieu */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
                 <label className="block text-xs font-bold text-slate-400 uppercase mb-2">
                   Titre de l'Événement *
                 </label>
                 <input
                   type="text"
-                  placeholder="Ex: Sortie Détente Fraternelle"
+                  placeholder={actCategoryType === 'FIXE' ? 'Ex: Soirée Rouama 2026' : 'Ex: Sortie Détente Fraternelle à Assinie'}
                   value={actTitle}
                   onChange={e => setActTitle(e.target.value)}
                   className="w-full bg-slate-950 border border-slate-800 rounded-2xl px-4 py-3 text-sm font-bold text-white focus:outline-none focus:border-amber-500 transition-colors"
@@ -5324,25 +5451,13 @@ export const AdminPortal: React.FC = () => {
               </div>
 
               <div>
-                <label className="block text-xs font-bold text-slate-400 uppercase mb-2">
-                  Date de l'Événement *
-                </label>
-                <input
-                  type="date"
-                  value={actDate}
-                  onChange={e => setActDate(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-2xl px-4 py-3 text-sm font-bold text-white focus:outline-none focus:border-amber-500 transition-colors"
-                />
-              </div>
-
-              <div>
                 <label className="block text-xs font-bold text-slate-400 uppercase mb-2 flex items-center gap-1">
                   <MapPin className="w-3.5 h-3.5 text-amber-500" />
-                  <span>Lieu de l'Événement</span>
+                  <span>Lieu de l'Événement (Optionnel)</span>
                 </label>
                 <input
                   type="text"
-                  placeholder="Ex: Plage d'Assinie / Espace Rouama"
+                  placeholder="Ex: Espace Rouama / Plage d'Assinie / Abidjan"
                   value={actLocation}
                   onChange={e => setActLocation(e.target.value)}
                   className="w-full bg-slate-950 border border-slate-800 rounded-2xl px-4 py-3 text-sm font-bold text-white focus:outline-none focus:border-amber-500 transition-colors"
@@ -5350,7 +5465,118 @@ export const AdminPortal: React.FC = () => {
               </div>
             </div>
 
-            {/* 2. Description & Objectifs */}
+            {/* 2. DATES FRACTIONNÉES (3 SÉLECTEURS DISTINCTS : JOUR / MOIS / ANNÉE) */}
+            <div className="bg-slate-950/80 rounded-2xl p-5 border border-slate-800 space-y-4">
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <label className="block text-xs font-bold text-amber-400 uppercase flex items-center gap-2">
+                  <Calendar className="w-4 h-4 text-amber-400" />
+                  <span>Date Fractionnée de l'Événement</span>
+                </label>
+                <span className="text-[11px] text-slate-400">
+                  Jour personnalisable plus tard sans affecter le mois
+                </span>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                {/* SÉLECTEUR JOUR */}
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-400 uppercase mb-1.5">
+                    Jour
+                  </label>
+                  <select
+                    value={actDay}
+                    onChange={e => setActDay(e.target.value)}
+                    className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3.5 py-2.5 text-sm font-bold text-white focus:outline-none focus:border-amber-500"
+                  >
+                    <option value="LATER">À définir plus tard</option>
+                    {Array.from({ length: 31 }, (_, i) => i + 1).map(d => (
+                      <option key={d} value={String(d)}>
+                        {d < 10 ? `0${d}` : d}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* SÉLECTEUR MOIS */}
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-400 uppercase mb-1.5">
+                    Mois
+                  </label>
+                  <select
+                    value={actMonth}
+                    onChange={e => setActMonth(e.target.value)}
+                    className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3.5 py-2.5 text-sm font-bold text-white focus:outline-none focus:border-amber-500"
+                  >
+                    <option value="LATER">À définir plus tard</option>
+                    <option value="1">01 - Janvier</option>
+                    <option value="2">02 - Février</option>
+                    <option value="3">03 - Mars</option>
+                    <option value="4">04 - Avril</option>
+                    <option value="5">05 - Mai</option>
+                    <option value="6">06 - Juin</option>
+                    <option value="7">07 - Juillet</option>
+                    <option value="8">08 - Août</option>
+                    <option value="9">09 - Septembre</option>
+                    <option value="10">10 - Octobre</option>
+                    <option value="11">11 - Novembre</option>
+                    <option value="12">12 - Décembre</option>
+                  </select>
+                </div>
+
+                {/* SÉLECTEUR ANNÉE */}
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-400 uppercase mb-1.5">
+                    Année
+                  </label>
+                  <select
+                    value={actYear}
+                    onChange={e => setActYear(e.target.value)}
+                    className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3.5 py-2.5 text-sm font-bold text-white focus:outline-none focus:border-amber-500"
+                  >
+                    <option value="LATER">À définir plus tard</option>
+                    <option value="2026">2026</option>
+                    <option value="2027">2027</option>
+                    <option value="2028">2028</option>
+                    <option value="2029">2029</option>
+                    <option value="2030">2030</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* Aperçu Dynamique de la Date et du Décompte SHOW */}
+              <div className="p-3 bg-slate-900/90 rounded-xl border border-slate-800 text-xs flex items-start gap-2.5">
+                <Clock className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                <div className="text-slate-300 leading-relaxed">
+                  {actMonth !== 'LATER' && actYear !== 'LATER' ? (
+                    actDay === 'LATER' ? (
+                      <div>
+                        <span className="font-bold text-amber-300">
+                          Date affichée dans SHOW : {['Janvier','Février','Mars','Avril','Mai','Juin','Juillet','Août','Septembre','Octobre','Novembre','Décembre'][Number(actMonth) - 1]} {actYear}
+                        </span>
+                        <p className="text-slate-400 text-[11px] mt-0.5">
+                          ✓ Décompte SHOW calculé automatiquement par défaut sur le <span className="text-amber-200 font-semibold">01/{actMonth.padStart(2, '0')}/{actYear} à 00:00</span> (aucun badge « Date à préciser » ne sera affiché).
+                        </p>
+                      </div>
+                    ) : (
+                      <div>
+                        <span className="font-bold text-emerald-300">
+                          Date précise : {actDay.padStart(2, '0')} {['Janvier','Février','Mars','Avril','Mai','Juin','Juillet','Août','Septembre','Octobre','Novembre','Décembre'][Number(actMonth) - 1]} {actYear}
+                        </span>
+                        <p className="text-slate-400 text-[11px] mt-0.5">
+                          ✓ Décompte SHOW calé sur la date exacte du {actDay.padStart(2, '0')}/{actMonth.padStart(2, '0')}/{actYear}.
+                        </p>
+                      </div>
+                    )
+                  ) : (
+                    <span className="text-slate-400">
+                      Veuillez au minimum sélectionner le mois et l'année pour le calcul du décompte SHOW.
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* 3. Description & Objectifs */}
             <div>
               <label className="block text-xs font-bold text-slate-400 uppercase mb-2">
                 Description & Objectifs
@@ -5364,7 +5590,7 @@ export const AdminPortal: React.FC = () => {
               />
             </div>
 
-            {/* 3. Programme Déroulé */}
+            {/* 4. Programme Déroulé */}
             <div>
               <label className="block text-xs font-bold text-slate-400 uppercase mb-2">
                 Programme Déroulé
@@ -5378,18 +5604,23 @@ export const AdminPortal: React.FC = () => {
               />
             </div>
 
-            {/* 4. SECTION DÉDIÉE : ATTRIBUTION DU COMITÉ AD-HOC (SÉLECTION MULTIPLE) */}
+            {/* 5. SECTION DÉDIÉE : ATTRIBUTION DU COMITÉ AD-HOC (OPTIONNELLE) */}
             <div className="bg-slate-950/70 rounded-3xl p-5 sm:p-6 border border-slate-800/80 space-y-4">
-              <div className="flex items-center gap-2 pb-2 border-b border-slate-800/60">
-                <Users className="w-5 h-5 text-amber-500" />
-                <div>
-                  <h3 className="text-sm font-black text-white uppercase tracking-wide">
-                    Attribution du Comité Ad-Hoc
-                  </h3>
-                  <p className="text-[11px] text-slate-400">
-                    Sélectionnez 1 ou plusieurs membres parmi les 12 pour chaque poste opérationnel (badges retirables & puces cliquables).
-                  </p>
+              <div className="flex items-center justify-between flex-wrap gap-2 pb-2 border-b border-slate-800/60">
+                <div className="flex items-center gap-2">
+                  <Users className="w-5 h-5 text-amber-500" />
+                  <div>
+                    <h3 className="text-sm font-black text-white uppercase tracking-wide">
+                      Attribution du Comité Ad-Hoc (Optionnelle)
+                    </h3>
+                    <p className="text-[11px] text-slate-400">
+                      Vous pouvez publier l'événement immédiatement sans désigner de comité, et le constituer plus tard.
+                    </p>
+                  </div>
                 </div>
+                <span className="bg-emerald-500/10 text-emerald-400 text-[11px] font-extrabold px-3 py-1 rounded-full border border-emerald-500/30">
+                  Nomination Optionnelle
+                </span>
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -5455,14 +5686,30 @@ export const AdminPortal: React.FC = () => {
               </div>
             </div>
 
-            {/* Boutons d'action du formulaire */}
+            {/* Boutons d'action du formulaire : AUTONOMIE ORG & PUBLICATION DIRECTE */}
             <div className="flex items-center gap-3 pt-2">
               <button
                 type="button"
                 onClick={async () => {
-                  if (!actTitle.trim() || !actDate.trim()) {
-                    alert("Veuillez renseigner le titre et la date de l'événement.");
+                  if (!actTitle.trim()) {
+                    alert("Veuillez renseigner le titre de l'événement.");
                     return;
+                  }
+
+                  // Construction du texte de la date fractionnée
+                  const MONTH_NAMES_LIST = ['Janvier','Février','Mars','Avril','Mai','Juin','Juillet','Août','Septembre','Octobre','Novembre','Décembre'];
+                  let formattedDate = '';
+                  if (actMonth !== 'LATER' && actYear !== 'LATER') {
+                    const monthText = MONTH_NAMES_LIST[Number(actMonth) - 1];
+                    if (actDay !== 'LATER') {
+                      formattedDate = `${actDay} ${monthText} ${actYear}`;
+                    } else {
+                      formattedDate = `${monthText} ${actYear}`;
+                    }
+                  } else if (actYear !== 'LATER') {
+                    formattedDate = `Année ${actYear}`;
+                  } else {
+                    formattedDate = 'Date fixée par l\'Organisation';
                   }
 
                   const adHocRoles: AdHocCommitteeRoles = {
@@ -5511,31 +5758,47 @@ export const AdminPortal: React.FC = () => {
                     if (editingActivityId) {
                       await updateActivity(editingActivityId, {
                         title: actTitle.trim(),
-                        eventDate: actDate,
+                        eventDate: formattedDate,
+                        eventType: actCategoryType,
+                        fixedType: actCategoryType === 'FIXE' ? actFixedType : undefined,
+                        eventDay: actDay,
+                        eventMonth: actMonth,
+                        eventYear: actYear,
+                        isDayPending: actDay === 'LATER',
                         location: actLocation.trim(),
                         description: actDesc.trim(),
                         program: actProgram.trim(),
                         adHocRoles,
                         committees: structuredCommittees,
+                        status: 'PUBLISHED',
                       });
-                      alert("Événement mis à jour avec succès !");
+                      alert("Événement mis à jour avec succès ! Il est visible en temps réel dans l'onglet SHOW.");
                     } else {
                       createActivity({
                         title: actTitle.trim(),
-                        eventDate: actDate,
+                        eventDate: formattedDate,
+                        eventType: actCategoryType,
+                        fixedType: actCategoryType === 'FIXE' ? actFixedType : undefined,
+                        eventDay: actDay,
+                        eventMonth: actMonth,
+                        eventYear: actYear,
+                        isDayPending: actDay === 'LATER',
                         location: actLocation.trim(),
                         description: actDesc.trim(),
                         program: actProgram.trim(),
                         adHocRoles,
                         committees: structuredCommittees,
                         createdBy: 'COMMISSION ORGANISATION',
+                        status: 'PUBLISHED',
                       });
-                      alert("Dossier d'Événement créé et transmis au PAYOR pour validation !");
+                      alert("Événement publié avec succès par la Commission Organisation ! Il est immédiatement visible dans l'onglet SHOW.");
                     }
 
                     // Reset form
                     setActTitle('');
-                    setActDate('');
+                    setActDay('LATER');
+                    setActMonth('12');
+                    setActYear('2026');
                     setActLocation('');
                     setActDesc('');
                     setActProgram('');
@@ -5548,10 +5811,10 @@ export const AdminPortal: React.FC = () => {
                     setEditingActivityId(null);
                   } catch (err) {
                     console.error(err);
-                    alert("Une erreur est survenue lors de l'enregistrement de l'événement.");
+                    alert("Une erreur est survenue lors de la publication de l'événement.");
                   }
                 }}
-                className="bg-[#E67E22] hover:bg-[#D35400] text-white font-black py-3.5 px-6 rounded-2xl shadow-lg text-sm flex items-center gap-2 active:scale-95 transition-all cursor-pointer"
+                className="bg-emerald-600 hover:bg-emerald-500 text-white font-black py-3.5 px-6 rounded-2xl shadow-lg text-sm flex items-center gap-2 active:scale-95 transition-all cursor-pointer"
               >
                 {editingActivityId ? (
                   <>
@@ -5560,8 +5823,8 @@ export const AdminPortal: React.FC = () => {
                   </>
                 ) : (
                   <>
-                    <Send className="w-4 h-4" />
-                    <span>Transmettre au PAYOR</span>
+                    <Sparkles className="w-4 h-4" />
+                    <span>Publier l'événement</span>
                   </>
                 )}
               </button>
@@ -5571,7 +5834,9 @@ export const AdminPortal: React.FC = () => {
                   type="button"
                   onClick={() => {
                     setActTitle('');
-                    setActDate('');
+                    setActDay('LATER');
+                    setActMonth('12');
+                    setActYear('2026');
                     setActLocation('');
                     setActDesc('');
                     setActProgram('');
@@ -5683,6 +5948,11 @@ export const AdminPortal: React.FC = () => {
                             onClick={() => {
                               setEditingActivityId(act.id);
                               setActTitle(act.title || '');
+                              setActCategoryType(act.eventType || 'FIXE');
+                              setActFixedType(act.fixedType || 'SOIREE_ROUAMA');
+                              setActDay(act.eventDay || (act.isDayPending ? 'LATER' : 'LATER'));
+                              setActMonth(act.eventMonth || '12');
+                              setActYear(act.eventYear || '2026');
                               setActDate(act.eventDate || '');
                               setActLocation(act.location || '');
                               setActDesc(act.description || '');

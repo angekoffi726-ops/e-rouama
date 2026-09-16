@@ -176,6 +176,7 @@ export const FinancesTab: React.FC = () => {
 
   // Rubric progresses for connected member
   const annivProgress = getMemberRubricProgress(currentMemberId, 'ANNIVERSAIRE');
+  const soireeProgress = getMemberRubricProgress(currentMemberId, 'SOIREE_ROUAMA');
   const loisirsProgress = getMemberRubricProgress(currentMemberId, 'LOISIRS');
   const socialProgress = getMemberRubricProgress(currentMemberId, 'CAS_SOCIAUX', socialPrecision);
   const agrProgress = getMemberRubricProgress(currentMemberId, 'AGR');
@@ -331,6 +332,10 @@ export const FinancesTab: React.FC = () => {
   });
 
   // Active events and project lookups for dynamic rubric enablement
+  const activeSoiree = activities.find(
+    a => a.status === 'PUBLISHED' && (a.fixedType === 'SOIREE_ROUAMA' || a.title?.toLowerCase().includes('soirée') || a.title?.toLowerCase().includes('soiree'))
+  );
+
   const activeLoisirs = getActiveFinancialEvent
     ? getActiveFinancialEvent('LOISIRS')
     : financialEvents?.find(e => e.fund === 'LOISIRS' && e.status === 'PUBLISHED');
@@ -343,7 +348,7 @@ export const FinancesTab: React.FC = () => {
     ? getActiveAgrProject()
     : projects?.find(p => p.status === 'PUBLISHED');
 
-  // Rubric Cards Definition for Mode 2 (Tranches)
+  // Rubric Cards Definition for Mode 2 (Tranches - 5 Cotisations Fixes et Acomptes)
   const trancheCards = [
     {
       fund: 'ANNIVERSAIRE' as FundType,
@@ -359,6 +364,21 @@ export const FinancesTab: React.FC = () => {
       badgeBg: 'bg-amber-100 text-amber-900 border-amber-300',
       icon: <Cake className="w-6 h-6 text-amber-500" />,
       example: 'Ex: Versez 2 000 F aujourd\'hui sur les 10 000 F, reste à payer 8 000 F.',
+    },
+    {
+      fund: 'SOIREE_ROUAMA' as FundType,
+      title: activeSoiree ? activeSoiree.title : 'Soirée Rouama',
+      subtitle: activeSoiree ? 'Retrouvailles & Dîner de Gala (Événement Fixe)' : 'Dîner de gala et festivités fraternelles (Date Fixe)',
+      eventDate: activeSoiree?.eventDate || 'Date fixée par l\'Organisation',
+      paymentDeadline: activeSoiree?.eventDate || '',
+      isActive: true,
+      emptyNotice: '',
+      progress: soireeProgress,
+      accentColor: 'from-emerald-500/10 to-emerald-600/5',
+      borderColor: 'border-emerald-400/40',
+      badgeBg: 'bg-emerald-100 text-emerald-900 border-emerald-300',
+      icon: <Sparkles className="w-6 h-6 text-emerald-500" />,
+      example: 'Ex: Versez 3 000 F d\'acompte sur les 10 000 F, reste à solder 7 000 F.',
     },
     {
       fund: 'LOISIRS' as FundType,
@@ -1140,11 +1160,16 @@ export const FinancesTab: React.FC = () => {
                 <label className="block text-xs font-extrabold text-gray-700 uppercase mb-2">
                   1. Choisissez la Rubrique ou l'Événement
                 </label>
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
                   {[
                     {
                       key: 'ANNIVERSAIRE' as FundType,
-                      label: '🎂 Anniversaire (21 Mars)',
+                      label: '🎂 Anniversaire 21 Mars',
+                      isActive: true,
+                    },
+                    {
+                      key: 'SOIREE_ROUAMA' as FundType,
+                      label: activeSoiree ? `✨ ${activeSoiree.title}` : '✨ Soirée Rouama',
                       isActive: true,
                     },
                     {
