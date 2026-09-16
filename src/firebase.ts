@@ -1,22 +1,26 @@
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import { getFirestore, doc, getDocFromServer } from 'firebase/firestore';
 import { getAuth, signInAnonymously } from 'firebase/auth';
+import firebaseAppletConfig from '../firebase-applet-config.json';
 
-// Identifiants Firebase officiels du projet E-ROUAMA
+// Identifiants Firebase officiels du projet E-ROUAMA (chargés dynamiquement depuis la configuration applet)
 export const firebaseConfig = {
-  apiKey: "AIzaSyCxEO6-cd0Bld5FKxBE8j8KNoP9c7PeNI4",
-  authDomain: "e-rouama-f735a.firebaseapp.com",
-  projectId: "e-rouama-f735a",
-  storageBucket: "e-rouama-f735a.firebasestorage.app",
-  messagingSenderId: "700309956720",
-  appId: "1:700309956720:web:5dc3242ea580b5f39fecb5"
+  apiKey: firebaseAppletConfig.apiKey,
+  authDomain: firebaseAppletConfig.authDomain,
+  projectId: firebaseAppletConfig.projectId,
+  storageBucket: firebaseAppletConfig.storageBucket,
+  messagingSenderId: firebaseAppletConfig.messagingSenderId,
+  appId: firebaseAppletConfig.appId,
+  ...(firebaseAppletConfig.measurementId ? { measurementId: firebaseAppletConfig.measurementId } : {})
 };
 
 // Initialisation de Firebase avec les clés du projet
 const app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
 
-// Initialisation de Firestore
-export const db = getFirestore(app);
+// Initialisation de Firestore avec la base de données spécifique du projet
+export const db = firebaseAppletConfig.firestoreDatabaseId
+  ? getFirestore(app, firebaseAppletConfig.firestoreDatabaseId)
+  : getFirestore(app);
 
 // Initialisation du service d'authentification Firebase
 export const auth = getAuth(app);
@@ -30,7 +34,7 @@ signInAnonymously(auth).catch((err) => {
 export async function testFirestoreConnection(): Promise<boolean> {
   try {
     await getDocFromServer(doc(db, 'test', 'connection'));
-    console.log('✅ Connexion Firestore opérationnelle sur e-rouama-f735a');
+    console.log(`✅ Connexion Firestore opérationnelle sur ${firebaseAppletConfig.projectId}`);
     return true;
   } catch (error) {
     if (error instanceof Error && error.message.includes('the client is offline')) {
