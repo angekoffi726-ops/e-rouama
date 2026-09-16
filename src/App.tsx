@@ -1,4 +1,6 @@
-import React, { Component, useState } from 'react';
+import React, { Component, useState, useEffect } from 'react';
+import { collection, onSnapshot } from 'firebase/firestore';
+import { db } from './firebase';
 import { AppProvider, useApp } from './context/AppContext';
 import { AuthScreen } from './components/AuthScreen';
 import { DashboardTab } from './components/tabs/DashboardTab';
@@ -29,9 +31,25 @@ function MainLayout() {
     }
   };
   const [isInstalled, setIsInstalled] = useState(false);
+  const [totalRegistered, setTotalRegistered] = useState<number>(0);
 
-  const registeredCount = members ? members.filter(m => m.isRegistered).length : 0;
-  const totalMembers = members ? members.length : 13;
+  useEffect(() => {
+    const unsubscribe = onSnapshot(
+      collection(db, 'members'),
+      (snapshot) => {
+        const count = snapshot.docs.filter(doc => doc.data().isRegistered === true).length;
+        setTotalRegistered(count);
+      },
+      (error) => {
+        console.warn('Erreur écoute Firestore members dans App:', error);
+      }
+    );
+
+    return () => unsubscribe();
+  }, []);
+
+  const registeredCount = totalRegistered;
+  const totalMembers = 12;
 
   React.useEffect(() => {
     const handleBeforeInstall = (e: any) => {

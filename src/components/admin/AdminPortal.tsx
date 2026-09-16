@@ -9,6 +9,7 @@ import { sendEmailBroadcastAsync } from '../../utils/emailService';
 import { fetchAELFDailyReadings, AELFDayData } from '../../utils/aelfService';
 import { getDailyVerseForDate, PRAYER_ROUAMA } from '../../utils/versesData';
 import { RbacWarningBanner } from './RbacWarningBanner';
+import { CerveauMembersCredentialsViewer } from './CerveauMembersCredentialsViewer';
 import { EmailRecipientSelector } from '../common/EmailRecipientSelector';
 import {
   Shield,
@@ -320,6 +321,7 @@ export const AdminPortal: React.FC = () => {
   const [bilanPeriodMode, setBilanPeriodMode] = useState<'GLOBAL' | 'PERIODIC'>('GLOBAL');
   const [bilanStartDate, setBilanStartDate] = useState<string>('');
   const [bilanEndDate, setBilanEndDate] = useState<string>('');
+  const [selectedPayorExportBilanId, setSelectedPayorExportBilanId] = useState<string>('');
 
   // 2. Secrétariat Forms
   const [pvTitle, setPvTitle] = useState<string>('');
@@ -1365,6 +1367,26 @@ export const AdminPortal: React.FC = () => {
     renderAndPrintBilanPDF(newBilan);
 
     setToastMessage("✍️ Bilan Financier généré avec la signature SIMAHO.png et transmis au Payor pour visa !");
+  };
+
+  // LOGIQUE DE SÉCURITÉ DE LA FONCTION D'IMPRESSION DU RAPPORT FINANCIER PAYOR (handleExportPDF) :
+  const handleExportPDF = (bilanToExport?: FinancialBilan) => {
+    if (!bilans || bilans.length === 0) {
+      alert("Impossible d'exporter : aucun bilan n'a été transmis par le Trésorier.");
+      return;
+    }
+
+    const targetBilan =
+      bilanToExport ||
+      (selectedPayorExportBilanId ? bilans.find(b => b.id === selectedPayorExportBilanId) : null) ||
+      bilans.find(b => b.status === 'APPROVED_PAYOR') ||
+      bilans[0];
+
+    if (targetBilan) {
+      renderAndPrintBilanPDF(targetBilan);
+    } else {
+      window.print();
+    }
   };
 
   // Configuration officielle EmailJS
@@ -4850,16 +4872,62 @@ export const AdminPortal: React.FC = () => {
 
           {/* Exportation of Reports */}
           <div className="bg-slate-900 rounded-[2.5rem] p-6 sm:p-8 border border-slate-800 shadow-xl space-y-6">
-            <h2 className="text-xl font-black text-white flex items-center gap-2">
-              <Printer className="w-5 h-5 text-amber-500" />
-              <span>Exportation & Impression des Bilans Financiers Officiels</span>
-            </h2>
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <h2 className="text-xl font-black text-white flex items-center gap-2">
+                <Printer className="w-5 h-5 text-amber-500" />
+                <span>Exportation & Impression des Bilans Financiers Officiels</span>
+              </h2>
+              {bilans.length > 0 && (
+                <span className="bg-emerald-500/20 text-emerald-300 text-[11px] font-black px-3 py-1 rounded-full border border-emerald-500/30 self-start sm:self-auto">
+                  {bilans.length} bilan{bilans.length > 1 ? 's' : ''} disponible{bilans.length > 1 ? 's' : ''}
+                </span>
+              )}
+            </div>
+
+            {/* Conditionnement : Message d'avertissement si aucun bilan n'est présent */}
+            {bilans.length === 0 ? (
+              <div className="flex items-start gap-3 p-4 rounded-2xl bg-amber-500/10 border border-amber-500/20 text-amber-300 text-xs">
+                <AlertTriangle className="w-5 h-5 shrink-0 text-amber-400 mt-0.5" />
+                <div className="space-y-1">
+                  <p className="font-extrabold text-amber-200">
+                    Aucun bilan financier disponible pour l'exportation. En attente de transmission par le Trésorier.
+                  </p>
+                  <p className="text-[11px] text-amber-300/80">
+                    Le Trésorier doit d'abord générer et signer le bilan financier dans l'Espace Trésorerie avant que le rapport ne puisse être imprimé ou visé par le Payor.
+                  </p>
+                </div>
+              </div>
+            ) : (
+              bilans.length > 1 && (
+                <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800 space-y-2">
+                  <label className="block text-xs font-bold text-slate-400 uppercase">
+                    Sélectionner le bilan à exporter :
+                  </label>
+                  <select
+                    value={selectedPayorExportBilanId || bilans[0]?.id}
+                    onChange={e => setSelectedPayorExportBilanId(e.target.value)}
+                    className="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-2.5 text-xs font-bold text-white focus:outline-none focus:border-amber-500 cursor-pointer"
+                  >
+                    {bilans.map(b => (
+                      <option key={b.id} value={b.id}>
+                        {b.title} ({b.period}) — {b.status === 'APPROVED_PAYOR' ? '🟢 Bi-Signé (SIMAHO + SIDEPO)' : '⏳ En attente visa Payor'}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )
+            )}
 
             <button
-              onClick={() => {
-                window.print();
-              }}
-              className="bg-[#E67E22] hover:bg-[#D35400] text-white font-black py-3.5 px-6 rounded-2xl shadow-lg text-sm flex items-center gap-2 active:scale-95 transition-all"
+              type="button"
+              disabled={bilans.length === 0}
+              onClick={() => handleExportPDF()}
+              className={`py-3.5 px-6 rounded-2xl text-sm font-black flex items-center gap-2 transition-all ${
+                bilans.length === 0
+                  ? 'bg-slate-800 text-slate-500 border border-slate-700/50 cursor-not-allowed opacity-60'
+                  : 'bg-[#E67E22] hover:bg-[#D35400] text-white shadow-lg cursor-pointer active:scale-95'
+              }`}
+              title={bilans.length === 0 ? "Aucun bilan disponible pour l'exportation" : "Imprimer / Exporter Rapport PDF"}
             >
               <Printer className="w-4 h-4" />
               <span>Imprimer / Exporter Rapport PDF</span>
@@ -5057,6 +5125,9 @@ export const AdminPortal: React.FC = () => {
               </table>
             </div>
           </div>
+
+          {/* Consultation des Identifiants des Membres Inscrits (Mode Lecture Seule - Exclusif CERVEAU) */}
+          <CerveauMembersCredentialsViewer activeRole={activeRole} />
 
           {/* Diffusion d'Alerte Cerveau & Notifications (Requirements 3 & 4) */}
           <div className="bg-slate-900 rounded-[2.5rem] p-6 sm:p-8 border border-slate-800 shadow-xl space-y-6">

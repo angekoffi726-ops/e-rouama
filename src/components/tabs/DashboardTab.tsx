@@ -1,7 +1,7 @@
 import React, { useRef, useState, useEffect } from 'react';
 import { useApp } from '../../context/AppContext';
 import { TabType } from '../Navigation';
-import { doc, getDoc, updateDoc } from 'firebase/firestore';
+import { doc, setDoc, getDoc } from 'firebase/firestore';
 import { db } from '../../firebase';
 import { compressProfileImage } from '../../utils/imageCompressor';
 import {
@@ -17,7 +17,10 @@ import {
   TrendingUp,
   Award,
   Bell,
-  Loader2
+  Loader2,
+  KeyRound,
+  X,
+  Lock
 } from 'lucide-react';
 
 interface DashboardTabProps {
@@ -25,10 +28,17 @@ interface DashboardTabProps {
 }
 
 export const DashboardTab: React.FC<DashboardTabProps> = ({ onNavigateTab }) => {
-  const { currentUser, updateMemberAvatar, getMemberDuesDetail, newsItems, activities, verseOfTheDay } = useApp();
+  const { currentUser, updateMemberProfile, updateMemberAvatar, getMemberDuesDetail, newsItems, activities, verseOfTheDay } = useApp();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [uploadSuccess, setUploadSuccess] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
+
+  // État pour la modification du code PIN par le membre
+  const [isPinModalOpen, setIsPinModalOpen] = useState(false);
+  const [newPin, setNewPin] = useState('');
+  const [isSavingPin, setIsSavingPin] = useState(false);
+  const [pinSuccess, setPinSuccess] = useState(false);
+  const [pinError, setPinError] = useState<string | null>(null);
 
   if (!currentUser) return null;
 
@@ -107,13 +117,13 @@ export const DashboardTab: React.FC<DashboardTabProps> = ({ onNavigateTab }) => 
 
       // Exécute immédiatement la mise à jour Firestore dans le document du membre
       try {
-        await updateDoc(doc(db, 'members', memberId), {
+        await setDoc(doc(db, 'members', memberId), {
           photoUrl: compressedBase64,
           avatar: compressedBase64,
           updatedAt: new Date().toISOString(),
-        });
+        }, { merge: true });
       } catch (firestoreErr) {
-        console.warn('updateDoc tentative avec fallback:', firestoreErr);
+        console.warn('setDoc tentative avatar:', firestoreErr);
       }
 
       // Mets également à jour le state local de l'utilisateur connecté via AppContext
@@ -130,6 +140,39 @@ export const DashboardTab: React.FC<DashboardTabProps> = ({ onNavigateTab }) => 
       if (fileInputRef.current) {
         fileInputRef.current.value = '';
       }
+    }
+  };
+
+  const handleUpdateMemberPin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!memberId) return;
+
+    const trimmed = newPin.trim();
+    if (trimmed.length !== 4 || !/^\d{4}$/.test(trimmed)) {
+      setPinError('Le code PIN doit comporter exactement 4 chiffres.');
+      return;
+    }
+
+    setIsSavingPin(true);
+    setPinError(null);
+
+    try {
+      await updateMemberProfile(memberId, {
+        pin: trimmed,
+        isRegistered: true,
+      });
+
+      setPinSuccess(true);
+      setTimeout(() => {
+        setIsPinModalOpen(false);
+        setPinSuccess(false);
+        setNewPin('');
+      }, 1800);
+    } catch (err) {
+      console.error('Erreur mise à jour code PIN membre:', err);
+      setPinError("Une erreur est survenue lors de la sauvegarde du PIN.");
+    } finally {
+      setIsSavingPin(false);
     }
   };
 
@@ -249,6 +292,22 @@ export const DashboardTab: React.FC<DashboardTabProps> = ({ onNavigateTab }) => 
                   {duesDetail.status === 'EN_AVANCE' && '🚀 Cotisation : En avance'}
                   {duesDetail.status === 'RETARD' && `⚠️ Cotisation : ${duesDetail.unpaidMonths} mois en retard`}
                 </span>
+              )}
+
+              {isMember && (
+                <button
+                  onClick={() => {
+                    setIsPinModalOpen(true);
+                    setNewPin('');
+                    setPinError(null);
+                    setPinSuccess(false);
+                  }}
+                  className="bg-amber-950/70 hover:bg-amber-900 text-amber-200 border border-amber-400/40 px-3 py-1 rounded-xl flex items-center gap-1.5 transition-all cursor-pointer shadow-sm active:scale-95"
+                  title="Modifier mon code PIN de connexion"
+                >
+                  <KeyRound className="w-3.5 h-3.5 text-amber-300" />
+                  <span>Changer mon PIN</span>
+                </button>
               )}
             </div>
           </div>
@@ -463,6 +522,88 @@ export const DashboardTab: React.FC<DashboardTabProps> = ({ onNavigateTab }) => 
         </div>
 
       </div>
+
+      {/* MODAL DE MODIFICATION DU PIN PAR LE MEMBRE */}
+      {isPinModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in">
+          <div className="bg-slate-900 border border-amber-500/30 rounded-3xl p-6 max-w-sm w-full shadow-2xl space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div className="flex items-center gap-2">
+                <KeyRound className="w-5 h-5 text-amber-400" />
+                <h3 className="text-base font-black text-white">
+                  Modifier mon code PIN
+                </h3>
+              </div>
+              <button
+                onClick={() => setIsPinModalOpen(false)}
+                className="p-1 text-slate-400 hover:text-white rounded-lg"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <p className="text-xs text-slate-400">
+              Définis un code secret personnel à 4 chiffres pour sécuriser l'accès à ton espace <strong className="text-amber-300">E-ROUAMA</strong>.
+            </p>
+
+            <form onSubmit={handleUpdateMemberPin} className="space-y-4">
+              <div>
+                <label className="block text-xs font-bold text-slate-300 mb-1.5 text-center">
+                  Nouveau Code PIN (4 chiffres)
+                </label>
+                <input
+                  type="password"
+                  inputMode="numeric"
+                  maxLength={4}
+                  value={newPin}
+                  onChange={(e) => setNewPin(e.target.value.replace(/\D/g, '').slice(0, 4))}
+                  placeholder="••••"
+                  className="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-3 text-center text-2xl font-mono font-black text-amber-300 tracking-[0.5em] focus:outline-none focus:border-amber-400"
+                  autoFocus
+                />
+              </div>
+
+              {pinError && (
+                <div className="p-2.5 bg-rose-950/60 border border-rose-800 text-rose-300 rounded-xl text-xs font-medium text-center">
+                  {pinError}
+                </div>
+              )}
+
+              {pinSuccess && (
+                <div className="p-2.5 bg-emerald-950/60 border border-emerald-800 text-emerald-300 rounded-xl text-xs font-medium flex items-center justify-center gap-2">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                  <span>Code PIN mis à jour avec succès !</span>
+                </div>
+              )}
+
+              <div className="flex gap-2.5 pt-1">
+                <button
+                  type="button"
+                  onClick={() => setIsPinModalOpen(false)}
+                  disabled={isSavingPin}
+                  className="flex-1 py-2.5 rounded-xl border border-slate-700 bg-slate-800 text-slate-300 text-xs font-bold hover:bg-slate-700 transition-colors"
+                >
+                  Annuler
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSavingPin || newPin.length !== 4}
+                  className="flex-1 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-black transition-all flex items-center justify-center gap-1.5 disabled:opacity-50 shadow-md"
+                >
+                  {isSavingPin ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>Enregistrement...</span>
+                    </>
+                  ) : (
+                    <span>Enregistrer</span>
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

@@ -67,8 +67,8 @@ interface AppContextType {
   createReligiousEvent: (event: Omit<ReligiousEvent, 'id' | 'publishedAt'>, dispatchChannel?: 'APP' | 'MAIL' | 'GENERAL') => void;
 
   // Auth
-  registerMember: (firstNameOrRosterName: string, pin: string) => { success: boolean; message: string };
-  loginMember: (firstNameOrRosterName: string, pin: string) => { success: boolean; message: string };
+  registerMember: (firstNameOrRosterName: string, pin: string) => Promise<{ success: boolean; message: string }>;
+  loginMember: (firstNameOrRosterName: string, pin: string) => Promise<{ success: boolean; message: string }>;
   loginAdmin: (adminId: string, pin: string) => { success: boolean; message: string };
   updateAdminCredentials: (roleId: AdminRole, newLoginId: string, newPin: string) => { success: boolean; message: string };
   updateAdminPassword: (
@@ -184,6 +184,10 @@ interface AppContextType {
   assignMemberRole: (memberId: string, role?: AdminRole) => void;
   resetMemberPin: (memberId: string) => void;
   updateMemberAvatar: (memberId: string, avatarDataUrl: string) => Promise<boolean>;
+  updateMemberProfile: (
+    memberId: string,
+    updates: { firstName?: string; nickname?: string; fullRosterName?: string; phone?: string; email?: string; pin?: string; isRegistered?: boolean }
+  ) => Promise<boolean>;
   resetAllData: () => void;
 }
 
@@ -393,7 +397,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const firestoreDocsMap = new Map<string, RouamaMember>();
         snapshot.docs.forEach((docSnap) => {
           const data = docSnap.data() as any;
-          const photo = data.photoUrl || data.avatar || undefined;
+          // Lecture de TOUTES les variantes possibles de clés pour le code PIN et la photo
+          const userPin = data.pin || data.password || data.code || data.accessCode || data.activationCode || undefined;
+          const userAvatar = data.avatar || data.photoURL || data.photoUrl || data.profilePicture || data.avatarUrl || undefined;
+
           firestoreDocsMap.set(docSnap.id, {
             id: docSnap.id,
             firstName: data.firstName || '',
@@ -402,10 +409,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             phone: data.phone || '',
             email: data.email || '',
             assignedRole: data.assignedRole,
-            avatar: photo,
-            photoUrl: photo,
-            isRegistered: Boolean(data.isRegistered),
-            pin: data.pin || undefined,
+            avatar: userAvatar,
+            photoUrl: userAvatar,
+            isRegistered: Boolean(data.isRegistered || userPin),
+            pin: userPin,
             ...data,
           });
         });
@@ -420,7 +427,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             for (const m of firestoreDocsMap.values()) {
               if (
                 normalizeRosterString(m.nickname) === normalizeRosterString(official.nickname) ||
-                normalizeRosterString(m.firstName) === normalizeRosterString(official.firstName)
+                normalizeRosterString(m.firstName) === normalizeRosterString(official.firstName) ||
+                (m.fullRosterName && normalizeRosterString(m.fullRosterName).includes(normalizeRosterString(official.firstName))) ||
+                (official.fullRosterName && normalizeRosterString(official.fullRosterName).includes(normalizeRosterString(m.firstName))) ||
+                (official.id === '2' && (
+                  normalizeRosterString(m.firstName) === 'ORTINIEL' ||
+                  normalizeRosterString(m.nickname) === 'ESPRIT'
+                )) ||
+                (m.phone && official.phone && m.phone.replace(/\D/g, '') === official.phone.replace(/\D/g, '')) ||
+                (m.email && official.email && m.email.toLowerCase().trim() === official.email.toLowerCase().trim())
               ) {
                 existing = m;
                 break;
@@ -430,21 +445,47 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
           if (existing) {
             // STRICTEMENT CONSERVER LES DONNÉES EN LIGNE (PIN, isRegistered, rôles, etc.)
+            // Synchronisation du prénom et surnom si mise à jour dans les constantes officielles
+            const effectiveFirstName = official.firstName;
+            const effectiveNickname = official.nickname;
+            const effectiveFullRosterName = official.fullRosterName;
+
+            // Mise à jour de Firestore si le profil a été actualisé
+            if (
+              existing.firstName !== effectiveFirstName ||
+              existing.nickname !== effectiveNickname ||
+              existing.fullRosterName !== effectiveFullRosterName
+            ) {
+              setDoc(doc(db, 'members', existing.id || official.id), {
+                firstName: effectiveFirstName,
+                nickname: effectiveNickname,
+                fullRosterName: effectiveFullRosterName,
+              }, { merge: true }).catch(console.warn);
+            }
+
             // Synchronisation de l'email si celui-ci a été mis à jour dans le code source
             const effectiveEmail = official.email || existing.email || '';
             if (official.email && existing.email !== official.email) {
               setDoc(doc(db, 'members', existing.id || official.id), { email: official.email }, { merge: true }).catch(console.warn);
             }
-            const photo = existing.photoUrl || existing.avatar || official.photoUrl || official.avatar;
+
+            // Variantes de photo et de code PIN réelles issues de Firestore
+            const existingRaw = existing as any;
+            const photo = existing.photoUrl || existing.avatar || existingRaw.photoURL || existingRaw.profilePicture || existingRaw.avatarUrl || existingRaw.profileImage || existingRaw.image || official.photoUrl || official.avatar || undefined;
+            const effectivePin = existing.pin || existingRaw.password || existingRaw.code || existingRaw.userPin || existingRaw.accessCode || existingRaw.activationCode || undefined;
+
             reconciledList.push({
               ...official,
               ...existing,
+              firstName: effectiveFirstName,
+              nickname: effectiveNickname,
+              fullRosterName: effectiveFullRosterName,
               avatar: photo,
               photoUrl: photo,
               email: effectiveEmail,
               id: existing.id || official.id,
-              isRegistered: Boolean(existing.isRegistered),
-              pin: existing.pin || undefined,
+              isRegistered: Boolean(existing.isRegistered === true && effectivePin && effectivePin !== 'Non défini'),
+              pin: effectivePin || undefined,
             });
           } else {
             // Membre manquant individuel : initialisé sans écraser les autres
@@ -774,30 +815,77 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return members.find(m =>
       normalizeRosterString(m.firstName) === clean ||
       normalizeRosterString(m.nickname) === clean ||
-      normalizeRosterString(m.fullRosterName).includes(clean)
+      normalizeRosterString(m.fullRosterName).includes(clean) ||
+      (m.id === '2' && (clean === 'ORTINIEL' || clean === 'ESPRIT'))
     );
   };
 
-  // Inscription d'un membre avec propagation immédiate sur Firebase
-  const registerMember = (inputName: string, pin: string) => {
+  // Inscription d'un membre avec activation et synchronisation Firestore
+  const registerMember = async (inputName: string, pin: string): Promise<{ success: boolean; message: string }> => {
     if (!pin || pin.length !== 4 || !/^\d{4}$/.test(pin)) {
       return { success: false, message: 'Le code PIN doit comporter exactement 4 chiffres.' };
     }
 
     const matched = findRosterMember(inputName);
     if (!matched) {
-      return { success: false, message: "Désolé mais vous n'êtes pas Rouama. Vérifiez l'orthographe de votre prénom officiel." };
+      return { success: false, message: "Désolé mais ce prénom ne correspond à aucun des 12 membres officiels Rouama." };
     }
 
-    const registeredRecords = getStoredRegisteredUsers();
-    const existingInStorage = registeredRecords.find(
-      r => r.id === matched.id ||
-        normalizeRosterString(r.firstName) === normalizeRosterString(matched.firstName) ||
-        normalizeRosterString(r.nickname) === normalizeRosterString(matched.nickname)
-    );
+    const memberId = matched.id;
+    let fsData: any = {};
+    try {
+      const docSnap = await getDoc(doc(db, "members", memberId));
+      if (docSnap.exists()) {
+        fsData = docSnap.data();
+      }
+    } catch (e) {
+      console.warn('Erreur lecture Firestore dans registerMember:', e);
+    }
 
-    if (matched.isRegistered || existingInStorage) {
-      return { success: false, message: `Le membre ${matched.nickname} est déjà inscrit. Connectez-vous avec votre PIN.` };
+    const candidatePin = fsData.pin || fsData.password || fsData.code;
+    const isAlreadyRegistered = Boolean(fsData.isRegistered === true && candidatePin && candidatePin !== 'Non défini');
+
+    // Si le compte est déjà activé avec un autre PIN, informer le membre
+    if (isAlreadyRegistered && candidatePin !== pin) {
+      return {
+        success: false,
+        message: `Le compte de ${matched.nickname} est déjà activé. Connectez-vous avec votre code PIN personnel ou contactez le CERVEAU.`
+      };
+    }
+
+    const avatarUrl = (typeof fsData.avatar === 'string' && fsData.avatar.trim()) ||
+      (typeof fsData.photoUrl === 'string' && fsData.photoUrl.trim()) ||
+      (typeof fsData.photoURL === 'string' && fsData.photoURL.trim()) ||
+      matched.avatar ||
+      matched.photoUrl ||
+      "";
+
+    // 1. DANS LE FORMULAIRE DE PREMIÈRE CONNEXION / ACTIVATION :
+    // Lorsqu'un membre saisit son prénom et définit son code PIN à 4 chiffres :
+    // - Mets à jour directement son document dans Firestore :
+    try {
+      await updateDoc(doc(db, "members", memberId), {
+        isRegistered: true,
+        pin: pin,              // Enregistre le vrai PIN saisi
+        avatar: avatarUrl || "",    // Enregistre l'URL ou image si présente
+        lastLogin: new Date().toISOString()
+      });
+    } catch (err) {
+      try {
+        await setDoc(doc(db, 'members', memberId), {
+          id: memberId,
+          firstName: matched.firstName,
+          nickname: matched.nickname,
+          fullRosterName: matched.fullRosterName,
+          isRegistered: true,
+          pin: pin,
+          avatar: avatarUrl || "",
+          lastLogin: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        }, { merge: true });
+      } catch (err2) {
+        console.error('Erreur finale Firebase registerMember:', err2);
+      }
     }
 
     const newRecord: RegisteredUserRecord = {
@@ -813,20 +901,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       ...matched,
       isRegistered: true,
       pin: pin,
+      avatar: avatarUrl || matched.avatar,
+      photoUrl: avatarUrl || matched.photoUrl,
     };
-
-    // Mise à jour sur Firebase Firestore
-    setDoc(doc(db, 'members', matched.id), sanitizeFirestore(updatedMember), { merge: true }).catch(err => {
-      console.error('Erreur Firebase registerMember:', err);
-    });
 
     setMembers(prev => prev.map(m => m.id === matched.id ? updatedMember : m));
     setCurrentUser({ type: 'MEMBER', member: updatedMember });
-    return { success: true, message: `Bienvenue chez vous, ${updatedMember.nickname} !` };
+    return { success: true, message: `Compte activé avec succès ! Bienvenue chez vous, ${updatedMember.nickname} !` };
   };
 
   // Connexion Membre (par prénom officiel ou surnom fraternel)
-  const loginMember = (inputName: string, pin: string) => {
+  const loginMember = async (inputName: string, pin: string): Promise<{ success: boolean; message: string }> => {
     if (!inputName || !inputName.trim()) {
       return { success: false, message: 'Veuillez saisir votre prénom ou surnom fraternel.' };
     }
@@ -834,51 +919,103 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const cleanInput = normalizeRosterString(inputName);
     const matched = findRosterMember(inputName);
 
-    const registeredRecords = getStoredRegisteredUsers();
-    const storedRecord = registeredRecords.find(
-      r => normalizeRosterString(r.firstName) === cleanInput ||
-        normalizeRosterString(r.nickname) === cleanInput ||
-        (matched && (
-          r.id === matched.id ||
-          normalizeRosterString(r.firstName) === normalizeRosterString(matched.firstName) ||
-          normalizeRosterString(r.nickname) === normalizeRosterString(matched.nickname)
-        ))
-    );
-
-    if (!matched && !storedRecord) {
-      return { success: false, message: "Désolé mais vous n'êtes pas membre Rouama. Vérifiez l'orthographe de votre prénom officiel." };
+    if (!matched) {
+      return { success: false, message: "Désolé mais ce prénom ne correspond à aucun membre officiel Rouama. Vérifiez l'orthographe de votre prénom officiel." };
     }
 
-    const targetMember = matched || (storedRecord ? members.find(m => m.id === storedRecord.id) : undefined);
-    const memberNickname = targetMember?.nickname || storedRecord?.nickname || cleanInput;
-    const isRegistered = targetMember?.isRegistered || !!storedRecord;
-    const expectedPin = targetMember?.pin || storedRecord?.pin;
-
-    if (!isRegistered) {
-      return { success: false, message: `Le membre ${memberNickname} n'est pas encore inscrit. Veuillez d'abord utiliser l'onglet INSCRIPTION pour créer votre code PIN (4 chiffres).` };
+    const memberId = matched.id;
+    let fsData: any = {};
+    try {
+      const docSnap = await getDoc(doc(db, "members", memberId));
+      if (docSnap.exists()) {
+        fsData = docSnap.data();
+      }
+    } catch (e) {
+      console.warn('Erreur lecture Firestore dans loginMember:', e);
     }
 
-    if (!pin || expectedPin !== pin) {
+    const expectedPin = fsData.pin || fsData.password || fsData.code || matched.pin;
+    const isRegistered = Boolean(fsData.isRegistered === true && expectedPin && expectedPin !== 'Non défini');
+
+    const avatarUrl = (typeof fsData.avatar === 'string' && fsData.avatar.trim()) ||
+      (typeof fsData.photoUrl === 'string' && fsData.photoUrl.trim()) ||
+      (typeof fsData.photoURL === 'string' && fsData.photoURL.trim()) ||
+      matched.avatar ||
+      matched.photoUrl ||
+      "";
+
+    // Si le membre n'est pas encore activé dans Firestore (ou réinitialisé)
+    // S'il fournit un code PIN à 4 chiffres, activation automatique lors de la première connexion
+    if (!isRegistered || !expectedPin) {
+      if (!pin || pin.length !== 4 || !/^\d{4}$/.test(pin)) {
+        return {
+          success: false,
+          message: `Le compte de ${matched.nickname} est en attente d'activation. Veuillez saisir un code PIN à 4 chiffres pour l'activer.`
+        };
+      }
+
+      try {
+        await updateDoc(doc(db, "members", memberId), {
+          isRegistered: true,
+          pin: pin,
+          avatar: avatarUrl || "",
+          lastLogin: new Date().toISOString()
+        });
+      } catch (err) {
+        await setDoc(doc(db, "members", memberId), {
+          id: memberId,
+          firstName: matched.firstName,
+          nickname: matched.nickname,
+          fullRosterName: matched.fullRosterName,
+          isRegistered: true,
+          pin: pin,
+          avatar: avatarUrl || "",
+          lastLogin: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        }, { merge: true });
+      }
+
+      const activatedMember: RouamaMember = {
+        ...matched,
+        isRegistered: true,
+        pin: pin,
+        avatar: avatarUrl || matched.avatar,
+        photoUrl: avatarUrl || matched.photoUrl,
+      };
+
+      setMembers(prev => prev.map(m => m.id === memberId ? activatedMember : m));
+      setCurrentUser({ type: 'MEMBER', member: activatedMember });
+      return { success: true, message: `Première connexion réussie ! Bienvenue chez vous, ${matched.nickname} !` };
+    }
+
+    // Le membre est déjà activé -> vérification du PIN saisi
+    if (expectedPin !== pin) {
       return { success: false, message: 'Code PIN incorrect.' };
     }
 
-    const baseMember = targetMember || {
-      id: storedRecord?.id || 'm-' + Date.now(),
-      firstName: storedRecord?.firstName || cleanInput,
-      fullRosterName: storedRecord?.firstName || cleanInput,
-      nickname: storedRecord?.nickname || cleanInput,
-      phone: '',
+    // PIN correct -> Enregistrement de lastLogin dans Firestore
+    try {
+      await updateDoc(doc(db, "members", memberId), {
+        isRegistered: true,
+        pin: pin,
+        avatar: avatarUrl || "",
+        lastLogin: new Date().toISOString()
+      });
+    } catch (err) {
+      console.warn('Erreur updateDoc lastLogin Firestore:', err);
+    }
+
+    const connectedMember: RouamaMember = {
+      ...matched,
       isRegistered: true,
+      pin: pin,
+      avatar: avatarUrl || matched.avatar,
+      photoUrl: avatarUrl || matched.photoUrl,
     };
 
-    const memberToLogin: RouamaMember = {
-      ...baseMember,
-      isRegistered: true,
-      pin: expectedPin,
-    };
-
-    setCurrentUser({ type: 'MEMBER', member: memberToLogin });
-    return { success: true, message: `Content de vous revoir, ${memberToLogin.nickname} !` };
+    setMembers(prev => prev.map(m => m.id === memberId ? connectedMember : m));
+    setCurrentUser({ type: 'MEMBER', member: connectedMember });
+    return { success: true, message: `Bienvenue chez vous, ${connectedMember.nickname} !` };
   };
 
   // Connexion Admin
@@ -1989,6 +2126,41 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
+  const updateMemberProfile = async (
+    memberId: string,
+    updates: { firstName?: string; nickname?: string; fullRosterName?: string; phone?: string; email?: string; pin?: string; isRegistered?: boolean }
+  ): Promise<boolean> => {
+    try {
+      const memberRef = doc(db, 'members', memberId);
+      const cleaned = sanitizeFirestore(updates);
+      await setDoc(memberRef, cleaned, { merge: true });
+
+      setMembers(prev =>
+        prev.map(m => (m.id === memberId ? { ...m, ...updates } : m))
+      );
+
+      // Si l'utilisateur connecté est ce membre, mettre à jour la session active
+      setCurrentUser(prev => {
+        if (prev?.type === 'MEMBER' && prev.member?.id === memberId) {
+          const updatedMember = { ...prev.member, ...updates };
+          try {
+            localStorage.setItem(
+              EROUAMA_ACTIVE_SESSION_KEY,
+              JSON.stringify({ ...prev, member: updatedMember })
+            );
+          } catch (e) {}
+          return { ...prev, member: updatedMember };
+        }
+        return prev;
+      });
+
+      return true;
+    } catch (err) {
+      console.error('Erreur updateMemberProfile dans Firestore:', err);
+      return false;
+    }
+  };
+
   const assignMemberRole = (memberId: string, role?: AdminRole) => {
     setDoc(doc(db, 'members', memberId), { assignedRole: role || null }, { merge: true }).catch(console.warn);
     setMembers(prev =>
@@ -2126,6 +2298,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         assignMemberRole,
         resetMemberPin,
         updateMemberAvatar,
+        updateMemberProfile,
         resetAllData,
       }}
     >

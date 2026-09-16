@@ -13,9 +13,9 @@ export const INITIAL_ROUAMA_MEMBERS: RouamaMember[] = [
   },
   {
     id: '2',
-    firstName: 'ORTINIEL',
-    fullRosterName: 'ORTINIEL (ESPRIT)',
-    nickname: 'ESPRIT',
+    firstName: 'OTINEL',
+    fullRosterName: 'OTINEL (KILO CARTUS)',
+    nickname: 'KILO CARTUS',
     phone: '2250503643626',
     email: 'ortiniel.anane05@gmail.com',
     isRegistered: false,

@@ -1,13 +1,40 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import { collection, onSnapshot, doc, updateDoc, getDoc, setDoc } from 'firebase/firestore';
+import { db } from '../firebase';
 import { useApp } from '../context/AppContext';
 import { ADMIN_USERS } from '../data/membersData';
 import { AdminRole } from '../types';
 import { Shield, KeyRound, UserCheck, AlertCircle, Lock, ArrowRight, CheckCircle2 } from 'lucide-react';
 
+const normalizeName = (str: string): string => {
+  return (str || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+    .toUpperCase();
+};
+
 export const AuthScreen: React.FC = () => {
   const { registerMember, loginMember, loginAdmin, members, adminUsers } = useApp();
 
-  const registeredCount = members ? members.filter(m => m.isRegistered).length : 1;
+  // 1. LIAISON DYNAMIQUE À FIRESTORE :
+  const [totalRegistered, setTotalRegistered] = useState<number>(0);
+
+  useEffect(() => {
+    const unsubscribe = onSnapshot(
+      collection(db, 'members'),
+      (snapshot) => {
+        const count = snapshot.docs.filter(doc => doc.data().isRegistered === true).length;
+        setTotalRegistered(count);
+      },
+      (error) => {
+        console.warn('Erreur écoute Firestore members:', error);
+      }
+    );
+
+    return () => unsubscribe();
+  }, []);
+
   const totalMembersCount = members && members.length > 0 ? members.length : 12;
 
   const [mode, setMode] = useState<'REGISTER_MEMBER' | 'LOGIN_MEMBER' | 'LOGIN_ADMIN'>('REGISTER_MEMBER');
@@ -44,7 +71,7 @@ export const AuthScreen: React.FC = () => {
     clearAllFields();
   };
 
-  const handleMemberRegister = (e: React.FormEvent) => {
+  const handleMemberRegister = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg(null);
     setSuccessMsg(null);
@@ -54,16 +81,81 @@ export const AuthScreen: React.FC = () => {
       return;
     }
 
-    const res = registerMember(regMemberName, regMemberPin);
+    const pinCodeSaisi = regMemberPin.trim();
+    if (!pinCodeSaisi || pinCodeSaisi.length !== 4 || !/^\d{4}$/.test(pinCodeSaisi)) {
+      setErrorMsg('Veuillez définir votre code PIN à 4 chiffres.');
+      return;
+    }
+
+    // Recherche insensible à la casse et aux accents
+    const cleanInput = normalizeName(regMemberName);
+    const found = members.find(m =>
+      normalizeName(m.firstName) === cleanInput ||
+      normalizeName(m.nickname) === cleanInput ||
+      (m.fullRosterName && normalizeName(m.fullRosterName).includes(cleanInput)) ||
+      (m.id === '2' && (cleanInput === 'ORTINIEL' || cleanInput === 'ESPRIT'))
+    );
+
+    if (!found) {
+      setErrorMsg("Désolé mais ce prénom ne correspond à aucun des 12 membres officiels Rouama.");
+      return;
+    }
+
+    const memberId = found.id;
+
+    // 1. DANS LE FORMULAIRE DE PREMIÈRE CONNEXION / ACTIVATION :
+    // Lorsqu'un membre saisit son prénom et définit son code PIN à 4 chiffres :
+    // - Mets à jour directement son document dans Firestore :
+    try {
+      const memberDocRef = doc(db, "members", memberId);
+      const memberSnap = await getDoc(memberDocRef);
+      const memberData = memberSnap.exists() ? memberSnap.data() : {};
+      const avatarUrl = (typeof memberData.avatar === 'string' && memberData.avatar.trim()) ||
+        (typeof memberData.photoUrl === 'string' && memberData.photoUrl.trim()) ||
+        (typeof memberData.photoURL === 'string' && memberData.photoURL.trim()) ||
+        found.avatar ||
+        found.photoUrl ||
+        "";
+
+      try {
+        await updateDoc(doc(db, "members", memberId), {
+          isRegistered: true,
+          pin: pinCodeSaisi,              // Enregistre le vrai PIN saisi
+          avatar: avatarUrl || "",    // Enregistre l'URL ou image si présente
+          lastLogin: new Date().toISOString()
+        });
+      } catch (errUpdate) {
+        await setDoc(doc(db, "members", memberId), {
+          id: memberId,
+          firstName: found.firstName,
+          nickname: found.nickname,
+          fullRosterName: found.fullRosterName,
+          isRegistered: true,
+          pin: pinCodeSaisi,
+          avatar: avatarUrl || "",
+          lastLogin: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        }, { merge: true });
+      }
+    } catch (err) {
+      console.warn('Erreur updateDoc Firestore register:', err);
+    }
+
+    const res = await registerMember(regMemberName, pinCodeSaisi);
     if (!res.success) {
-      setErrorMsg(res.message);
+      const loginRes = await loginMember(regMemberName, pinCodeSaisi);
+      if (!loginRes.success) {
+        setErrorMsg(res.message);
+        return;
+      }
+      setSuccessMsg(`Compte activé avec succès ! Bienvenue chez vous, ${found.nickname} !`);
     } else {
       setSuccessMsg(res.message);
-      clearAllFields();
     }
+    clearAllFields();
   };
 
-  const handleMemberLogin = (e: React.FormEvent) => {
+  const handleMemberLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg(null);
     setSuccessMsg(null);
@@ -73,10 +165,87 @@ export const AuthScreen: React.FC = () => {
       return;
     }
 
-    const res = loginMember(memberLoginName, memberLoginPin);
+    const pinCodeSaisi = memberLoginPin.trim();
+    if (!pinCodeSaisi || pinCodeSaisi.length !== 4 || !/^\d{4}$/.test(pinCodeSaisi)) {
+      setErrorMsg('Veuillez saisir votre code PIN à 4 chiffres.');
+      return;
+    }
+
+    const cleanInput = normalizeName(memberLoginName);
+    const found = members.find(m =>
+      normalizeName(m.firstName) === cleanInput ||
+      normalizeName(m.nickname) === cleanInput ||
+      (m.fullRosterName && normalizeName(m.fullRosterName).includes(cleanInput)) ||
+      (m.id === '2' && (cleanInput === 'ORTINIEL' || cleanInput === 'ESPRIT'))
+    );
+
+    const memberId = found?.id;
+    if (memberId) {
+      try {
+        const memberDocRef = doc(db, "members", memberId);
+        const memberSnap = await getDoc(memberDocRef);
+        const memberData = memberSnap.exists() ? memberSnap.data() : {};
+        const avatarUrl = (typeof memberData.avatar === 'string' && memberData.avatar.trim()) ||
+          (typeof memberData.photoUrl === 'string' && memberData.photoUrl.trim()) ||
+          (typeof memberData.photoURL === 'string' && memberData.photoURL.trim()) ||
+          found?.avatar ||
+          found?.photoUrl ||
+          "";
+
+        // Si le membre n'était pas encore activé dans Firestore, première connexion -> activation directe
+        if (!memberData.isRegistered || !memberData.pin) {
+          try {
+            await updateDoc(doc(db, "members", memberId), {
+              isRegistered: true,
+              pin: pinCodeSaisi,
+              avatar: avatarUrl || "",
+              lastLogin: new Date().toISOString()
+            });
+          } catch (err) {
+            await setDoc(doc(db, "members", memberId), {
+              id: memberId,
+              firstName: found?.firstName,
+              nickname: found?.nickname,
+              fullRosterName: found?.fullRosterName,
+              isRegistered: true,
+              pin: pinCodeSaisi,
+              avatar: avatarUrl || "",
+              lastLogin: new Date().toISOString(),
+              updatedAt: new Date().toISOString(),
+            }, { merge: true });
+          }
+        }
+      } catch (err) {
+        console.warn('Erreur vérification/activation Firestore login:', err);
+      }
+    }
+
+    const res = await loginMember(memberLoginName, pinCodeSaisi);
     if (!res.success) {
       setErrorMsg(res.message);
     } else {
+      if (memberId) {
+        try {
+          const memberDocRef = doc(db, "members", memberId);
+          const memberSnap = await getDoc(memberDocRef);
+          const memberData = memberSnap.exists() ? memberSnap.data() : {};
+          const avatarUrl = (typeof memberData.avatar === 'string' && memberData.avatar.trim()) ||
+            (typeof memberData.photoUrl === 'string' && memberData.photoUrl.trim()) ||
+            found?.avatar ||
+            found?.photoUrl ||
+            "";
+
+          await updateDoc(doc(db, "members", memberId), {
+            isRegistered: true,
+            pin: pinCodeSaisi,
+            avatar: avatarUrl || "",
+            lastLogin: new Date().toISOString()
+          });
+        } catch (err) {
+          console.warn('Erreur updateDoc Firestore login:', err);
+        }
+      }
+
       setSuccessMsg(res.message);
       clearAllFields();
     }
@@ -126,7 +295,7 @@ export const AuthScreen: React.FC = () => {
             « DINIYO ROUAMA, chez nous la mesure de l'amour c'est d'aimer sans mesure »
           </p>
           <div className="inline-block mt-3 px-3 py-1 bg-[#355E3B]/10 text-[#355E3B] text-[10px] sm:text-xs font-black rounded-full border border-[#355E3B]/20 shadow-sm">
-            Portail Fraternel Sécurisé • MEMBRES INSCRITS SUR L'APP : {registeredCount} / {totalMembersCount}
+            Portail Fraternel Sécurisé • MEMBRES INSCRITS SUR L'APP : {totalRegistered} / 12
           </div>
         </div>
 
@@ -199,7 +368,7 @@ export const AuthScreen: React.FC = () => {
               </label>
               <input
                 type="text"
-                placeholder=""
+                placeholder="Votre prénom officiel (ex: Ange, Capelo...)"
                 value={memberLoginName}
                 onChange={e => setMemberLoginName(e.target.value)}
                 className="w-full bg-[#F5EEDC]/50 border-2 border-[#E67E22]/30 rounded-2xl px-4 py-3 text-sm font-semibold text-slate-800 focus:outline-none focus:border-[#E67E22] transition-all"
@@ -214,10 +383,10 @@ export const AuthScreen: React.FC = () => {
                 <input
                   type="password"
                   maxLength={4}
-                  placeholder=""
+                  placeholder="••••"
                   value={memberLoginPin}
                   onChange={e => setMemberLoginPin(e.target.value.replace(/\D/g, ''))}
-                  className="w-full bg-[#F5EEDC]/50 border-2 border-[#E67E22]/30 rounded-2xl px-4 py-3 text-center text-2xl font-black tracking-widest text-[#E67E22] focus:outline-none focus:border-[#E67E22] transition-all"
+                  className="w-full bg-[#F5EEDC]/50 border-2 border-[#E67E22]/30 rounded-2xl px-4 py-3 text-center text-2xl font-black tracking-widest text-[#E67E22] focus:outline-none focus:border-[#E67E22] transition-all placeholder:text-slate-400 placeholder:text-lg"
                 />
                 <Lock className="w-5 h-5 text-[#E67E22] absolute right-4 top-4 opacity-50" />
               </div>
@@ -242,7 +411,7 @@ export const AuthScreen: React.FC = () => {
               </label>
               <input
                 type="text"
-                placeholder=""
+                placeholder="Votre prénom officiel (ex: Ange, Capelo...)"
                 value={regMemberName}
                 onChange={e => setRegMemberName(e.target.value)}
                 className="w-full bg-[#F5EEDC]/50 border-2 border-[#355E3B]/20 rounded-2xl px-4 py-3 text-sm font-semibold text-slate-800 focus:outline-none focus:border-[#355E3B] transition-all"
@@ -256,10 +425,10 @@ export const AuthScreen: React.FC = () => {
               <input
                 type="password"
                 maxLength={4}
-                placeholder=""
+                placeholder="••••"
                 value={regMemberPin}
                 onChange={e => setRegMemberPin(e.target.value.replace(/\D/g, ''))}
-                className="w-full bg-[#F5EEDC]/50 border-2 border-[#355E3B]/20 rounded-2xl px-4 py-3 text-center text-2xl font-black tracking-widest text-[#355E3B] focus:outline-none focus:border-[#355E3B] transition-all"
+                className="w-full bg-[#F5EEDC]/50 border-2 border-[#355E3B]/20 rounded-2xl px-4 py-3 text-center text-2xl font-black tracking-widest text-[#355E3B] focus:outline-none focus:border-[#355E3B] transition-all placeholder:text-slate-400 placeholder:text-lg"
               />
             </div>
 
