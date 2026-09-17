@@ -67,6 +67,7 @@ interface AppContextType {
   createReligiousEvent: (event: Omit<ReligiousEvent, 'id' | 'publishedAt'>, dispatchChannel?: 'APP' | 'MAIL' | 'GENERAL') => void;
 
   // Auth
+  setCurrentUser: (userOrUpdater: any) => void;
   registerMember: (firstNameOrRosterName: string, pin: string) => Promise<{ success: boolean; message: string }>;
   loginMember: (firstNameOrRosterName: string, pin: string) => Promise<{ success: boolean; message: string }>;
   loginAdmin: (adminId: string, pin: string) => { success: boolean; message: string };
@@ -275,17 +276,34 @@ export function saveStoredAdminCredentials(adminUsers: AdminUser[]): void {
 
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   // Session utilisateur locale persistée sur ce terminal
-  const [currentUser, setCurrentUser] = useState<CurrentUser | null>(() => {
+  const [currentUser, setCurrentUserState] = useState<CurrentUser | null>(() => {
     try {
-      const savedSession = localStorage.getItem(EROUAMA_ACTIVE_SESSION_KEY);
+      const savedSession = localStorage.getItem(EROUAMA_ACTIVE_SESSION_KEY) || localStorage.getItem('rouama_user');
       if (savedSession) {
-        return JSON.parse(savedSession);
+        const parsed = JSON.parse(savedSession);
+        if (parsed && !parsed.type && (parsed.firstName || parsed.nickname || parsed.id)) {
+          return { type: 'MEMBER', member: parsed };
+        }
+        return parsed;
       }
     } catch (e) {
       console.warn('Session locale non chargée:', e);
     }
     return null;
   });
+
+  const setCurrentUser = (userOrUpdater: any) => {
+    setCurrentUserState((prev) => {
+      const resolved = typeof userOrUpdater === 'function' ? userOrUpdater(prev) : userOrUpdater;
+      if (!resolved) {
+        return null;
+      }
+      if (!('type' in resolved)) {
+        return { type: 'MEMBER', member: resolved as RouamaMember };
+      }
+      return resolved as CurrentUser;
+    });
+  };
 
   const [isFirebaseConnected, setIsFirebaseConnected] = useState<boolean>(false);
 
@@ -324,8 +342,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     try {
       if (currentUser) {
         localStorage.setItem(EROUAMA_ACTIVE_SESSION_KEY, JSON.stringify(currentUser));
+        if (currentUser.type === 'MEMBER' && currentUser.member) {
+          localStorage.setItem('rouama_user', JSON.stringify(currentUser.member));
+        } else {
+          localStorage.setItem('rouama_user', JSON.stringify(currentUser));
+        }
       } else {
         localStorage.removeItem(EROUAMA_ACTIVE_SESSION_KEY);
+        localStorage.removeItem('rouama_user');
       }
     } catch (e) {
       console.warn('Erreur stockage session locale:', e);
@@ -2264,6 +2288,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         updateVerseOfTheDay,
         addPrayerIntention,
         createReligiousEvent,
+        setCurrentUser,
         registerMember,
         loginMember,
         loginAdmin,

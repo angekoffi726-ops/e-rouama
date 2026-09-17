@@ -5789,7 +5789,6 @@ export const AdminPortal: React.FC = () => {
                         adHocRoles,
                         committees: structuredCommittees,
                         createdBy: 'COMMISSION ORGANISATION',
-                        status: 'PUBLISHED',
                       });
                       alert("Événement publié avec succès par la Commission Organisation ! Il est immédiatement visible dans l'onglet SHOW.");
                     }

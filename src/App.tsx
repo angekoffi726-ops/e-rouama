@@ -12,7 +12,7 @@ import { ProjetsTab } from './components/tabs/ProjetsTab';
 import { ArchivesTab } from './components/tabs/ArchivesTab';
 import { AdminPortal } from './components/admin/AdminPortal';
 import { TabType } from './components/Navigation';
-import { AdminRole } from './types';
+import { AdminRole, RouamaMember } from './types';
 import { LayoutDashboard, Church, CreditCard, Newspaper, Tent, Rocket, FileText, Shield, LogOut, Download, User, Sparkles, KeyRound } from 'lucide-react';
 import { ADMIN_USERS } from './data/membersData';
 import { ChangePasswordModal } from './components/admin/ChangePasswordModal';
@@ -88,7 +88,8 @@ function MainLayout() {
     return <AuthScreen />;
   }
 
-  const isMember = currentUser?.type === 'MEMBER' && !!currentUser?.member;
+  const rawMember = currentUser?.member || (currentUser?.id ? (currentUser as unknown as RouamaMember) : undefined);
+  const isMember = currentUser?.type === 'MEMBER' || !!rawMember;
   const isAdmin = currentUser?.type === 'ADMIN' && !!currentUser?.adminRole;
 
   // STRICT WATERTIGHT SEPARATION: If logged in as Admin, render Admin Cockpit directly
@@ -178,14 +179,14 @@ function MainLayout() {
   }
 
   // MEMBER VIEW (Logged in as MEMBER)
-  const memberNickname = currentUser?.member?.nickname || 'MEMBRE';
-  const memberFirstName = currentUser?.member?.firstName || '';
-  const userAvatar = currentUser?.member?.photoUrl || currentUser?.member?.avatar ||
-    (memberNickname.toUpperCase() === 'CAPELO' || memberFirstName.toUpperCase() === 'WILFRIED'
+  const memberNickname = rawMember?.nickname || currentUser?.nickname || 'MEMBRE';
+  const memberFirstName = rawMember?.firstName || currentUser?.firstName || '';
+  const userAvatar = rawMember?.photoUrl || rawMember?.avatar ||
+    (rawMember && (memberNickname.toUpperCase() === 'CAPELO' || memberFirstName.toUpperCase() === 'WILFRIED')
       ? '/PP-CAPELO.jpeg'
       : undefined);
 
-  const memberId = currentUser?.member?.id;
+  const memberId = rawMember?.id || currentUser?.id;
   const unreadNewsCount = memberId
     ? (newsItems || []).filter(n => !(n?.readBy || []).includes(memberId)).length
     : (newsItems || []).length;
@@ -398,6 +399,9 @@ class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoundarySta
             <button
               onClick={() => {
                 localStorage.removeItem('EROUAMA_STATE_V1');
+                localStorage.removeItem('erouama_active_session');
+                localStorage.removeItem('rouama_user');
+                localStorage.removeItem('erouama_app_state_v2');
                 window.location.reload();
               }}
               className="w-full bg-[#E67E22] hover:bg-[#D35400] text-white font-black py-3.5 px-6 rounded-2xl shadow-lg transition-all text-sm active:scale-95"

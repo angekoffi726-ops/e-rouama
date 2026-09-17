@@ -71,7 +71,7 @@ export const ProjetsTab: React.FC = () => {
           </div>
           <div class="meta-item">
             <span class="meta-label">💰 Coût Estimé (Budget)</span>
-            <span class="meta-value">${proj.estimatedCost.toLocaleString('fr-FR')} F CFA</span>
+            <span class="meta-value">${(proj.estimatedCost || 0).toLocaleString('fr-FR')} F CFA</span>
           </div>
           <div class="meta-item">
             <span class="meta-label">📅 Date de Soumission</span>
@@ -186,7 +186,7 @@ export const ProjetsTab: React.FC = () => {
                       Coût Estimé
                     </span>
                     <span className="text-base font-black text-forest-moss">
-                      {proj.estimatedCost.toLocaleString('fr-FR')} F CFA
+                      {(proj.estimatedCost || 0).toLocaleString('fr-FR')} F CFA
                     </span>
                   </div>
                 </div>
@@ -197,7 +197,7 @@ export const ProjetsTab: React.FC = () => {
                     <TrendingUp className="w-4 h-4 text-emerald-600" />
                     <span>Retour :</span>
                     <span className="text-sm font-black text-forest-moss ml-1">
-                      {proj.currentReturn.toLocaleString('fr-FR')} F CFA
+                      {(proj.currentReturn || 0).toLocaleString('fr-FR')} F CFA
                     </span>
                   </div>
 

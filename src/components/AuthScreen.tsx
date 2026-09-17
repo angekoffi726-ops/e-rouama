@@ -15,7 +15,7 @@ const normalizeName = (str: string): string => {
 };
 
 export const AuthScreen: React.FC = () => {
-  const { registerMember, loginMember, loginAdmin, members, adminUsers } = useApp();
+  const { registerMember, loginMember, loginAdmin, members, adminUsers, setCurrentUser } = useApp();
 
   // 1. LIAISON DYNAMIQUE À FIRESTORE :
   const [totalRegistered, setTotalRegistered] = useState<number>(0);
@@ -76,83 +76,76 @@ export const AuthScreen: React.FC = () => {
     setErrorMsg(null);
     setSuccessMsg(null);
 
-    if (!regMemberName.trim()) {
-      setErrorMsg('Veuillez saisir votre prénom ou surnom fraternel.');
+    const inputName = regMemberName.trim().toLowerCase();
+    if (!inputName) {
+      setErrorMsg('Veuillez saisir votre prénom.');
       return;
     }
 
-    const pinCodeSaisi = regMemberPin.trim();
-    if (!pinCodeSaisi || pinCodeSaisi.length !== 4 || !/^\d{4}$/.test(pinCodeSaisi)) {
+    const codePin = regMemberPin.trim();
+    if (!codePin || codePin.length !== 4 || !/^\d{4}$/.test(codePin)) {
       setErrorMsg('Veuillez définir votre code PIN à 4 chiffres.');
       return;
     }
 
-    // Recherche insensible à la casse et aux accents
-    const cleanInput = normalizeName(regMemberName);
-    const found = members.find(m =>
-      normalizeName(m.firstName) === cleanInput ||
-      normalizeName(m.nickname) === cleanInput ||
-      (m.fullRosterName && normalizeName(m.fullRosterName).includes(cleanInput)) ||
-      (m.id === '2' && (cleanInput === 'ORTINIEL' || cleanInput === 'ESPRIT'))
+    // 1. RECHERCHE DE MEMBRE INSENSIBLE À LA CASSE
+    const member = members.find(m =>
+      (m.login || m.firstName || m.name || '').toLowerCase() === inputName ||
+      (m.nickname || '').toLowerCase() === inputName ||
+      (m.fullRosterName || '').toLowerCase().includes(inputName) ||
+      normalizeName(m.firstName).toLowerCase() === inputName ||
+      normalizeName(m.nickname).toLowerCase() === inputName ||
+      (m.id === '2' && (inputName === 'ortiniel' || inputName === 'esprit'))
     );
 
-    if (!found) {
-      setErrorMsg("Désolé mais ce prénom ne correspond à aucun des 12 membres officiels Rouama.");
+    // Si aucun membre n'est trouvé, simple message d'erreur rouge sur le formulaire
+    if (!member) {
+      setErrorMsg("Prénom non reconnu dans la liste des membres.");
       return;
     }
 
-    const memberId = found.id;
-
-    // 1. DANS LE FORMULAIRE DE PREMIÈRE CONNEXION / ACTIVATION :
-    // Lorsqu'un membre saisit son prénom et définit son code PIN à 4 chiffres :
-    // - Mets à jour directement son document dans Firestore :
+    // 2. SÉCURISATION DU PROCESSUS D'ACTIVATION (ASYNC/AWAIT)
     try {
-      const memberDocRef = doc(db, "members", memberId);
-      const memberSnap = await getDoc(memberDocRef);
-      const memberData = memberSnap.exists() ? memberSnap.data() : {};
-      const avatarUrl = (typeof memberData.avatar === 'string' && memberData.avatar.trim()) ||
-        (typeof memberData.photoUrl === 'string' && memberData.photoUrl.trim()) ||
-        (typeof memberData.photoURL === 'string' && memberData.photoURL.trim()) ||
-        found.avatar ||
-        found.photoUrl ||
-        "";
-
+      // 1. Mettre à jour Firestore
       try {
-        await updateDoc(doc(db, "members", memberId), {
+        await updateDoc(doc(db, "members", member.id), {
           isRegistered: true,
-          pin: pinCodeSaisi,              // Enregistre le vrai PIN saisi
-          avatar: avatarUrl || "",    // Enregistre l'URL ou image si présente
-          lastLogin: new Date().toISOString()
+          pin: String(codePin).trim(),
+          updatedAt: new Date().toISOString()
         });
       } catch (errUpdate) {
-        await setDoc(doc(db, "members", memberId), {
-          id: memberId,
-          firstName: found.firstName,
-          nickname: found.nickname,
-          fullRosterName: found.fullRosterName,
+        await setDoc(doc(db, "members", member.id), {
+          id: member.id,
+          firstName: member.firstName,
+          nickname: member.nickname,
+          fullRosterName: member.fullRosterName,
           isRegistered: true,
-          pin: pinCodeSaisi,
-          avatar: avatarUrl || "",
-          lastLogin: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
+          pin: String(codePin).trim(),
+          avatar: member.avatar || member.photoUrl || "",
+          updatedAt: new Date().toISOString()
         }, { merge: true });
       }
-    } catch (err) {
-      console.warn('Erreur updateDoc Firestore register:', err);
-    }
 
-    const res = await registerMember(regMemberName, pinCodeSaisi);
-    if (!res.success) {
-      const loginRes = await loginMember(regMemberName, pinCodeSaisi);
-      if (!loginRes.success) {
-        setErrorMsg(res.message);
-        return;
-      }
-      setSuccessMsg(`Compte activé avec succès ! Bienvenue chez vous, ${found.nickname} !`);
-    } else {
-      setSuccessMsg(res.message);
+      // 2. Mettre à jour le statut local
+      const updatedMember = {
+        ...member,
+        isRegistered: true,
+        pin: String(codePin).trim(),
+        updatedAt: new Date().toISOString()
+      };
+
+      // 3. Connecter l'utilisateur en toute sécurité
+      setCurrentUser(updatedMember);
+      localStorage.setItem('rouama_user', JSON.stringify(updatedMember));
+      localStorage.setItem('erouama_active_session', JSON.stringify({ type: 'MEMBER', member: updatedMember }));
+
+      // 4. Rediriger vers l'Accueil
+      setSuccessMsg(`Compte activé avec succès ! Bienvenue chez vous, ${member.nickname} !`);
+      clearAllFields();
+    } catch (error) {
+      console.error("Erreur lors de l'activation:", error);
+      alert("Une erreur est survenue lors de l'activation. Veuillez réessayer.");
     }
-    clearAllFields();
   };
 
   const handleMemberLogin = async (e: React.FormEvent) => {
@@ -160,7 +153,8 @@ export const AuthScreen: React.FC = () => {
     setErrorMsg(null);
     setSuccessMsg(null);
 
-    if (!memberLoginName.trim()) {
+    const inputName = memberLoginName.trim().toLowerCase();
+    if (!inputName) {
       setErrorMsg('Veuillez saisir votre prénom ou surnom fraternel.');
       return;
     }
@@ -171,83 +165,88 @@ export const AuthScreen: React.FC = () => {
       return;
     }
 
-    const cleanInput = normalizeName(memberLoginName);
-    const found = members.find(m =>
-      normalizeName(m.firstName) === cleanInput ||
-      normalizeName(m.nickname) === cleanInput ||
-      (m.fullRosterName && normalizeName(m.fullRosterName).includes(cleanInput)) ||
-      (m.id === '2' && (cleanInput === 'ORTINIEL' || cleanInput === 'ESPRIT'))
+    // 1. RECHERCHE DE MEMBRE INSENSIBLE À LA CASSE
+    const member = members.find(m =>
+      (m.login || m.firstName || m.name || '').toLowerCase() === inputName ||
+      (m.nickname || '').toLowerCase() === inputName ||
+      (m.fullRosterName || '').toLowerCase().includes(inputName) ||
+      normalizeName(m.firstName).toLowerCase() === inputName ||
+      normalizeName(m.nickname).toLowerCase() === inputName ||
+      (m.id === '2' && (inputName === 'ortiniel' || inputName === 'esprit'))
     );
 
-    const memberId = found?.id;
-    if (memberId) {
-      try {
-        const memberDocRef = doc(db, "members", memberId);
-        const memberSnap = await getDoc(memberDocRef);
-        const memberData = memberSnap.exists() ? memberSnap.data() : {};
-        const avatarUrl = (typeof memberData.avatar === 'string' && memberData.avatar.trim()) ||
-          (typeof memberData.photoUrl === 'string' && memberData.photoUrl.trim()) ||
-          (typeof memberData.photoURL === 'string' && memberData.photoURL.trim()) ||
-          found?.avatar ||
-          found?.photoUrl ||
-          "";
-
-        // Si le membre n'était pas encore activé dans Firestore, première connexion -> activation directe
-        if (!memberData.isRegistered || !memberData.pin) {
-          try {
-            await updateDoc(doc(db, "members", memberId), {
-              isRegistered: true,
-              pin: pinCodeSaisi,
-              avatar: avatarUrl || "",
-              lastLogin: new Date().toISOString()
-            });
-          } catch (err) {
-            await setDoc(doc(db, "members", memberId), {
-              id: memberId,
-              firstName: found?.firstName,
-              nickname: found?.nickname,
-              fullRosterName: found?.fullRosterName,
-              isRegistered: true,
-              pin: pinCodeSaisi,
-              avatar: avatarUrl || "",
-              lastLogin: new Date().toISOString(),
-              updatedAt: new Date().toISOString(),
-            }, { merge: true });
-          }
-        }
-      } catch (err) {
-        console.warn('Erreur vérification/activation Firestore login:', err);
-      }
+    if (!member) {
+      setErrorMsg("Prénom non reconnu dans la liste des membres.");
+      return;
     }
 
-    const res = await loginMember(memberLoginName, pinCodeSaisi);
-    if (!res.success) {
-      setErrorMsg(res.message);
-    } else {
-      if (memberId) {
-        try {
-          const memberDocRef = doc(db, "members", memberId);
-          const memberSnap = await getDoc(memberDocRef);
-          const memberData = memberSnap.exists() ? memberSnap.data() : {};
-          const avatarUrl = (typeof memberData.avatar === 'string' && memberData.avatar.trim()) ||
-            (typeof memberData.photoUrl === 'string' && memberData.photoUrl.trim()) ||
-            found?.avatar ||
-            found?.photoUrl ||
-            "";
-
-          await updateDoc(doc(db, "members", memberId), {
-            isRegistered: true,
-            pin: pinCodeSaisi,
-            avatar: avatarUrl || "",
-            lastLogin: new Date().toISOString()
-          });
-        } catch (err) {
-          console.warn('Erreur updateDoc Firestore login:', err);
+    try {
+      let expectedPin = member.pin;
+      let avatarUrl = member.avatar || member.photoUrl || "";
+      try {
+        const memberSnap = await getDoc(doc(db, "members", member.id));
+        if (memberSnap.exists()) {
+          const fsData = memberSnap.data();
+          if (fsData.pin) expectedPin = fsData.pin;
+          if (fsData.avatar || fsData.photoUrl) avatarUrl = fsData.avatar || fsData.photoUrl;
         }
+      } catch (fsErr) {
+        console.warn('Erreur vérification Firestore membre:', fsErr);
       }
 
-      setSuccessMsg(res.message);
+      if (!member.isRegistered || !expectedPin || expectedPin === 'Non défini') {
+        try {
+          await updateDoc(doc(db, "members", member.id), {
+            isRegistered: true,
+            pin: String(pinCodeSaisi).trim(),
+            avatar: avatarUrl || "",
+            lastLogin: new Date().toISOString(),
+            updatedAt: new Date().toISOString()
+          });
+        } catch (err) {
+          await setDoc(doc(db, "members", member.id), {
+            id: member.id,
+            firstName: member.firstName,
+            nickname: member.nickname,
+            fullRosterName: member.fullRosterName,
+            isRegistered: true,
+            pin: String(pinCodeSaisi).trim(),
+            avatar: avatarUrl || "",
+            lastLogin: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          }, { merge: true });
+        }
+      } else if (expectedPin !== pinCodeSaisi) {
+        setErrorMsg('Code PIN incorrect.');
+        return;
+      }
+
+      const updatedMember = {
+        ...member,
+        isRegistered: true,
+        pin: String(pinCodeSaisi).trim(),
+        avatar: avatarUrl || member.avatar,
+        photoUrl: avatarUrl || member.photoUrl,
+        lastLogin: new Date().toISOString()
+      };
+
+      try {
+        await updateDoc(doc(db, "members", member.id), {
+          lastLogin: new Date().toISOString()
+        });
+      } catch (e) {
+        console.warn(e);
+      }
+
+      setCurrentUser(updatedMember);
+      localStorage.setItem('rouama_user', JSON.stringify(updatedMember));
+      localStorage.setItem('erouama_active_session', JSON.stringify({ type: 'MEMBER', member: updatedMember }));
+
+      setSuccessMsg(`Bienvenue chez vous, ${member.nickname} !`);
       clearAllFields();
+    } catch (err) {
+      console.error('Erreur connexion membre:', err);
+      setErrorMsg("Une erreur est survenue lors de la connexion. Veuillez réessayer.");
     }
   };
 

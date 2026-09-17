@@ -42,21 +42,17 @@ export const DashboardTab: React.FC<DashboardTabProps> = ({ onNavigateTab }) => 
 
   if (!currentUser) return null;
 
-  const isMember = currentUser.type === 'MEMBER' && currentUser.member;
-  const currentMember = currentUser.member;
-  const memberId = currentMember?.id || '';
+  const currentMember = currentUser.member || (currentUser.id ? (currentUser as unknown as any) : undefined);
+  const isMember = currentUser.type === 'MEMBER' || !!currentMember;
+  const memberId = currentMember?.id || currentUser.id || '';
 
-  const nickname = isMember
-    ? currentMember.nickname
-    : currentUser.adminRole || 'ADMIN';
+  const nickname = currentMember?.nickname || currentUser?.nickname || (currentUser.adminRole ? currentUser.adminRole : 'MEMBRE');
 
   // Fallback default avatar for Capelo/Wilfried if no explicit custom upload is set
-  const userAvatar = isMember
-    ? (currentMember?.photoUrl || currentMember?.avatar ||
-       (currentMember?.nickname.toUpperCase() === 'CAPELO' || currentMember?.firstName.toUpperCase() === 'WILFRIED'
-         ? '/PP-CAPELO.jpeg'
-         : undefined))
-    : undefined;
+  const userAvatar = currentMember?.photoUrl || currentMember?.avatar ||
+    (currentMember && (nickname.toUpperCase() === 'CAPELO' || ((currentMember?.firstName || '') as string).toUpperCase() === 'WILFRIED')
+      ? '/PP-CAPELO.jpeg'
+      : undefined);
 
   // 2. CHARGEMENT AUTOMATIQUE AU RECHARGEMENT (useEffect) :
   // Récupère le document du membre dans Firestore via son ID à chaque chargement
@@ -394,7 +390,7 @@ export const DashboardTab: React.FC<DashboardTabProps> = ({ onNavigateTab }) => 
 
                 <div className="mt-3 pt-3 border-t border-slate-200/60 flex justify-between items-center text-xs">
                   <span className="text-slate-500 font-medium">Cumul versé (2026) :</span>
-                  <span className="font-extrabold text-slate-900">{duesDetail.totalPaid.toLocaleString('fr-FR')} F CFA</span>
+                  <span className="font-extrabold text-slate-900">{(duesDetail.totalPaid ?? 0).toLocaleString('fr-FR')} F CFA</span>
                 </div>
               </div>
             ) : (
@@ -487,9 +483,13 @@ export const DashboardTab: React.FC<DashboardTabProps> = ({ onNavigateTab }) => 
               <div className="p-4 bg-emerald-50/50 rounded-2xl border border-emerald-200/60 space-y-2">
                 <div className="flex items-center justify-between text-[10px] font-bold text-emerald-900">
                   <span className="bg-[#355E3B] text-white px-2 py-0.5 rounded-md font-black">
-                    {nextActivity.eventDate}
+                    {nextActivity.eventDate || 'À venir'}
                   </span>
-                  <span className="text-slate-500">Budget : {nextActivity.budget.toLocaleString('fr-FR')} F CFA</span>
+                  <span className="text-slate-500">
+                    Budget : {typeof nextActivity.budget === 'number' && !isNaN(nextActivity.budget) && nextActivity.budget > 0
+                      ? `${nextActivity.budget.toLocaleString('fr-FR')} F CFA`
+                      : 'À définir'}
+                  </span>
                 </div>
                 <h3 className="font-bold text-slate-900 text-xs">
                   {nextActivity.title}

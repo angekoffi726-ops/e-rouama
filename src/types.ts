@@ -30,6 +30,7 @@ export interface ReligiousEvent {
 export interface RouamaMember {
   id: string;
   name?: string;
+  login?: string;
   firstName: string;
   fullRosterName: string;
   nickname: string;
@@ -40,6 +41,7 @@ export interface RouamaMember {
   avatar?: string;
   photoUrl?: string;
   assignedRole?: AdminRole;
+  updatedAt?: string;
 }
 
 export interface AdminUser {
@@ -55,6 +57,11 @@ export interface CurrentUser {
   type: 'MEMBER' | 'ADMIN';
   member?: RouamaMember;
   adminRole?: AdminRole;
+  id?: string;
+  firstName?: string;
+  nickname?: string;
+  pin?: string;
+  isRegistered?: boolean;
 }
 
 export type FundType = 'COTISATION' | 'ANNIVERSAIRE' | 'SOIREE_ROUAMA' | 'LOISIRS' | 'AGR' | 'CAS_SOCIAUX';
