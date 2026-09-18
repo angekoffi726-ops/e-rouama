@@ -1388,10 +1388,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     let isFull = false;
 
     if (fund === 'COTISATION') {
-      if (amount < 500 || amount % 500 !== 0) {
+      if (amount < 500) {
         return {
           success: false,
-          message: 'La cotisation mensuelle est fixée à 500 F CFA par mois. Le montant doit être de 500 F CFA ou un multiple.'
+          message: 'Le montant minimum de cotisation mensuelle est de 500 F CFA.'
         };
       }
       isFull = true;

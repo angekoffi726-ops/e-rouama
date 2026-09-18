@@ -65,22 +65,41 @@ export const FinancesTab: React.FC = () => {
   const publishedActivities = activities.filter(a => a.status === 'PUBLISHED');
   const publishedProjects = projects.filter(p => p.status === 'PUBLISHED');
 
-  // Wave Payment URL
-  const WAVE_PAYMENT_URL = 'https://pay.wave.com/m/M_ci_GgJcnMC4q7hK/c/ci/';
+  // Wave Payment URL & Numéro Wave du Trésorier Général (dynamique)
+  const tresorierMember = members.find(m => m.assignedRole === 'TRESORIER');
+  const NUMERO_TRESO_WAVE = tresorierMember?.phone || '2250501948962';
+
+  // Fonction de génération dynamique du lien Wave avec injection du montant exact
+  const getWaveLink = (amount: number) => {
+    const selectedAmount = Math.max(0, Math.round(amount || 0));
+    return `https://wave.com/send?phone=${NUMERO_TRESO_WAVE}&amount=${selectedAmount}`;
+  };
 
   // --------------------------------------------------------------------------
-  // STATE: 1. COTISATIONS MENSUELLES (500 FCFA / MOIS FIXE)
+  // STATE: 1. COTISATIONS MENSUELLES (500 FCFA / MOIS FIXE OU SAISIE LIBRE)
   // --------------------------------------------------------------------------
   const [monthlyMonthsCount, setMonthlyMonthsCount] = useState<number>(
     duesDetail.unpaidMonths > 0 ? duesDetail.unpaidMonths : 1
   );
+  const [isCustomAmount, setIsCustomAmount] = useState<boolean>(false);
+  const [customAmountInput, setCustomAmountInput] = useState<string>('2000');
   const [monthlyTxnRef, setMonthlyTxnRef] = useState<string>('');
   const [monthlyReceiptFile, setMonthlyReceiptFile] = useState<File | null>(null);
   const [monthlyReceiptPreview, setMonthlyReceiptPreview] = useState<string | null>(null);
   const [monthlyMsg, setMonthlyMsg] = useState<{ type: 'error' | 'success'; text: string } | null>(null);
   const [isMonthlySubmitting, setIsMonthlySubmitting] = useState(false);
 
-  const monthlyAmount = monthlyMonthsCount * 500;
+  // Montant calculé dynamiquement
+  const parsedCustomAmount = isCustomAmount ? (parseInt(customAmountInput, 10) || 0) : 0;
+  const monthlyAmount = isCustomAmount ? parsedCustomAmount : (monthlyMonthsCount * 500);
+
+  // Calcul du nombre de mois correspondants si c'est un multiple de 500 FCFA (ex: 2000 FCFA = 4 mois)
+  const isMultipleOf500 = monthlyAmount >= 500 && monthlyAmount % 500 === 0;
+  const calculatedMonths = isMultipleOf500 ? Math.floor(monthlyAmount / 500) : (monthlyAmount / 500);
+  const monthlyMonthsCountDisplay = isCustomAmount
+    ? (isMultipleOf500 ? `${calculatedMonths} mois` : `${monthlyAmount.toLocaleString('fr-FR')} F`)
+    : `${monthlyMonthsCount} mois`;
+
   const isMonthlyWaveActive = monthlyAmount >= 500;
   const isMonthlySubmitActive = monthlyReceiptFile !== null && monthlyAmount >= 500 && !isMonthlySubmitting;
 
@@ -98,10 +117,10 @@ export const FinancesTab: React.FC = () => {
     e.preventDefault();
     setMonthlyMsg(null);
 
-    if (monthlyAmount < 500 || monthlyAmount % 500 !== 0) {
+    if (monthlyAmount < 500) {
       setMonthlyMsg({
         type: 'error',
-        text: 'La cotisation mensuelle est fixée à 500 F CFA par mois. Le montant doit être de 500 F CFA ou un multiple.',
+        text: 'Le montant minimum de cotisation mensuelle est de 500 F CFA.',
       });
       return;
     }
@@ -138,7 +157,7 @@ export const FinancesTab: React.FC = () => {
       if (res.success) {
         setMonthlyMsg({
           type: 'success',
-          text: `Votre cotisation mensuelle de ${monthlyAmount.toLocaleString('fr-FR')} F CFA (${monthlyMonthsCount} mois) a été transmise en direct sur Firestore au Trésorier pour validation !`,
+          text: `Votre cotisation de ${monthlyAmount.toLocaleString('fr-FR')} F CFA (${monthlyMonthsCountDisplay}) a été transmise en direct sur Firestore au Trésorier pour validation !`,
         });
         setMonthlyTxnRef('');
         setMonthlyReceiptFile(null);
@@ -639,7 +658,7 @@ export const FinancesTab: React.FC = () => {
             </div>
           </div>
 
-          {/* Wave Payment Link for Monthly */}
+          {/* Wave Payment Link for Monthly avec montant dynamique */}
           <div className="bg-gradient-to-r from-cyan-600 via-sky-600 to-blue-700 text-white rounded-3xl p-6 shadow-xl border border-sky-400/40 flex flex-col md:flex-row items-center justify-between gap-6">
             <div className="space-y-1.5 text-center md:text-left">
               <div className="inline-flex items-center gap-2 bg-white/20 px-3 py-1 rounded-full text-xs font-black">
@@ -647,23 +666,35 @@ export const FinancesTab: React.FC = () => {
                 <span>WAVE DIRECT • COTISATIONS MENSUELLES (500 F/MOIS)</span>
               </div>
               <h3 className="text-xl font-black text-white">
-                Payer {monthlyAmount.toLocaleString('fr-FR')} F CFA ({monthlyMonthsCount} mois) via Wave
+                Payer {monthlyAmount > 0 ? `${monthlyAmount.toLocaleString('fr-FR')} F CFA` : '0 F CFA'} ({monthlyMonthsCountDisplay}) via Wave
               </h3>
               <p className="text-xs text-cyan-100 max-w-lg">
-                Cliquez pour ouvrir Wave et transférer le montant exact pour vos mensualités.
+                Montant injecté automatiquement dans Wave. Cliquez pour ouvrir Wave avec la somme pré-remplie sans avoir à retaper le montant.
               </p>
             </div>
 
-            <a
-              href={WAVE_PAYMENT_URL}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="bg-white hover:bg-cyan-50 text-sky-950 font-black py-3.5 px-6 rounded-2xl shadow-lg transition-all flex items-center gap-2 text-sm sm:text-base hover:scale-105 active:scale-95 shrink-0"
-            >
-              <span className="text-lg">🌊</span>
-              <span>PAYER VIA WAVE ({monthlyAmount.toLocaleString('fr-FR')} F)</span>
-              <ExternalLink className="w-4 h-4 text-sky-700" />
-            </a>
+            {isMonthlyWaveActive ? (
+              <a
+                href={getWaveLink(monthlyAmount)}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="bg-white hover:bg-cyan-50 text-sky-950 font-black py-3.5 px-6 rounded-2xl shadow-lg transition-all flex items-center gap-2 text-sm sm:text-base hover:scale-105 active:scale-95 shrink-0"
+              >
+                <span className="text-lg">🌊</span>
+                <span>PAYER VIA WAVE ({monthlyAmount.toLocaleString('fr-FR')} F)</span>
+                <ExternalLink className="w-4 h-4 text-sky-700" />
+              </a>
+            ) : (
+              <button
+                type="button"
+                disabled
+                className="bg-white/40 text-sky-950/40 cursor-not-allowed font-black py-3.5 px-6 rounded-2xl text-sm sm:text-base flex items-center gap-2 opacity-70 shrink-0"
+              >
+                <span className="text-lg opacity-40">🌊</span>
+                <span>PAYER VIA WAVE</span>
+                <ExternalLink className="w-4 h-4 text-sky-950/30" />
+              </button>
+            )}
           </div>
 
           {/* Form: Monthly Dues Declaration */}
@@ -674,7 +705,7 @@ export const FinancesTab: React.FC = () => {
                 <span>Déclaration de Cotisation Mensuelle (500 FCFA / mois)</span>
               </h3>
               <p className="text-xs text-gray-500 mt-1">
-                Indiquez le nombre de mois réglés et transmettez votre reçu de versement Wave au Trésorier.
+                Indiquez le nombre de mois réglés ou un montant libre et transmettez votre reçu de versement Wave au Trésorier.
               </p>
             </div>
 
@@ -691,12 +722,12 @@ export const FinancesTab: React.FC = () => {
             )}
 
             <form onSubmit={handleMonthlySubmit} className="space-y-6">
-              {/* Preset Month Options */}
+              {/* Preset Month Options + Autre Montant */}
               <div>
                 <label className="block text-xs font-extrabold text-gray-700 uppercase mb-2">
-                  1. Choisissez le nombre de mois à cotiser
+                  1. Choisissez le nombre de mois ou saisissez un montant libre
                 </label>
-                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-2.5">
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-7 gap-2.5">
                   {[
                     { count: 1, label: '1 mois', amount: 500 },
                     { count: 2, label: '2 mois', amount: 1000 },
@@ -707,9 +738,12 @@ export const FinancesTab: React.FC = () => {
                     <button
                       type="button"
                       key={item.count}
-                      onClick={() => setMonthlyMonthsCount(item.count)}
+                      onClick={() => {
+                        setIsCustomAmount(false);
+                        setMonthlyMonthsCount(item.count);
+                      }}
                       className={`p-3 rounded-2xl text-center border transition-all ${
-                        monthlyMonthsCount === item.count
+                        !isCustomAmount && monthlyMonthsCount === item.count
                           ? 'bg-[#355E3B] text-white border-emerald-600 shadow-md ring-2 ring-emerald-300'
                           : 'bg-gray-50 hover:bg-gray-100 text-gray-800 border-gray-200'
                       }`}
@@ -724,9 +758,12 @@ export const FinancesTab: React.FC = () => {
                   {duesDetail.unpaidMonths > 0 && (
                     <button
                       type="button"
-                      onClick={() => setMonthlyMonthsCount(duesDetail.unpaidMonths)}
+                      onClick={() => {
+                        setIsCustomAmount(false);
+                        setMonthlyMonthsCount(duesDetail.unpaidMonths);
+                      }}
                       className={`p-3 rounded-2xl text-center border transition-all ${
-                        monthlyMonthsCount === duesDetail.unpaidMonths
+                        !isCustomAmount && monthlyMonthsCount === duesDetail.unpaidMonths
                           ? 'bg-rose-600 text-white border-rose-700 shadow-md ring-2 ring-rose-300'
                           : 'bg-rose-50 hover:bg-rose-100 text-rose-900 border-rose-200'
                       }`}
@@ -737,7 +774,77 @@ export const FinancesTab: React.FC = () => {
                       </span>
                     </button>
                   )}
+
+                  {/* Carte / Bouton "Autre montant" */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsCustomAmount(true);
+                      if (!customAmountInput || customAmountInput === '0') {
+                        setCustomAmountInput('2000');
+                      }
+                    }}
+                    className={`p-3 rounded-2xl text-center border transition-all ${
+                      isCustomAmount
+                        ? 'bg-[#E67E22] text-white border-amber-600 shadow-md ring-2 ring-amber-300'
+                        : 'bg-amber-50 hover:bg-amber-100 text-amber-900 border-amber-200'
+                    }`}
+                  >
+                    <span className="text-xs font-black block">Autre montant</span>
+                    <span className="text-[11px] font-mono font-bold mt-0.5 block">
+                      {isCustomAmount && parsedCustomAmount > 0 ? `${parsedCustomAmount.toLocaleString('fr-FR')} F` : 'Saisie libre'}
+                    </span>
+                  </button>
                 </div>
+
+                {/* Champ de saisie numérique si Autre montant est sélectionné */}
+                {isCustomAmount && (
+                  <div className="mt-3 p-4 bg-amber-50/70 rounded-2xl border border-amber-200/80 animate-fadeIn space-y-2.5">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                      <label className="text-xs font-black text-amber-900 flex items-center gap-1.5">
+                        <span>✏️ Saisie libre du montant personnalisé :</span>
+                      </label>
+                      {monthlyAmount > 0 && (
+                        <span className="text-xs font-black text-[#355E3B] bg-emerald-100/90 px-3 py-1 rounded-full border border-emerald-300">
+                          {isMultipleOf500
+                            ? `Correspond exactement à ${calculatedMonths} mois (${calculatedMonths} × 500 F)`
+                            : `Montant personnalisé : ${monthlyAmount.toLocaleString('fr-FR')} F CFA`}
+                        </span>
+                      )}
+                    </div>
+                    <div className="relative">
+                      <input
+                        type="number"
+                        min="500"
+                        step="500"
+                        placeholder="Entrez le montant en FCFA (ex: 2000)"
+                        value={customAmountInput}
+                        onChange={e => setCustomAmountInput(e.target.value)}
+                        className="w-full bg-white border-2 border-amber-400 focus:border-[#E67E22] rounded-2xl px-4 py-3 text-base font-black text-gray-900 focus:outline-none font-mono shadow-inner"
+                      />
+                      <span className="absolute right-4 top-1/2 -translate-y-1/2 text-xs font-black text-gray-500">
+                        FCFA
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2 pt-1 flex-wrap">
+                      <span className="text-[11px] text-amber-800 font-bold">Montants fréquents :</span>
+                      {[2000, 2500, 3500, 4000, 5000].map(sugAmt => (
+                        <button
+                          key={sugAmt}
+                          type="button"
+                          onClick={() => setCustomAmountInput(String(sugAmt))}
+                          className={`text-[11px] font-bold px-2.5 py-0.5 rounded-full border transition-all active:scale-95 ${
+                            customAmountInput === String(sugAmt)
+                              ? 'bg-[#E67E22] text-white border-amber-600'
+                              : 'bg-white hover:bg-amber-100 text-amber-900 border-amber-300'
+                          }`}
+                        >
+                          {sugAmt.toLocaleString('fr-FR')} F ({sugAmt / 500} mois)
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* Amount Display & Reference */}
@@ -753,7 +860,15 @@ export const FinancesTab: React.FC = () => {
                     <span className="text-sm font-extrabold text-slate-500">F CFA</span>
                   </div>
                   <p className="text-xs text-slate-500">
-                    Formule statutaire : <strong>{monthlyMonthsCount} mois × 500 FCFA</strong>
+                    {isCustomAmount ? (
+                      isMultipleOf500 ? (
+                        <>Calcul équivalent : <strong>{calculatedMonths} mois × 500 FCFA = {monthlyAmount.toLocaleString('fr-FR')} F CFA</strong></>
+                      ) : (
+                        <>Montant libre : <strong>{monthlyAmount.toLocaleString('fr-FR')} F CFA</strong></>
+                      )
+                    ) : (
+                      <>Formule statutaire : <strong>{monthlyMonthsCount} mois × 500 FCFA</strong></>
+                    )}
                   </p>
                 </div>
 
@@ -845,7 +960,7 @@ export const FinancesTab: React.FC = () => {
                   <>
                     <CheckCircle2 className="w-5 h-5" />
                     <span>
-                      DÉCLARER MA COTISATION MENSUELLE ({monthlyAmount.toLocaleString('fr-FR')} F CFA - {monthlyMonthsCount} MOIS)
+                      DÉCLARER MA COTISATION ({monthlyAmount.toLocaleString('fr-FR')} F CFA{isMultipleOf500 ? ` - ${calculatedMonths} MOIS` : ''})
                     </span>
                   </>
                 )}
@@ -1108,7 +1223,7 @@ export const FinancesTab: React.FC = () => {
 
             {isTrancheWaveActive ? (
               <a
-                href={WAVE_PAYMENT_URL}
+                href={getWaveLink(numericTrancheAmount)}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="bg-white hover:bg-cyan-50 text-sky-950 font-black py-3.5 px-6 rounded-2xl shadow-lg transition-all flex items-center gap-2 text-sm sm:text-base hover:scale-105 active:scale-95 shrink-0"
