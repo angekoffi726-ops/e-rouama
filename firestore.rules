@@ -13,6 +13,9 @@ service cloud.firestore {
     match /declarations/{declarationId} {
       allow read, write: if true;
     }
+    match /payments/{paymentId} {
+      allow read, write: if true;
+    }
 
     // 3. Membres de l'association
     match /members/{memberId} {

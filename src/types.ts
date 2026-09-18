@@ -102,7 +102,8 @@ export interface PaymentDeclaration {
   reference: string;
   month: string; // YYYY-MM
   date: string;
-  status: 'PENDING' | 'APPROVED' | 'REJECTED';
+  status: 'PENDING' | 'APPROVED' | 'REJECTED' | 'deleted' | 'hidden';
+  isHidden?: boolean;
   rejectionReason?: string;
   paymentType?: 'TOTAL' | 'TRANCHE';
   subCategory?: string;

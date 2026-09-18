@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import emailjs from '@emailjs/browser';
-import { doc, deleteDoc, collection, onSnapshot } from 'firebase/firestore';
+import { doc, deleteDoc, updateDoc, setDoc, collection, onSnapshot } from 'firebase/firestore';
 import { db } from '../../firebase';
 import { useApp } from '../../context/AppContext';
 import { AdminRole, FundType, FUND_LABELS, TargetAudience, Committee, AgrProject, FinancialBilan, NewsItem, AdHocCommitteeRoles, EventActivity } from '../../types';
@@ -291,6 +291,27 @@ export const AdminPortal: React.FC = () => {
   // User's native admin role
   const userAdminRole = currentUser?.adminRole || 'TRESORIER';
   const activeRole: AdminRole = userAdminRole;
+
+  // Gestion locale et réactive des paiements / déclarations pour le panneau Trésorier
+  const [payments, setPayments] = useState<any[]>(() =>
+    declarations.filter(p => !p.isHidden && p.status !== 'hidden' && p.status !== 'deleted')
+  );
+  useEffect(() => {
+    setPayments(declarations.filter(p => !p.isHidden && p.status !== 'hidden' && p.status !== 'deleted'));
+  }, [declarations]);
+
+  // 3. FILTRAGE DES VUES (MASQUAGE EFFECTIF) :
+  // Dans le tableau "Validation des Reçus de Dépôt" (Trésorier) :
+  // Filtrer la liste pour ignorer toutes les lignes ayant isHidden === true ou status === 'hidden'.
+  const pendingPayments = payments.filter(
+    p =>
+      !p.isHidden &&
+      p.status !== 'hidden' &&
+      p.status !== 'deleted' &&
+      p.status !== 'validated' &&
+      p.status !== 'rejected' &&
+      p.status !== 'APPROVED'
+  );
 
   // Temporal WhatsApp Check (28th of current month to 04th of next month until 23h59 GMT)
   const today = new Date();
@@ -902,6 +923,52 @@ export const AdminPortal: React.FC = () => {
       setTimeout(() => setToastMessage(null), 4000);
     }
   };
+
+  // 2. FONCTION DE MASQUAGE DÉFINITIF (TRÉSORIER & MEMBRE)
+  const handleHidePayment = async (paymentItem: any) => {
+    const targetId = paymentItem?.id || paymentItem?._id || paymentItem?.docId;
+    if (!targetId) return;
+
+    if (!window.confirm("Voulez-vous masquer définitivement cette ligne de test/erreur ?")) return;
+
+    // Fermer les modales de prévisualisation si nécessaire
+    if (previewDeclaration && ((previewDeclaration.id || (previewDeclaration as any)._id || (previewDeclaration as any).docId) === targetId)) {
+      setPreviewDeclaration(null);
+      setPreviewReceiptImgError(false);
+    }
+    if (rejectModalDeclaration && ((rejectModalDeclaration.id || (rejectModalDeclaration as any)._id || (rejectModalDeclaration as any).docId) === targetId)) {
+      setRejectModalDeclaration(null);
+    }
+
+    // Mettre à jour l'affichage local immédiatement
+    setPayments(prev => prev.map(p => 
+      ((p.id === targetId || (p as any)._id === targetId || (p as any).docId === targetId))
+        ? { ...p, isHidden: true, status: 'hidden' }
+        : p
+    ));
+
+    // Mettre à jour Firestore
+    try {
+      const updateData = { isHidden: true, status: 'hidden', hiddenAt: new Date() };
+      const docRef = doc(db, "payments", targetId);
+      await updateDoc(docRef, updateData).catch(async () => {
+        await setDoc(docRef, updateData, { merge: true }).catch(() => {});
+      });
+      const receiptRef = doc(db, "receipts", targetId);
+      await updateDoc(receiptRef, updateData).catch(async () => {
+        await setDoc(receiptRef, updateData, { merge: true }).catch(() => {});
+      });
+      const declRef = doc(db, "declarations", targetId);
+      await updateDoc(declRef, updateData).catch(async () => {
+        await setDoc(declRef, updateData, { merge: true }).catch(() => {});
+      });
+    } catch (err) {
+      console.error("Erreur de masquage :", err);
+    }
+  };
+
+  const handleDeletePayment = handleHidePayment;
+  const handleDeleteReceipt = handleHidePayment;
 
   // Generate & Download PDF AGR Project Handler
   const handleGeneratePDFProject = (proj: AgrProject) => {
@@ -2011,7 +2078,7 @@ export const AdminPortal: React.FC = () => {
                 <div className="bg-slate-900/90 border border-slate-800 px-4 py-3 rounded-2xl text-center">
                   <span className="block text-[10px] font-bold text-slate-400 uppercase">Reçus en Attente</span>
                   <span className="text-lg font-black text-amber-400">
-                    {declarations.filter(d => d.status === 'PENDING').length}
+                    {pendingPayments.length}
                   </span>
                 </div>
                 <div className="bg-slate-900/90 border border-slate-800 px-4 py-3 rounded-2xl text-center">
@@ -2104,9 +2171,9 @@ export const AdminPortal: React.FC = () => {
                 }`}
               >
                 <span>📥 VALIDATION REÇUS</span>
-                {declarations.filter(d => d.status === 'PENDING').length > 0 && (
+                {pendingPayments.length > 0 && (
                   <span className="bg-amber-400 text-slate-950 px-2 py-0.5 rounded-full text-[10px] font-black">
-                    {declarations.filter(d => d.status === 'PENDING').length}
+                    {pendingPayments.length}
                   </span>
                 )}
               </button>
@@ -2211,11 +2278,11 @@ export const AdminPortal: React.FC = () => {
                   <span>Validation des Reçus de Dépôt en Attente</span>
                 </h2>
                 <span className="bg-amber-500/20 text-amber-300 text-xs font-extrabold px-3 py-1 rounded-full border border-amber-500/30">
-                  {declarations.filter(d => d.status === 'PENDING').length} à traiter
+                  {pendingPayments.length} à traiter
                 </span>
               </div>
 
-              {declarations.filter(d => d.status === 'PENDING').length === 0 ? (
+              {pendingPayments.length === 0 ? (
                 <div className="text-center py-12 bg-slate-950 rounded-2xl border border-dashed border-slate-800 text-slate-500 text-sm">
                   Aucune déclaration de dépôt en attente de validation.
                 </div>
@@ -2233,9 +2300,7 @@ export const AdminPortal: React.FC = () => {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-800/60 font-medium">
-                      {declarations
-                        .filter(d => d.status === 'PENDING')
-                        .map(d => {
+                      {pendingPayments.map(d => {
                           const progress = getMemberRubricProgress(d.memberId, d.fund, d.subCategory);
                           const remainingAfter = Math.max(0, progress.remainingDue - d.amount);
                           return (
@@ -2317,6 +2382,14 @@ export const AdminPortal: React.FC = () => {
                                 >
                                   <XCircle className="w-4 h-4" />
                                   <span>Rejeter</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeletePayment(d)}
+                                  className="btn-erreur bg-slate-800 hover:bg-amber-950/40 text-slate-300 hover:text-amber-400 border border-slate-700 hover:border-amber-700/50 font-black px-3 py-2 rounded-xl text-xs shadow inline-flex items-center gap-1.5 active:scale-95 transition-all cursor-pointer"
+                                  title="Supprimer définitivement cette déclaration de test / erreur"
+                                >
+                                  🗑️ Erreur / Supprimer
                                 </button>
                               </td>
                             </tr>
@@ -2862,26 +2935,41 @@ export const AdminPortal: React.FC = () => {
                                                 <td className="py-2.5 px-3 font-mono text-amber-300">
                                                   {dec.reference}
                                                 </td>
-                                                <td className="py-2.5 px-3 text-right">
-                                                  <span
-                                                    className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-black ${
-                                                      dec.status === 'APPROVED'
-                                                        ? 'bg-emerald-500/20 text-emerald-300'
-                                                        : dec.status === 'REJECTED'
-                                                        ? 'bg-rose-500/20 text-rose-300'
-                                                        : 'bg-amber-500/20 text-amber-300'
-                                                    }`}
-                                                  >
-                                                    {dec.status === 'APPROVED' && <CheckCircle2 className="w-3 h-3 text-emerald-400" />}
-                                                    {dec.status === 'PENDING' && <Clock className="w-3 h-3 text-amber-400" />}
-                                                    <span>
-                                                      {dec.status === 'APPROVED'
-                                                        ? 'Validé'
-                                                        : dec.status === 'REJECTED'
-                                                        ? 'Rejeté'
-                                                        : 'En attente'}
+                                                <td className="py-2.5 px-3 text-right whitespace-nowrap">
+                                                  <div className="inline-flex items-center justify-end gap-2">
+                                                    <span
+                                                      className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-black ${
+                                                        dec.status === 'APPROVED'
+                                                          ? 'bg-emerald-500/20 text-emerald-300'
+                                                          : dec.status === 'REJECTED'
+                                                          ? 'bg-rose-500/20 text-rose-300'
+                                                          : 'bg-amber-500/20 text-amber-300'
+                                                      }`}
+                                                    >
+                                                      {dec.status === 'APPROVED' && <CheckCircle2 className="w-3 h-3 text-emerald-400" />}
+                                                      {dec.status === 'REJECTED' && <XCircle className="w-3 h-3 text-rose-400" />}
+                                                      {dec.status === 'PENDING' && <Clock className="w-3 h-3 text-amber-400" />}
+                                                      <span>
+                                                        {dec.status === 'APPROVED'
+                                                          ? 'Validé'
+                                                          : dec.status === 'REJECTED'
+                                                          ? 'Rejeté'
+                                                          : 'En attente'}
+                                                      </span>
                                                     </span>
-                                                  </span>
+
+                                                    {dec.status === 'REJECTED' && (
+                                                      <button
+                                                        type="button"
+                                                        onClick={() => handleDeleteReceipt(dec)}
+                                                        className="btn-erreur bg-slate-800 hover:bg-rose-950/60 text-slate-400 hover:text-rose-300 border border-slate-700 hover:border-rose-800/60 px-2 py-1 rounded-lg text-[10px] font-black inline-flex items-center gap-1 transition-all cursor-pointer"
+                                                        title="Supprimer définitivement ce versement rejeté"
+                                                      >
+                                                        <Trash2 className="w-3 h-3 text-rose-400" />
+                                                        <span>Supprimer</span>
+                                                      </button>
+                                                    )}
+                                                  </div>
                                                 </td>
                                               </tr>
                                             ))}
@@ -7125,6 +7213,14 @@ export const AdminPortal: React.FC = () => {
                     className="bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold px-4 py-2.5 rounded-xl text-xs transition-all cursor-pointer"
                   >
                     Fermer
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleDeletePayment(previewDeclaration)}
+                    className="btn-erreur bg-slate-800 hover:bg-amber-950/50 text-slate-300 hover:text-amber-400 border border-slate-700 hover:border-amber-700/60 font-black px-4 py-2.5 rounded-xl text-xs flex items-center gap-1.5 transition-all cursor-pointer"
+                    title="Supprimer définitivement cette déclaration de test / erreur"
+                  >
+                    🗑️ Erreur / Supprimer
                   </button>
                   {previewDeclaration.status === 'PENDING' && (
                     <button

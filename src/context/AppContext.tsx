@@ -37,6 +37,7 @@ import {
   onSnapshot,
   addDoc,
   getDoc,
+  getDocs,
 } from 'firebase/firestore';
 import { db, testFirestoreConnection, sanitizeFirestore } from '../firebase';
 import { compressReceiptImage } from '../utils/imageCompressor';
@@ -127,7 +128,9 @@ interface AppContextType {
   }) => Promise<{ success: boolean; message: string }>;
   approvePayment: (declarationId: string) => Promise<void> | void;
   rejectPayment: (declarationId: string, reason?: string) => Promise<void> | void;
+  hideReceipt: (declarationId: string) => Promise<void>;
   deleteReceipt: (declarationId: string) => Promise<void>;
+  deleteTransaction: (txId: string) => Promise<void>;
 
   createWithdrawalRequest: (fund: FundType, amount: number, reason: string) => Promise<void> | void;
   approveWithdrawal: (requestId: string) => Promise<void> | void;
@@ -367,6 +370,31 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setIsFirebaseConnected(connected);
     });
 
+    // 0.bis Nettoyage proactif initial des 2 déclarations de test de Wilfried (CAPELO) des 09/09/2026 et 18/09/2026
+    const purgeTestDocs = async () => {
+      try {
+        const snap = await getDocs(collection(db, 'receipts'));
+        snap.forEach((d) => {
+          const data = d.data() as any;
+          const isWilfried =
+            data.memberId === '1' ||
+            data.memberName?.toUpperCase()?.includes('WILFRIED') ||
+            data.memberNickname?.toUpperCase()?.includes('CAPELO');
+          const dateStr = String(data.date || '');
+          const isTestDate = dateStr.includes('09/09/2026') || dateStr.includes('18/09/2026');
+          if (isWilfried && isTestDate && (data.status === 'REJECTED' || data.isTest || data.rejectionReason?.includes('test'))) {
+            deleteDoc(d.ref).catch(() => {});
+            deleteDoc(doc(db, 'payments', d.id)).catch(() => {});
+            deleteDoc(doc(db, 'declarations', d.id)).catch(() => {});
+            deleteDoc(doc(db, 'transactions', d.id)).catch(() => {});
+          }
+        });
+      } catch (err) {
+        // Ignore if offline
+      }
+    };
+    purgeTestDocs();
+
     const unsubscribes: (() => void)[] = [];
 
     // 1. REÇUS DE PAIEMENT (Collection 'receipts' synchronisée EXCLUSIVEMENT en temps réel depuis Firestore)
@@ -374,13 +402,37 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       collection(db, 'receipts'),
       (snapshot) => {
         setIsFirebaseConnected(true);
-        // Conserver l'intégralité de l'historique sans jamais le purger
-        const loaded: PaymentDeclaration[] = snapshot.docs.map((docSnap) => {
+        // Conserver l'intégralité de l'historique sans jamais le purger (sauf nettoyage explicite des tests)
+        const loaded: PaymentDeclaration[] = [];
+        snapshot.docs.forEach((docSnap) => {
           const data = docSnap.data() as any;
-          return {
+          const docId = docSnap.id;
+
+          // Nettoyage automatique des 2 déclarations de test de Wilfried (CAPELO) des 09/09/2026 et 18/09/2026
+          const isWilfried =
+            data.memberId === '1' ||
+            data.memberName?.toUpperCase()?.includes('WILFRIED') ||
+            data.memberNickname?.toUpperCase()?.includes('CAPELO');
+          const dateStr = String(data.date || '');
+          const isTestDate = dateStr.includes('09/09/2026') || dateStr.includes('18/09/2026');
+          const isRejectedTest = isWilfried && isTestDate && (data.status === 'REJECTED' || data.isTest || data.rejectionReason?.includes('test'));
+
+          if (data.status === 'deleted' || data.isHidden === true || data.status === 'hidden') {
+            return;
+          }
+
+          if (isRejectedTest) {
+            deleteDoc(docSnap.ref).catch(() => {});
+            deleteDoc(doc(db, 'payments', docId)).catch(() => {});
+            deleteDoc(doc(db, 'declarations', docId)).catch(() => {});
+            deleteDoc(doc(db, 'transactions', docId)).catch(() => {});
+            return;
+          }
+
+          loaded.push({
             ...data,
-            id: docSnap.id, // Toujours l'identifiant unique Firestore
-          };
+            id: docId,
+          });
         });
 
         // Tri chronologique rigoureux : reçus les plus récents en premier
@@ -644,10 +696,28 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const unsubTransactions = onSnapshot(
       collection(db, 'transactions'),
       (snapshot) => {
-        const loaded: Transaction[] = snapshot.docs.map(d => ({
-          ...(d.data() as any),
-          id: d.id,
-        }));
+        const loaded: Transaction[] = [];
+        snapshot.docs.forEach(docSnap => {
+          const data = docSnap.data() as any;
+          const isWilfried =
+            data.memberId === '1' ||
+            data.memberNickname?.toUpperCase()?.includes('CAPELO') ||
+            data.description?.toUpperCase()?.includes('CAPELO') ||
+            data.description?.toUpperCase()?.includes('WILFRIED');
+          const dateStr = String(data.date || '');
+          const isTestDate = dateStr.includes('09/09/2026') || dateStr.includes('18/09/2026');
+          const isRejectedTest = isWilfried && isTestDate && (data.status === 'REJECTED' || data.isTest || data.description?.toLowerCase()?.includes('test'));
+
+          if (isRejectedTest) {
+            deleteDoc(docSnap.ref).catch(() => {});
+            return;
+          }
+
+          loaded.push({
+            ...data,
+            id: docSnap.id,
+          });
+        });
         loaded.sort((a, b) => {
           const timeA = (a as any).createdAt || 0;
           const timeB = (b as any).createdAt || 0;
@@ -1476,7 +1546,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       await updateDoc(docRef, { id: docRef.id });
 
       const displayCategory = fund === 'COTISATION'
-        ? `Cotisation Mensuelle (${Math.round(amount / 500)} mois)`
+        ? (amount >= 500 && amount % 500 === 0
+            ? `Cotisation Mensuelle (${Math.floor(amount / 500)} mois)`
+            : `Cotisation Mensuelle (${amount.toLocaleString('fr-FR')} F)`)
         : isFull
         ? 'Règlement Totalité'
         : 'Acompte par tranche';
@@ -1596,14 +1668,79 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
-  // 4. Supprimer un reçu sur Firestore via deleteDoc (Trésorier)
+  // 4a. Masquer définitivement un reçu/déclaration sur Firestore (Trésorier & Membre)
+  const hideReceipt = async (declarationId: string) => {
+    if (!declarationId) return;
+    const targetId = declarationId.trim();
+    // Retrait immédiat de l'affichage local
+    setDeclarations(prev => prev.map(p => 
+      ((p.id || (p as any)._id || (p as any).docId) === targetId) ? { ...p, isHidden: true, status: 'hidden' } : p
+    ));
+
+    try {
+      const updateData = { isHidden: true, status: 'hidden', hiddenAt: new Date() };
+      await updateDoc(doc(db, 'payments', targetId), updateData).catch(async () => {
+        await setDoc(doc(db, 'payments', targetId), updateData, { merge: true }).catch(() => {});
+      });
+      await updateDoc(doc(db, 'receipts', targetId), updateData).catch(async () => {
+        await setDoc(doc(db, 'receipts', targetId), updateData, { merge: true }).catch(() => {});
+      });
+      await updateDoc(doc(db, 'declarations', targetId), updateData).catch(async () => {
+        await setDoc(doc(db, 'declarations', targetId), updateData, { merge: true }).catch(() => {});
+      });
+    } catch (err) {
+      console.error('Erreur hideReceipt Firestore:', err);
+    }
+  };
+
+  // 4b. Supprimer un reçu/déclaration définitivement sur Firestore via deleteDoc (Trésorier & Membre)
   const deleteReceipt = async (declarationId: string) => {
     if (!declarationId) return;
     const targetId = declarationId.trim();
+    // 3. Mise à jour synchrone immédiate pour retirer la ligne instantanément de l'affichage local
+    setDeclarations(prev => prev.filter(d => (d.id || (d as any)._id || (d as any).docId) !== targetId && d.status !== 'deleted'));
+    setTransactions(prev => prev.filter(t => (t.id || (t as any)._id || (t as any).docId) !== targetId));
+
     try {
-      await deleteDoc(doc(db, 'receipts', targetId));
+      // 1. Double action : status = 'deleted' pour sécuriser l'exclusion immédiate
+      const updateData = { status: 'deleted', deletedAt: new Date() };
+      await updateDoc(doc(db, 'receipts', targetId), updateData).catch(async () => {
+        await setDoc(doc(db, 'receipts', targetId), updateData, { merge: true }).catch(() => {});
+      });
+      await updateDoc(doc(db, 'payments', targetId), updateData).catch(async () => {
+        await setDoc(doc(db, 'payments', targetId), updateData, { merge: true }).catch(() => {});
+      });
+      await updateDoc(doc(db, 'declarations', targetId), updateData).catch(async () => {
+        await setDoc(doc(db, 'declarations', targetId), updateData, { merge: true }).catch(() => {});
+      });
+
+      // 2. Suppression brute en parallèle dans un bloc try/catch séparé
+      try {
+        await Promise.allSettled([
+          deleteDoc(doc(db, 'receipts', targetId)),
+          deleteDoc(doc(db, 'payments', targetId)),
+          deleteDoc(doc(db, 'declarations', targetId)),
+          deleteDoc(doc(db, 'transactions', targetId)),
+        ]);
+      } catch (delErr) {
+        console.warn('Suppression brute ignorée:', delErr);
+      }
     } catch (err) {
       console.error('Erreur deleteReceipt Firestore:', err);
+    }
+  };
+
+  // 5. Supprimer une transaction comptable définitivement sur Firestore
+  const deleteTransaction = async (txId: string) => {
+    if (!txId) return;
+    const targetId = txId.trim();
+    try {
+      await deleteDoc(doc(db, 'transactions', targetId)).catch(console.warn);
+      await deleteDoc(doc(db, 'payments', targetId)).catch(() => {});
+      setTransactions(prev => prev.filter(t => t.id !== targetId));
+    } catch (err) {
+      console.error('Erreur deleteTransaction Firestore:', err);
+      throw err;
     }
   };
 
@@ -2331,7 +2468,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         submitReceipt,
         approvePayment,
         rejectPayment,
+        hideReceipt,
         deleteReceipt,
+        deleteTransaction,
         createWithdrawalRequest,
         approveWithdrawal,
         rejectWithdrawal,

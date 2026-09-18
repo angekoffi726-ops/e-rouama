@@ -1,4 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import { doc, deleteDoc, updateDoc, setDoc } from 'firebase/firestore';
+import { db } from '../../firebase';
 import { useApp } from '../../context/AppContext';
 import { FundType, FUND_LABELS } from '../../types';
 import {
@@ -24,6 +26,7 @@ import {
   Palmtree,
   Sprout,
   Info,
+  Trash2,
 } from 'lucide-react';
 import { compressReceiptImage } from '../../utils/imageCompressor';
 
@@ -39,6 +42,7 @@ export const FinancesTab: React.FC = () => {
     getActiveAgrProject,
     declarePayment,
     submitReceipt,
+    deleteReceipt,
     getMemberDuesDetail,
     getMemberDuesStatus,
     getMemberRubricProgress,
@@ -70,10 +74,12 @@ export const FinancesTab: React.FC = () => {
   const NUMERO_TRESO_WAVE = tresorierMember?.phone || '2250501948962';
 
   // Fonction de génération dynamique du lien Wave avec injection du montant exact
-  const getWaveLink = (amount: number) => {
+  const getWavePaymentLink = (amount: number) => {
     const selectedAmount = Math.max(0, Math.round(amount || 0));
-    return `https://wave.com/send?phone=${NUMERO_TRESO_WAVE}&amount=${selectedAmount}`;
+    const cleanPhone = NUMERO_TRESO_WAVE.replace(/\+/g, '').replace(/\s+/g, '').trim();
+    return `https://wave.com/send?phone=${cleanPhone}&amount=${selectedAmount}`;
   };
+  const getWaveLink = getWavePaymentLink;
 
   // --------------------------------------------------------------------------
   // STATE: 1. COTISATIONS MENSUELLES (500 FCFA / MOIS FIXE OU SAISIE LIBRE)
@@ -343,14 +349,69 @@ export const FinancesTab: React.FC = () => {
   // STATE: 3. HISTORIQUE DE MES VERSEMENTS
   // --------------------------------------------------------------------------
   const [historyFilter, setHistoryFilter] = useState<'TOUS' | 'COTISATION' | 'TRANCHES'>('TOUS');
-  const personalDeclarations = declarations.filter(d => d.memberId === currentMemberId);
-  const filteredDeclarations = personalDeclarations.filter(d => {
+  const [payments, setPayments] = useState<any[]>(() => declarations.filter(p => p.status !== 'deleted'));
+  useEffect(() => {
+    setPayments(declarations.filter(p => p.status !== 'deleted'));
+  }, [declarations]);
+
+  const currentUserId = currentMemberId;
+  const memberHistory = payments.filter(p => p.memberId === currentUserId && p.status !== 'deleted');
+  const filteredDeclarations = memberHistory.filter(d => {
+    if (d.status === 'deleted') return false;
     if (historyFilter === 'COTISATION') return d.fund === 'COTISATION';
     if (historyFilter === 'TRANCHES') return d.fund !== 'COTISATION';
     return true;
   });
 
   // Active events and project lookups for dynamic rubric enablement
+  const handleDeleteHistoryItem = async (d: any) => {
+    const targetId = d?.id || d?._id || d?.docId;
+    if (!targetId) return;
+
+    const isConfirmed = window.confirm(
+      "Êtes-vous sûr de vouloir SUPPRIMER DÉFINITIVEMENT cette demande ?"
+    );
+    if (!isConfirmed) return;
+
+    // 3. MISE À JOUR EN TEMPS RÉEL (STATE) :
+    // Force le retrait immédiat du tableau local au clic avant même d'attendre la réponse du serveur :
+    setPayments(prev => prev.filter(p => (p.id || (p as any)._id || (p as any).docId) !== targetId && p !== d));
+
+    try {
+      // 1. DOUBLE ACTION (SÉCURITÉ ET DISPARITION VISUELLE) :
+      // a. Change le statut du document dans Firestore à 'deleted'
+      const updateData = { status: 'deleted', deletedAt: new Date() };
+      await updateDoc(doc(db, "payments", targetId), updateData).catch(async () => {
+        await setDoc(doc(db, "payments", targetId), updateData, { merge: true }).catch(() => {});
+      });
+      await updateDoc(doc(db, "receipts", targetId), updateData).catch(async () => {
+        await setDoc(doc(db, "receipts", targetId), updateData, { merge: true }).catch(() => {});
+      });
+      await updateDoc(doc(db, "declarations", targetId), updateData).catch(async () => {
+        await setDoc(doc(db, "declarations", targetId), updateData, { merge: true }).catch(() => {});
+      });
+
+      // b. Lance en parallèle la suppression brute deleteDoc dans un bloc try/catch séparé
+      try {
+        await Promise.allSettled([
+          deleteDoc(doc(db, "payments", targetId)),
+          deleteDoc(doc(db, "receipts", targetId)),
+          deleteDoc(doc(db, "declarations", targetId)),
+          deleteDoc(doc(db, "transactions", targetId)),
+          deleteReceipt(targetId),
+        ]);
+      } catch (delErr) {
+        console.warn("Suppression brute ignorée :", delErr);
+      }
+
+      alert("Demande supprimée avec succès !");
+    } catch (err) {
+      console.error('Erreur suppression déclaration rejetée:', err);
+      setPayments(prev => prev.filter(p => p !== d && (p.id || (p as any)._id || (p as any).docId) !== targetId));
+      alert("Retiré de l'affichage.");
+    }
+  };
+
   const activeSoiree = activities.find(
     a => a.status === 'PUBLISHED' && (a.fixedType === 'SOIREE_ROUAMA' || a.title?.toLowerCase().includes('soirée') || a.title?.toLowerCase().includes('soiree'))
   );
@@ -1750,27 +1811,41 @@ export const FinancesTab: React.FC = () => {
                           ? `${d.reference.substring(0, 30)}...`
                           : d.reference}
                       </td>
-                      <td className="py-3 px-4 text-right">
-                        <span
-                          className={`inline-flex items-center gap-1 px-3 py-1 rounded-full text-[10px] font-black ${
-                            d.status === 'APPROVED'
-                              ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
-                              : d.status === 'REJECTED'
-                              ? 'bg-rose-100 text-rose-800 border border-rose-300'
-                              : 'bg-amber-100 text-amber-800 border border-amber-300'
-                          }`}
-                        >
-                          {d.status === 'APPROVED' && <CheckCircle2 className="w-3 h-3 text-emerald-600" />}
-                          {d.status === 'REJECTED' && <XCircle className="w-3 h-3 text-rose-600" />}
-                          {d.status === 'PENDING' && <Clock className="w-3 h-3 text-amber-600 animate-spin" />}
-                          <span>
-                            {d.status === 'APPROVED'
-                              ? 'VALIDÉ PAR TRÉSORIER'
-                              : d.status === 'REJECTED'
-                              ? `REJETÉ (${d.rejectionReason || 'Non conforme'})`
-                              : 'EN ATTENTE VALIDATION'}
+                      <td className="py-3 px-4 text-right whitespace-nowrap">
+                        <div className="inline-flex items-center justify-end gap-2">
+                          <span
+                            className={`inline-flex items-center gap-1 px-3 py-1 rounded-full text-[10px] font-black ${
+                              d.status === 'APPROVED'
+                                ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                                : d.status === 'REJECTED'
+                                ? 'bg-rose-100 text-rose-800 border border-rose-300'
+                                : 'bg-amber-100 text-amber-800 border border-amber-300'
+                            }`}
+                          >
+                            {d.status === 'APPROVED' && <CheckCircle2 className="w-3 h-3 text-emerald-600" />}
+                            {d.status === 'REJECTED' && <XCircle className="w-3 h-3 text-rose-600" />}
+                            {d.status === 'PENDING' && <Clock className="w-3 h-3 text-amber-600 animate-spin" />}
+                            <span>
+                              {d.status === 'APPROVED'
+                                ? 'VALIDÉ PAR TRÉSORIER'
+                                : d.status === 'REJECTED'
+                                ? `REJETÉ (${d.rejectionReason || 'Non conforme'})`
+                                : 'EN ATTENTE VALIDATION'}
+                            </span>
                           </span>
-                        </span>
+
+                          {d.status === 'REJECTED' && (
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteHistoryItem(d)}
+                              className="btn-erreur bg-rose-50 hover:bg-rose-100 text-rose-700 hover:text-rose-900 border border-rose-200 px-2.5 py-1 rounded-xl text-[10px] font-black inline-flex items-center gap-1 shadow-sm transition-all cursor-pointer active:scale-95"
+                              title="Supprimer définitivement cette déclaration rejetée de votre historique"
+                            >
+                              <Trash2 className="w-3 h-3 text-rose-600" />
+                              <span>Supprimer</span>
+                            </button>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   ))}
