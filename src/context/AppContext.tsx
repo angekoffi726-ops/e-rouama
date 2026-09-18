@@ -144,7 +144,7 @@ interface AppContextType {
   ) => void;
   markNewsAsRead: (newsId: string) => void;
 
-  createActivity: (activity: Omit<EventActivity, 'id' | 'status' | 'budgetStatus'> & { status?: 'DRAFT' | 'PENDING_PAYOR' | 'APPROVED' | 'PUBLISHED' }) => void;
+  createActivity: (activity: Omit<EventActivity, 'id' | 'status' | 'budgetStatus'>) => void;
   updateActivity: (activityId: string, updatedData: Partial<EventActivity>) => Promise<void>;
   deleteActivity: (activityId: string) => Promise<void>;
   approveActivityPayor: (activityId: string) => void;

@@ -483,12 +483,12 @@ export const DashboardTab: React.FC<DashboardTabProps> = ({ onNavigateTab }) => 
               <div className="p-4 bg-emerald-50/50 rounded-2xl border border-emerald-200/60 space-y-2">
                 <div className="flex items-center justify-between text-[10px] font-bold text-emerald-900">
                   <span className="bg-[#355E3B] text-white px-2 py-0.5 rounded-md font-black">
-                    {nextActivity.eventDate || 'À venir'}
+                    {nextActivity.eventDate}
                   </span>
                   <span className="text-slate-500">
-                    Budget : {typeof nextActivity.budget === 'number' && !isNaN(nextActivity.budget) && nextActivity.budget > 0
+                    Budget : {typeof nextActivity.budget === 'number' && !isNaN(nextActivity.budget)
                       ? `${nextActivity.budget.toLocaleString('fr-FR')} F CFA`
-                      : 'À définir'}
+                      : 'Prévu'}
                   </span>
                 </div>
                 <h3 className="font-bold text-slate-900 text-xs">
