@@ -20,15 +20,17 @@ export const NouvellesTab: React.FC<NouvellesTabProps> = ({ onNavigateTab }) => 
   const {
     currentUser,
     newsItems,
+    gbairaiMessages,
     markNewsAsRead,
+    markAllGbairaiAsRead,
     deleteNewsItem,
     dismissNewsForMember,
     getMemberDuesStatus,
   } = useApp();
 
-  const isMember = currentUser?.type === 'MEMBER' && currentUser.member;
-  const currentMemberId = currentUser?.member?.id;
-  const memberDuesStatus = currentMemberId ? getMemberDuesStatus(currentMemberId) : 'RETARD';
+  const currentMemberId = currentUser?.member?.id || currentUser?.id;
+  const isMember = currentUser?.type === 'MEMBER';
+  const memberDuesStatus = currentMemberId && isMember ? getMemberDuesStatus(currentMemberId) : 'RETARD';
 
   // Notification toast for item deletion
   const [toastFeedback, setToastFeedback] = useState<string | null>(null);
@@ -44,8 +46,12 @@ export const NouvellesTab: React.FC<NouvellesTabProps> = ({ onNavigateTab }) => 
     }
   });
 
-  // Filter news items automatically and strictly for the member or admin
-  const visibleNews = newsItems.filter(item => {
+  const sourceMessages = gbairaiMessages || newsItems || [];
+
+  // Filter news items automatically and strictly for the member or admin based on real Firestore data
+  const visibleNews = sourceMessages.filter(item => {
+    if (item.dispatchChannel === 'MAIL') return false;
+
     // If dismissed by current member in Firestore or local cache, hide from personal feed
     if (currentMemberId) {
       if (item.dismissedBy && item.dismissedBy.includes(currentMemberId)) {
@@ -66,6 +72,11 @@ export const NouvellesTab: React.FC<NouvellesTabProps> = ({ onNavigateTab }) => 
     // Admins see all news items
     return true;
   });
+
+  // Dynamic unread count strictly for active visible messages
+  const unreadGbairaiCount = currentMemberId
+    ? visibleNews.filter(m => !(m.readBy || []).includes(currentMemberId) && !(currentUser?.id && (m.readBy || []).includes(currentUser.id))).length
+    : 0;
 
   // Action: Member deletes/removes the announcement from their personal feed
   const handleRemoveNews = (newsId: string, newsTitle: string) => {
@@ -116,9 +127,21 @@ export const NouvellesTab: React.FC<NouvellesTabProps> = ({ onNavigateTab }) => 
             </p>
           </div>
 
-          {/* Automatic Feed Badge */}
-          <div className="inline-flex items-center gap-1.5 bg-orange-50 px-3.5 py-1.5 rounded-2xl border border-orange-200 text-xs font-black text-[#D35400] shadow-sm">
-            <span>Fil de nouvelles personnalisé</span>
+          {/* Header Action Badges */}
+          <div className="flex items-center gap-2 flex-wrap">
+            {unreadGbairaiCount > 0 && (
+              <button
+                type="button"
+                onClick={() => markAllGbairaiAsRead()}
+                className="inline-flex items-center gap-1.5 bg-[#355E3B] hover:bg-[#2A4B2F] text-white px-3.5 py-1.5 rounded-2xl text-xs font-black shadow transition-all active:scale-95 cursor-pointer"
+              >
+                <Eye className="w-3.5 h-3.5" />
+                <span>Tout marquer comme lu ({unreadGbairaiCount})</span>
+              </button>
+            )}
+            <div className="inline-flex items-center gap-1.5 bg-orange-50 px-3.5 py-1.5 rounded-2xl border border-orange-200 text-xs font-black text-[#D35400] shadow-sm">
+              <span>Fil de nouvelles personnalisé</span>
+            </div>
           </div>
         </div>
 
@@ -130,7 +153,9 @@ export const NouvellesTab: React.FC<NouvellesTabProps> = ({ onNavigateTab }) => 
             </div>
           ) : (
             visibleNews.map(item => {
-              const isRead = currentMemberId ? item.readBy.includes(currentMemberId) : true;
+              const isRead = currentMemberId
+                ? (item.readBy || []).includes(currentMemberId) || (currentUser?.id && (item.readBy || []).includes(currentUser.id))
+                : true;
               const isArchiveRelated =
                 item.linkTab === 'ARCHIVES' ||
                 item.title.toLowerCase().includes('document') ||

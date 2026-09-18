@@ -50,6 +50,7 @@ interface AppContextType {
   transactions: Transaction[];
   withdrawals: WithdrawalRequest[];
   newsItems: NewsItem[];
+  gbairaiMessages: NewsItem[];
   activities: EventActivity[];
   projects: AgrProject[];
   financialEvents: FinancialEvent[];
@@ -182,6 +183,7 @@ interface AppContextType {
   ) => void;
   deleteNewsItem: (newsId: string) => void;
   dismissNewsForMember: (newsId: string) => void;
+  markAllGbairaiAsRead: () => void;
   assignMemberRole: (memberId: string, role?: AdminRole) => void;
   resetMemberPin: (memberId: string) => void;
   updateMemberAvatar: (memberId: string, avatarDataUrl: string) => Promise<boolean>;
@@ -1742,40 +1744,63 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const markNewsAsRead = (newsId: string) => {
-    if (!currentUser?.member) return;
-    const memberId = currentUser.member.id;
+    const memberId = currentUser?.member?.id || (currentUser as any)?.id;
+    if (!memberId) return;
     const item = newsItems.find(n => n.id === newsId);
-    if (item && !item.readBy.includes(memberId)) {
-      const updatedReadBy = [...item.readBy, memberId];
+    if (item && !(item.readBy || []).includes(memberId)) {
+      const updatedReadBy = [...(item.readBy || []), memberId];
       setDoc(doc(db, 'news', newsId), { readBy: updatedReadBy }, { merge: true }).catch(console.warn);
+      try {
+        setDoc(doc(db, 'announcements', newsId), { readBy: updatedReadBy }, { merge: true }).catch(console.warn);
+      } catch (_) {}
       setNewsItems(prev =>
         prev.map(n => n.id === newsId ? { ...n, readBy: updatedReadBy } : n)
       );
     }
   };
 
+  const markAllGbairaiAsRead = () => {
+    const memberId = currentUser?.member?.id || (currentUser as any)?.id;
+    if (!memberId) return;
+    const unreadItems = newsItems.filter(n => !(n.readBy || []).includes(memberId));
+    unreadItems.forEach(item => {
+      const updatedReadBy = [...(item.readBy || []), memberId];
+      setDoc(doc(db, 'news', item.id), { readBy: updatedReadBy }, { merge: true }).catch(console.warn);
+      try {
+        setDoc(doc(db, 'announcements', item.id), { readBy: updatedReadBy }, { merge: true }).catch(console.warn);
+      } catch (_) {}
+    });
+    setNewsItems(prev =>
+      prev.map(n => ((n.readBy || []).includes(memberId) ? n : { ...n, readBy: [...(n.readBy || []), memberId] }))
+    );
+  };
+
   const deleteNewsItem = async (newsId: string) => {
     try {
       await deleteDoc(doc(db, 'news', newsId));
-      try {
-        await deleteDoc(doc(db, 'announcements', newsId));
-      } catch (_) {}
     } catch (err) {
-      console.warn('Erreur lors de la suppression Firestore du communiqué :', err);
+      console.warn('Erreur lors de la suppression Firestore du communiqué (news) :', err);
     }
+    try {
+      await deleteDoc(doc(db, 'announcements', newsId));
+    } catch (_) {}
     setNewsItems(prev => prev.filter(n => n.id !== newsId));
   };
 
   const dismissNewsForMember = (newsId: string) => {
-    if (!currentUser?.member) return;
-    const memberId = currentUser.member.id;
+    const memberId = currentUser?.member?.id || (currentUser as any)?.id;
+    if (!memberId) return;
     const item = newsItems.find(n => n.id === newsId);
     const existingDismissed = item?.dismissedBy || [];
     const updatedDismissedBy = Array.from(new Set([...existingDismissed, memberId]));
+    const existingRead = item?.readBy || [];
+    const updatedReadBy = Array.from(new Set([...existingRead, memberId]));
 
     // Persistance Firestore dans 'news' et 'announcements'
-    setDoc(doc(db, 'news', newsId), { dismissedBy: updatedDismissedBy }, { merge: true }).catch(console.warn);
-    setDoc(doc(db, 'announcements', newsId), { dismissedBy: updatedDismissedBy }, { merge: true }).catch(console.warn);
+    setDoc(doc(db, 'news', newsId), { dismissedBy: updatedDismissedBy, readBy: updatedReadBy }, { merge: true }).catch(console.warn);
+    try {
+      setDoc(doc(db, 'announcements', newsId), { dismissedBy: updatedDismissedBy, readBy: updatedReadBy }, { merge: true }).catch(console.warn);
+    } catch (_) {}
 
     // Persistance locale de secours pour le membre
     try {
@@ -1788,9 +1813,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       console.warn('Erreur localStorage dismissed news:', e);
     }
 
-    // Mise à jour de l'état local
+    // Mise à jour immédiate de l'état local
     setNewsItems(prev =>
-      prev.map(n => (n.id === newsId ? { ...n, dismissedBy: updatedDismissedBy } : n))
+      prev.map(n => (n.id === newsId ? { ...n, dismissedBy: updatedDismissedBy, readBy: updatedReadBy } : n))
     );
   };
 
@@ -2275,6 +2300,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         transactions,
         withdrawals,
         newsItems,
+        gbairaiMessages: newsItems,
         activities,
         projects,
         financialEvents,
@@ -2313,6 +2339,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         deleteNewsItem,
         dismissNewsForMember,
         markNewsAsRead,
+        markAllGbairaiAsRead,
         createActivity,
         updateActivity,
         deleteActivity,

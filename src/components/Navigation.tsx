@@ -10,17 +10,33 @@ interface NavigationProps {
 }
 
 export const Navigation: React.FC<NavigationProps> = ({ activeTab, setActiveTab }) => {
-  const { currentUser, newsItems } = useApp();
+  const { currentUser, gbairaiMessages, newsItems, getMemberDuesStatus } = useApp();
 
   if (!currentUser) return null;
 
   const isAdmin = currentUser?.type === 'ADMIN';
-  const memberId = currentUser?.member?.id;
+  const currentUserId = currentUser?.member?.id || currentUser?.id || (isAdmin ? currentUser.adminRole : undefined);
+  const isMember = currentUser?.type === 'MEMBER';
+  const memberDuesStatus = currentUserId && isMember && getMemberDuesStatus ? getMemberDuesStatus(currentUserId) : 'RETARD';
 
-  // Unread news count for member
-  const unreadNewsCount = memberId
-    ? newsItems.filter(n => !n.readBy.includes(memberId)).length
-    : newsItems.length;
+  const rawMessages = gbairaiMessages || newsItems || [];
+
+  // Messages actifs réellement visibles pour l'utilisateur
+  const activeGbairaiMessages = rawMessages.filter(msg => {
+    if (msg.dispatchChannel === 'MAIL') return false;
+    if (currentUserId && msg.dismissedBy && msg.dismissedBy.includes(currentUserId)) return false;
+    if (isMember) {
+      if (msg.targetAudience === 'TOUS') return true;
+      if (msg.targetAudience === memberDuesStatus) return true;
+      return false;
+    }
+    return true;
+  });
+
+  // Comptage dynamique basé strictement sur les messages actifs non lus provenant de Firestore
+  const unreadGbairaiCount = currentUserId
+    ? activeGbairaiMessages.filter(msg => !(msg.readBy || []).includes(currentUserId) && !(currentUser?.id && (msg.readBy || []).includes(currentUser.id))).length
+    : 0;
 
   const navItems = [
     {
@@ -45,7 +61,7 @@ export const Navigation: React.FC<NavigationProps> = ({ activeTab, setActiveTab 
       id: 'NOUVELLES' as TabType,
       label: 'GBAÏRAÏ',
       icon: Newspaper,
-      badge: unreadNewsCount > 0 ? unreadNewsCount : null,
+      badge: unreadGbairaiCount > 0 ? unreadGbairaiCount : null,
     },
     {
       id: 'ACTIVITES' as TabType,
@@ -88,8 +104,8 @@ export const Navigation: React.FC<NavigationProps> = ({ activeTab, setActiveTab 
                 <Icon className={`w-4 h-4 ${isActive ? 'text-amber-300' : 'text-forest-moss'}`} />
                 <span>{item.label}</span>
 
-                {item.badge !== null && (
-                  <span className="w-5 h-5 rounded-full bg-warm-sunset text-white text-[10px] font-black flex items-center justify-center animate-pulse shadow">
+                {item.badge !== null && item.badge > 0 && (
+                  <span className="badge-notification w-5 h-5 rounded-full bg-warm-sunset text-white text-[10px] font-black flex items-center justify-center animate-pulse shadow">
                     {item.badge}
                   </span>
                 )}

@@ -18,7 +18,7 @@ import { ADMIN_USERS } from './data/membersData';
 import { ChangePasswordModal } from './components/admin/ChangePasswordModal';
 
 function MainLayout() {
-  const { currentUser, logout, members, newsItems } = useApp();
+  const { currentUser, logout, members, newsItems, gbairaiMessages, getMemberDuesStatus } = useApp();
   const [activeTab, setActiveTab] = useState<TabType>('DASHBOARD');
   const [targetDocId, setTargetDocId] = useState<string | undefined>(undefined);
   const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
@@ -186,10 +186,25 @@ function MainLayout() {
       ? '/PP-CAPELO.jpeg'
       : undefined);
 
-  const memberId = rawMember?.id || currentUser?.id;
-  const unreadNewsCount = memberId
-    ? (newsItems || []).filter(n => !(n?.readBy || []).includes(memberId)).length
-    : (newsItems || []).length;
+  const memberId = rawMember?.id || currentUser?.member?.id || currentUser?.id;
+  const memberDuesStatus = memberId && getMemberDuesStatus ? getMemberDuesStatus(memberId) : 'RETARD';
+
+  const messagesList = gbairaiMessages || newsItems || [];
+  const activeGbairaiMessages = messagesList.filter(msg => {
+    if (msg.dispatchChannel === 'MAIL') return false;
+    if (memberId && msg.dismissedBy && msg.dismissedBy.includes(memberId)) return false;
+    if (currentUser?.type === 'MEMBER') {
+      if (msg.targetAudience === 'TOUS') return true;
+      if (msg.targetAudience === memberDuesStatus) return true;
+      return false;
+    }
+    return true;
+  });
+
+  // Comptage dynamique basé strictement sur les messages actifs non lus provenant de Firestore
+  const unreadGbairaiCount = memberId
+    ? activeGbairaiMessages.filter(msg => !(msg.readBy || []).includes(memberId) && !(currentUser?.id && (msg.readBy || []).includes(currentUser.id))).length
+    : 0;
 
   const navItems = [
     {
@@ -214,7 +229,7 @@ function MainLayout() {
       id: 'NOUVELLES' as TabType,
       label: 'GBAÏRAÏ',
       icon: Newspaper,
-      badge: unreadNewsCount > 0 ? unreadNewsCount : null,
+      badge: unreadGbairaiCount > 0 ? unreadGbairaiCount : null,
     },
     {
       id: 'ACTIVITES' as TabType,
@@ -319,8 +334,8 @@ function MainLayout() {
               >
                 <Icon className="w-4 h-4 shrink-0" />
                 <span>{item.label}</span>
-                {item.badge !== null && (
-                  <span className="bg-rose-500 text-white text-[10px] px-2 py-0.5 rounded-full font-black animate-pulse border border-white/30">
+                {item.badge !== null && item.badge > 0 && (
+                  <span className="badge-notification bg-rose-500 text-white text-[10px] px-2 py-0.5 rounded-full font-black animate-pulse border border-white/30">
                     {item.badge}
                   </span>
                 )}
