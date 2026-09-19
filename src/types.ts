@@ -161,6 +161,8 @@ export interface NewsItem {
   linkTab?: TabType;
   targetDocId?: string;
   payerId?: string;
+  targetMemberIds?: string[];
+  excludedMemberIds?: string[];
 }
 
 export interface Committee {

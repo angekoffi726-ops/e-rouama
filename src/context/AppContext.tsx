@@ -183,7 +183,8 @@ interface AppContextType {
     titleOrMember: string,
     contentOrMonth?: string,
     dispatchChannel?: 'APP' | 'MAIL' | 'GENERAL',
-    payerId?: string
+    payerId?: string,
+    targetMemberIds?: string[]
   ) => void;
   deleteNewsItem: (newsId: string) => void;
   dismissNewsForMember: (newsId: string) => void;
@@ -1663,8 +1664,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         // Détermine le premier mois impayé du membre (imputation chronologique depuis Janvier 2026) :
         // On cumule les versements cotisations déjà validés pour ce membre avant ce reçu
         const previousTotalPaid = declarations
-          .filter(d => d.memberId === targetDecl.memberId && d.fund === 'COTISATION' && d.status === 'APPROVED' && d.id !== targetId)
-          .reduce((sum, d) => sum + d.amount, 0);
+          .filter(d => String(d.memberId).trim() === String(targetDecl.memberId).trim() && d.fund === 'COTISATION' && d.status === 'APPROVED' && d.id !== targetId)
+          .reduce((sum, d) => sum + (Number(d.amount) || 0), 0);
 
         const previousMonthsPaid = Math.floor(previousTotalPaid / 500);
 
@@ -1826,24 +1827,53 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     titleOrMember: string,
     contentOrMonth?: string,
     dispatchChannel: 'APP' | 'MAIL' | 'GENERAL' = 'APP',
-    payerId?: string
+    payerId?: string,
+    targetMemberIds?: string[]
   ) => {
     const rawContent = contentOrMonth || '';
     const isFormattedMonth = typeof rawContent === 'string' && rawContent.includes('-') && rawContent.length === 7;
-    const formattedDate = isFormattedMonth
-      ? new Date(rawContent + '-01').toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' })
-      : rawContent;
+
+    // Résolution intelligente du membre payeur si non fourni explicitement
+    const resolvedPayerMember = members.find(m =>
+      m.id === payerId ||
+      normalizeRosterString(m.nickname) === normalizeRosterString(titleOrMember) ||
+      normalizeRosterString(m.firstName) === normalizeRosterString(titleOrMember) ||
+      (m.nickname && rawContent.includes(m.nickname)) ||
+      (m.firstName && rawContent.includes(m.firstName))
+    );
+    const resolvedPayerId = payerId || resolvedPayerMember?.id;
+
+    let alertContent = rawContent;
+    if (isFormattedMonth) {
+      if (resolvedPayerMember) {
+        const totalPaid = declarations
+          .filter(d => String(d.memberId).trim() === String(resolvedPayerMember.id).trim() && d.fund === 'COTISATION' && d.status === 'APPROVED')
+          .reduce((sum, d) => sum + (Number(d.amount) || 0), 0);
+        const monthsPaid = Math.floor(totalPaid / 500);
+        const startYear = 2026;
+        const monthNames = [
+          'Janvier', 'Février', 'Mars', 'Avril', 'Mai', 'Juin',
+          'Juillet', 'Août', 'Septembre', 'Octobre', 'Novembre', 'Décembre'
+        ];
+        const getMonthFormatted = (idx: number) => {
+          const y = startYear + Math.floor(idx / 12);
+          const m = idx % 12;
+          return `${monthNames[m]} ${y}`;
+        };
+        const currentMonthIdx = Math.max(0, monthsPaid - 1);
+        const periodeCouverte = getMonthFormatted(currentMonthIdx);
+        alertContent = `${titleOrMember} vient de s'acquitter de sa cotisation pour la période de ${periodeCouverte} (1 mois). Bravo pour l'engagement fraternel !`;
+      } else {
+        const formattedDate = new Date(rawContent + '-01').toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' });
+        alertContent = `${titleOrMember} vient de s'acquitter de sa cotisation pour la période de ${formattedDate} (1 mois). Bravo pour l'engagement fraternel !`;
+      }
+    } else if (!alertContent) {
+      alertContent = `Information transmise pour ${titleOrMember}.`;
+    }
 
     const alertTitle = titleOrMember.startsWith('🟢') || titleOrMember.startsWith('🚨')
       ? titleOrMember
       : `🚨 ALERTE CERVEAU : ${titleOrMember}`;
-
-    // STRICT: Ne rajoute aucune mention automatique si un contenu est déjà fourni
-    const alertContent = isFormattedMonth
-      ? `${titleOrMember} vient de s'acquitter de sa cotisation pour la période de ${formattedDate} (1 mois). Bravo pour l'engagement fraternel !`
-      : rawContent
-      ? rawContent
-      : `Information transmise pour ${titleOrMember}.`;
 
     // SÉPARATION STRICTE : Si le canal est uniquement MAIL, NE PAS enregistrer dans Firestore ni dans l'application
     if (dispatchChannel === 'MAIL') {
@@ -1860,7 +1890,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       date: new Date().toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }),
       readBy: [],
       dispatchChannel,
-      payerId: payerId || undefined,
+      payerId: resolvedPayerId || undefined,
+      excludedMemberIds: resolvedPayerId ? [resolvedPayerId] : undefined,
+      targetMemberIds: targetMemberIds && targetMemberIds.length > 0 ? targetMemberIds : undefined,
     };
 
     setDoc(doc(db, 'news', alertNews.id), sanitizeFirestore(alertNews)).catch(console.warn);

@@ -192,9 +192,53 @@ function MainLayout() {
   const messagesList = gbairaiMessages || newsItems || [];
   const activeGbairaiMessages = messagesList.filter(msg => {
     if (msg.dispatchChannel === 'MAIL') return false;
-    if (currentUser?.id && msg.payerId === currentUser.id) return false;
-    if (memberId && msg.payerId === memberId) return false;
-    if (memberNickname && msg.category === 'ALERTE' && msg.content?.includes(memberNickname) && msg.content?.includes("vient de s'acquitter")) return false;
+
+    // Filtrage strict par targetMemberIds (Ciblage des destinataires)
+    const isSpecificallyTargeted = Boolean(
+      msg.targetMemberIds &&
+      !msg.targetMemberIds.includes('ALL') &&
+      ((memberId && msg.targetMemberIds.includes(memberId)) ||
+       (currentUser?.id && msg.targetMemberIds.includes(currentUser.id)))
+    );
+
+    if (msg.targetMemberIds && msg.targetMemberIds.length > 0) {
+      const isForEveryone = msg.targetMemberIds.includes('ALL');
+      if (!isForEveryone && currentUser?.type === 'MEMBER' && !isSpecificallyTargeted) {
+        return false;
+      }
+    }
+
+    // Filtrage strict par excludedMemberIds (Auteur / payeur masqué pour lui-même)
+    if (msg.excludedMemberIds && msg.excludedMemberIds.length > 0) {
+      if (currentUser?.id && msg.excludedMemberIds.includes(currentUser.id)) return false;
+      if (memberId && msg.excludedMemberIds.includes(memberId)) return false;
+    }
+
+    // Masquage de courtoisie si l'utilisateur est le payeur (alerte générale de paiement)
+    if (!isSpecificallyTargeted) {
+      if (currentUser?.id && msg.payerId && String(msg.payerId) === String(currentUser.id)) return false;
+      if (memberId && msg.payerId && String(msg.payerId) === String(memberId)) return false;
+      
+      const memberNamesToCheck = [
+        memberNickname,
+        memberFirstName,
+        rawMember?.firstName,
+        rawMember?.nickname,
+        currentUser?.firstName,
+        (currentUser as any)?.nickname,
+      ].filter(Boolean) as string[];
+
+      const isPaymentAnnouncement =
+        (msg.category === 'ALERTE' || msg.category === 'ANNONCE') &&
+        (msg.content?.includes("vient de s'acquitter") || msg.content?.includes("vient d'effectuer un versement"));
+
+      if (isPaymentAnnouncement) {
+        if (memberNamesToCheck.some(name => msg.content?.includes(name) || msg.title?.includes(name))) {
+          return false;
+        }
+      }
+    }
+
     if (memberId && msg.dismissedBy && msg.dismissedBy.includes(memberId)) return false;
     if (currentUser?.type === 'MEMBER') {
       if (msg.targetAudience === 'TOUS') return true;

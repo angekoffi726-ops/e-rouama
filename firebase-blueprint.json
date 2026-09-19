@@ -96,6 +96,7 @@
         "category": { "type": "string" },
         "date": { "type": "string" },
         "payerId": { "type": "string" },
+        "targetMemberIds": { "type": "array", "items": { "type": "string" } },
         "readBy": { "type": "array", "items": { "type": "string" } }
       },
       "required": ["id", "title", "content"]

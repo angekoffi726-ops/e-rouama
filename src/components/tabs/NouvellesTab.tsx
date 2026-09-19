@@ -49,22 +49,63 @@ export const NouvellesTab: React.FC<NouvellesTabProps> = ({ onNavigateTab }) => 
   const sourceMessages = gbairaiMessages || newsItems || [];
 
   // 2. FILTRAGE DU DESTINATAIRE DE L'ALERTE (GBAÏRAÏ) :
-  // Masque le message si l'utilisateur connecté est l'auteur du paiement
+  // Masque le message si l'utilisateur connecté est l'auteur du paiement pour une alerte générale
+  // Filtre strictement par targetMemberIds pour les alertes ciblées
   const currentNick = currentUser?.member?.nickname || currentUser?.nickname;
 
   const visibleMessages = sourceMessages.filter(msg => {
     if (msg.dispatchChannel === 'MAIL') return false;
 
-    // Masquage strict si l'utilisateur connecté est l'auteur du paiement
-    if (currentUser?.id && msg.payerId === currentUser.id) {
-      return false;
+    // A. Filtrage strict par targetMemberIds (Ciblage des destinataires dans l'App) :
+    // Ne filtre et n'affiche l'alerte que si targetMemberIds contient l'ID du membre connecté, ou si le message est destiné à 'ALL' (ou non spécifié)
+    const isSpecificallyTargeted = Boolean(
+      msg.targetMemberIds &&
+      !msg.targetMemberIds.includes('ALL') &&
+      ((currentMemberId && msg.targetMemberIds.includes(currentMemberId)) ||
+       (currentUser?.id && msg.targetMemberIds.includes(currentUser.id)))
+    );
+
+    if (msg.targetMemberIds && msg.targetMemberIds.length > 0) {
+      const isForEveryone = msg.targetMemberIds.includes('ALL');
+      if (!isForEveryone) {
+        // En mode membre : masquer si l'ID du membre connecté n'est pas ciblé
+        if (isMember && !isSpecificallyTargeted) {
+          return false;
+        }
+      }
     }
-    if (currentMemberId && msg.payerId === currentMemberId) {
-      return false;
+
+    // B. Filtrage strict par excludedMemberIds (Auteur / payeur masqué pour lui-même)
+    if (msg.excludedMemberIds && msg.excludedMemberIds.length > 0) {
+      if (currentUser?.id && msg.excludedMemberIds.includes(currentUser.id)) return false;
+      if (currentMemberId && msg.excludedMemberIds.includes(currentMemberId)) return false;
     }
-    // Sécurité rétrocompatible pour les annonces générées sans payerId
-    if (currentNick && msg.category === 'ALERTE' && msg.content?.includes(currentNick) && msg.content?.includes("vient de s'acquitter")) {
-      return false;
+
+    // Masquage de courtoisie si l'utilisateur connecté est l'auteur du paiement (alerte générale de paiement)
+    if (!isSpecificallyTargeted) {
+      if (currentUser?.id && msg.payerId && String(msg.payerId) === String(currentUser.id)) {
+        return false;
+      }
+      if (currentMemberId && msg.payerId && String(msg.payerId) === String(currentMemberId)) {
+        return false;
+      }
+      const memberNamesToCheck = [
+        currentNick,
+        currentUser?.member?.firstName,
+        currentUser?.member?.nickname,
+        currentUser?.firstName,
+        (currentUser as any)?.nickname,
+      ].filter(Boolean) as string[];
+
+      const isPaymentAnnouncement =
+        (msg.category === 'ALERTE' || msg.category === 'ANNONCE') &&
+        (msg.content?.includes("vient de s'acquitter") || msg.content?.includes("vient d'effectuer un versement"));
+
+      if (isPaymentAnnouncement) {
+        if (memberNamesToCheck.some(name => msg.content?.includes(name) || msg.title?.includes(name))) {
+          return false;
+        }
+      }
     }
 
     // Si masqué/rejeté par le membre dans Firestore ou le cache local
@@ -215,6 +256,13 @@ export const NouvellesTab: React.FC<NouvellesTabProps> = ({ onNavigateTab }) => 
                           ? '🌐 Diffusé App + Email'
                           : '📲 Diffusé dans App'}
                       </span>
+
+                      {item.targetMemberIds && !item.targetMemberIds.includes('ALL') && (
+                        <span className="text-[11px] font-bold bg-purple-100 text-purple-800 px-2.5 py-0.5 rounded-full border border-purple-200 inline-flex items-center gap-1">
+                          <span>👤</span>
+                          <span>Message Ciblé</span>
+                        </span>
+                      )}
                     </div>
 
                     {/* Action buttons: Date, Mark as Read, Supprimer */}

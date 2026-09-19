@@ -3,7 +3,7 @@ import emailjs from '@emailjs/browser';
 import { doc, deleteDoc, updateDoc, setDoc, collection, onSnapshot } from 'firebase/firestore';
 import { db } from '../../firebase';
 import { useApp } from '../../context/AppContext';
-import { AdminRole, FundType, FUND_LABELS, TargetAudience, Committee, AgrProject, FinancialBilan, NewsItem, AdHocCommitteeRoles, EventActivity } from '../../types';
+import { AdminRole, FundType, FUND_LABELS, TargetAudience, Committee, AgrProject, FinancialBilan, NewsItem, AdHocCommitteeRoles, EventActivity, RouamaMember } from '../../types';
 import { ADMIN_USERS } from '../../data/membersData';
 import { sendEmailBroadcastAsync } from '../../utils/emailService';
 import { fetchAELFDailyReadings, AELFDayData } from '../../utils/aelfService';
@@ -56,6 +56,8 @@ import {
   Palmtree,
   Cake,
   Crown,
+  Bell,
+  Megaphone,
 } from 'lucide-react';
 
 // Helper pour normaliser les rôles Ad-Hoc en tableau de chaînes
@@ -371,6 +373,7 @@ export const AdminPortal: React.FC = () => {
   const [cerveauDispatchChannel, setCerveauDispatchChannel] = useState<'APP' | 'MAIL' | 'GENERAL'>('APP');
   const [cerveauRecipientMode, setCerveauRecipientMode] = useState<'ALL' | 'SPECIFIC'>('ALL');
   const [cerveauSelectedMemberId, setCerveauSelectedMemberId] = useState<string>('');
+  const [cerveauSelectedMemberIds, setCerveauSelectedMemberIds] = useState<string[]>([]);
   const [isSendingEmail, setIsSendingEmail] = useState<boolean>(false);
   const [announcements, setAnnouncements] = useState<NewsItem[]>([]);
   const [deletingAnnouncementId, setDeletingAnnouncementId] = useState<string | null>(null);
@@ -403,6 +406,7 @@ export const AdminPortal: React.FC = () => {
   const [receiptEmailContent, setReceiptEmailContent] = useState<string>('');
   const [receiptEmailRecipientMode, setReceiptEmailRecipientMode] = useState<'ALL' | 'SPECIFIC'>('SPECIFIC');
   const [receiptEmailSelectedMemberId, setReceiptEmailSelectedMemberId] = useState<string>('');
+  const [receiptDispatchChannel, setReceiptDispatchChannel] = useState<'APP' | 'MAIL' | 'GENERAL'>('APP');
 
   // 4d. Spiritualité Email Targeting
   const [spiritualRecipientMode, setSpiritualRecipientMode] = useState<'ALL' | 'SPECIFIC'>('ALL');
@@ -653,17 +657,111 @@ export const AdminPortal: React.FC = () => {
     }
   };
 
-  // Handler d'ouverture et d'envoi de l'attestation de reçu de versement par courriel (Trésorerie)
-  const handleOpenReceiptEmailModal = (decl: any) => {
+  // Handler d'ouverture et d'envoi de l'attestation de reçu de versement (Trésorerie)
+  const handleOpenReceiptEmailModal = (decl: any, defaultChannel: 'APP' | 'MAIL' | 'GENERAL' = 'APP') => {
     const member = members.find(m => m.id === decl.memberId);
     setReceiptEmailModalDecl(decl);
+    setReceiptDispatchChannel(defaultChannel);
     setReceiptEmailRecipientMode('SPECIFIC');
     setReceiptEmailSelectedMemberId(decl.memberId || '');
     const amountStr = decl.amount ? `${decl.amount.toLocaleString('fr-FR')} F CFA` : 'Montant validé';
     setReceiptEmailSubject(`[E-ROUAMA] Attestation de Reçu Validé - ${FUND_LABELS[decl.fund as FundType] || decl.fund} (${amountStr})`);
+
+    let periodInfo = '';
+    if (decl.fund === 'COTISATION') {
+      const nbMoisPayes = Math.max(1, Math.floor(decl.amount / 500));
+      const previousTotalPaid = declarations
+        .filter(d => String(d.memberId).trim() === String(decl.memberId).trim() && d.fund === 'COTISATION' && d.status === 'APPROVED' && d.id !== decl.id)
+        .reduce((sum, d) => sum + (Number(d.amount) || 0), 0);
+      const previousMonthsPaid = Math.floor(previousTotalPaid / 500);
+      const startYear = 2026;
+      const monthNames = [
+        'Janvier', 'Février', 'Mars', 'Avril', 'Mai', 'Juin',
+        'Juillet', 'Août', 'Septembre', 'Octobre', 'Novembre', 'Décembre'
+      ];
+      const getMonthFormatted = (idx: number) => {
+        const y = startYear + Math.floor(idx / 12);
+        const m = idx % 12;
+        return `${monthNames[m]} ${y}`;
+      };
+      const startMonthIdx = previousMonthsPaid;
+      const endMonthIdx = previousMonthsPaid + nbMoisPayes - 1;
+      const startMonthName = getMonthFormatted(startMonthIdx);
+      const endMonthName = getMonthFormatted(endMonthIdx);
+      const periodeCouverte = nbMoisPayes === 1 ? startMonthName : `${startMonthName} à ${endMonthName}`;
+      periodInfo = `\nCette opération couvre votre cotisation pour la période de ${periodeCouverte} (${nbMoisPayes} mois).`;
+    }
+
     setReceiptEmailContent(
-      `Bonjour ${decl.memberNickname || member?.name || 'Frère / Sœur'},\n\nNous vous confirmons la bonne réception et validation de votre versement n° ${decl.id.slice(0, 8)} d'un montant de ${amountStr} pour la caisse « ${FUND_LABELS[decl.fund as FundType] || decl.fund} ».\n\nVotre compte de cotisation a été actualisé avec succès dans l'application E-ROUAMA.\n\nMerci pour votre fidélité et votre contribution à la fraternité.\n\nFraternellement,\nLa Trésorerie E-ROUAMA`
+      `Bonjour ${decl.memberNickname || member?.name || 'Frère / Sœur'},\n\nNous vous confirmons la bonne réception et validation de votre versement n° ${decl.id?.slice(0, 8) || ''} d'un montant de ${amountStr} pour la caisse « ${FUND_LABELS[decl.fund as FundType] || decl.fund} ».${periodInfo}\n\nVotre compte de cotisation a été actualisé avec succès dans l'application E-ROUAMA.\n\nMerci pour votre fidélité et votre contribution à la fraternité.\n\nFraternellement,\nLa Trésorerie E-ROUAMA`
     );
+  };
+
+  // Pré-sélection automatique de l'Alerte Cerveau par le bouton "Notifier" du Trésorier
+  const handlePrepareCerveauAlertForPayment = (decl: any, channel: 'APP' | 'MAIL' | 'GENERAL' = 'APP') => {
+    const member = members.find(m => m.id === decl.memberId);
+    const memberName = decl.memberNickname || member?.nickname || member?.firstName || 'Membre';
+    const amountStr = decl.amount ? `${decl.amount.toLocaleString('fr-FR')} F CFA` : 'Montant validé';
+    const fundName = FUND_LABELS[decl.fund as FundType] || decl.fund;
+
+    let alertContent = `Frère / Sœur ${memberName}, la Trésorerie confirme la bonne réception et validation de votre versement de ${amountStr} pour ${fundName}. Votre compte de cotisation a été actualisé.`;
+
+    if (decl.fund === 'COTISATION') {
+      const nbMoisPayes = Math.max(1, Math.floor(decl.amount / 500));
+      const previousTotalPaid = declarations
+        .filter(d => String(d.memberId).trim() === String(decl.memberId).trim() && d.fund === 'COTISATION' && d.status === 'APPROVED' && d.id !== decl.id)
+        .reduce((sum, d) => sum + (Number(d.amount) || 0), 0);
+      const previousMonthsPaid = Math.floor(previousTotalPaid / 500);
+      const startYear = 2026;
+      const monthNames = [
+        'Janvier', 'Février', 'Mars', 'Avril', 'Mai', 'Juin',
+        'Juillet', 'Août', 'Septembre', 'Octobre', 'Novembre', 'Décembre'
+      ];
+      const getMonthFormatted = (idx: number) => {
+        const y = startYear + Math.floor(idx / 12);
+        const m = idx % 12;
+        return `${monthNames[m]} ${y}`;
+      };
+      const startMonthIdx = previousMonthsPaid;
+      const endMonthIdx = previousMonthsPaid + nbMoisPayes - 1;
+      const startMonthName = getMonthFormatted(startMonthIdx);
+      const endMonthName = getMonthFormatted(endMonthIdx);
+      const periodeCouverte = nbMoisPayes === 1 ? startMonthName : `${startMonthName} à ${endMonthName}`;
+
+      alertContent = `${memberName} vient de s'acquitter de sa cotisation pour la période de ${periodeCouverte} (${nbMoisPayes} mois). Bravo pour l'engagement fraternel !`;
+    }
+
+    setCerveauAlertTitle(`🟢 VALIDATION REÇU : ${memberName} (${fundName})`);
+    setCerveauAlertContent(alertContent);
+    setCerveauRecipientMode('SPECIFIC');
+    setCerveauSelectedMemberId(decl.memberId || '');
+    setCerveauSelectedMemberIds(decl.memberId ? [decl.memberId] : []);
+    setCerveauDispatchChannel(channel);
+    setReceiptEmailModalDecl(null);
+    setToastMessage(`Alerte Cerveau pré-configurée pour ${memberName}.`);
+    setTimeout(() => {
+      const el = document.getElementById('cerveau-alert-cockpit');
+      if (el) el.scrollIntoView({ behavior: 'smooth' });
+    }, 150);
+  };
+
+  const handlePrepareCerveauAlertForMember = (
+    member: RouamaMember,
+    title: string,
+    content: string,
+    channel: 'APP' | 'MAIL' | 'GENERAL' = 'APP'
+  ) => {
+    setCerveauAlertTitle(title);
+    setCerveauAlertContent(content);
+    setCerveauRecipientMode('SPECIFIC');
+    setCerveauSelectedMemberId(member.id);
+    setCerveauSelectedMemberIds([member.id]);
+    setCerveauDispatchChannel(channel);
+    setToastMessage(`Alerte Cerveau pré-configurée pour ${member.nickname || member.firstName}.`);
+    setTimeout(() => {
+      const el = document.getElementById('cerveau-alert-cockpit');
+      if (el) el.scrollIntoView({ behavior: 'smooth' });
+    }, 150);
   };
 
   const handleSendReceiptEmail = async () => {
@@ -672,48 +770,80 @@ export const AdminPortal: React.FC = () => {
       return;
     }
 
-    try {
-      setIsSendingEmail(true);
-      setSendingProgress(null);
-      setEmailError(null);
+    const targetMemberIds = receiptEmailRecipientMode === 'SPECIFIC'
+      ? (receiptEmailSelectedMemberId ? [receiptEmailSelectedMemberId] : [])
+      : ['ALL'];
 
-      const res = await sendEmailBroadcastAsync(
+    if (receiptEmailRecipientMode === 'SPECIFIC' && targetMemberIds.length === 0) {
+      alert('Veuillez sélectionner un membre destinataire.');
+      return;
+    }
+
+    // 1. Si le canal inclut l'application (APP ou GENERAL)
+    if (receiptDispatchChannel === 'APP' || receiptDispatchChannel === 'GENERAL') {
+      broadcastCerveauAlert(
         receiptEmailSubject.trim(),
         receiptEmailContent.trim(),
-        members,
-        'TRÉSORERIE (NOTIFICATION REÇU)',
-        'MAIL',
-        {
-          recipientMode: receiptEmailRecipientMode,
-          selectedMemberId: receiptEmailSelectedMemberId,
-          onProgress: (current, total, email) => setSendingProgress({ current, total, email }),
-        }
+        'APP',
+        undefined,
+        targetMemberIds
       );
+    }
 
-      setReceiptEmailModalDecl(null);
+    // 2. Si le canal inclut le courriel (MAIL ou GENERAL)
+    if (receiptDispatchChannel === 'MAIL' || receiptDispatchChannel === 'GENERAL') {
+      try {
+        setIsSendingEmail(true);
+        setSendingProgress(null);
+        setEmailError(null);
 
-      setEmailModalData({
-        title: receiptEmailSubject.trim(),
-        content: receiptEmailContent.trim(),
-        authorRole: 'TRÉSORERIE (NOTIFICATION REÇU)',
-        channel: 'MAIL',
-        recipients: res.recipients,
-      });
+        const res = await sendEmailBroadcastAsync(
+          receiptEmailSubject.trim(),
+          receiptEmailContent.trim(),
+          members,
+          'TRÉSORERIE (NOTIFICATION REÇU)',
+          receiptDispatchChannel,
+          {
+            recipientMode: receiptEmailRecipientMode,
+            selectedMemberId: receiptEmailSelectedMemberId,
+            onProgress: (current, total, email) => setSendingProgress({ current, total, email }),
+          }
+        );
 
-      if (res.isSingleRecipient) {
-        setToastMessage(`✉️ 1 notification de reçu transmise avec succès à ${res.recipientName} (${res.recipients[0]}) !`);
-      } else {
-        setToastMessage(`✉️ ${res.recipientCount} notifications transmises avec succès sur ${res.totalAttempted} !`);
+        setReceiptEmailModalDecl(null);
+
+        setEmailModalData({
+          title: receiptEmailSubject.trim(),
+          content: receiptEmailContent.trim(),
+          authorRole: 'TRÉSORERIE (NOTIFICATION REÇU)',
+          channel: receiptDispatchChannel,
+          recipients: res.recipients,
+        });
+
+        if (res.isSingleRecipient) {
+          setToastMessage(`✉️ 1 notification de reçu transmise avec succès à ${res.recipientName} (${res.recipients[0]}) !`);
+        } else {
+          setToastMessage(`✉️ ${res.recipientCount} notifications transmises avec succès sur ${res.totalAttempted} !`);
+        }
+        setTimeout(() => setToastMessage(null), 5000);
+      } catch (err: any) {
+        console.error('Erreur notification reçu EmailJS:', err);
+        setEmailModalData(null);
+        const detail = err?.text || err?.message || 'Erreur lors de la transmission de la notification par courriel.';
+        setEmailError(detail);
+      } finally {
+        setIsSendingEmail(false);
+        setSendingProgress(null);
       }
-      setTimeout(() => setToastMessage(null), 5000);
-    } catch (err: any) {
-      console.error('Erreur notification reçu EmailJS:', err);
-      setEmailModalData(null);
-      const detail = err?.text || err?.message || 'Erreur lors de la transmission de la notification par courriel.';
-      setEmailError(detail);
-    } finally {
-      setIsSendingEmail(false);
-      setSendingProgress(null);
+    } else {
+      // Uniquement dans l'application
+      setReceiptEmailModalDecl(null);
+      setToastMessage(
+        receiptEmailRecipientMode === 'SPECIFIC'
+          ? "Notification de reçu publiée avec succès dans l'application pour le membre !"
+          : "Notification de reçu diffusée dans l'application !"
+      );
+      setTimeout(() => setToastMessage(null), 4000);
     }
   };
 
@@ -1852,10 +1982,33 @@ export const AdminPortal: React.FC = () => {
       : `🚨 ALERTE CERVEAU : ${cerveauAlertTitle.trim()}`;
     const alertContent = cerveauAlertContent.trim();
 
+    const targetMemberIds = cerveauRecipientMode === 'SPECIFIC'
+      ? (cerveauSelectedMemberIds.length > 0
+          ? cerveauSelectedMemberIds
+          : cerveauSelectedMemberId
+          ? [cerveauSelectedMemberId]
+          : [])
+      : ['ALL'];
+
+    if (cerveauRecipientMode === 'SPECIFIC' && targetMemberIds.length === 0) {
+      alert("Veuillez sélectionner au moins un membre destinataire pour l'alerte ciblée.");
+      return;
+    }
+
     // Si le canal est uniquement APP
     if (cerveauDispatchChannel === 'APP') {
-      broadcastCerveauAlert(cerveauAlertTitle.trim(), alertContent, 'APP');
-      setToastMessage("Alerte Cerveau publiée dans l'application avec succès !");
+      broadcastCerveauAlert(
+        cerveauAlertTitle.trim(),
+        alertContent,
+        'APP',
+        undefined,
+        targetMemberIds
+      );
+      setToastMessage(
+        cerveauRecipientMode === 'SPECIFIC'
+          ? `Alerte Cerveau ciblée publiée dans l'application (${targetMemberIds.length} membre(s)) !`
+          : "Alerte Cerveau diffusée à tous les membres dans l'application !"
+      );
       setTimeout(() => setToastMessage(null), 4000);
       setCerveauAlertTitle('');
       setCerveauAlertContent('');
@@ -1872,48 +2025,54 @@ export const AdminPortal: React.FC = () => {
 
       const successfulRecipients: string[] = [];
 
-      // CIBLAGE : SÉLECTION UNIQUE OU TOUS LES MEMBRES
+      // CIBLAGE : SÉLECTION SPÉCIFIQUE OU TOUS LES MEMBRES
       if (cerveauRecipientMode === 'SPECIFIC') {
-        if (!cerveauSelectedMemberId) {
-          throw new Error("Veuillez sélectionner un membre destinataire pour l'alerte.");
+        const targets = members.filter(m => targetMemberIds.includes(m.id));
+        const targetsWithEmail = targets.filter(m => m.email && m.email.includes('@'));
+
+        if (targetsWithEmail.length === 0) {
+          throw new Error("Le ou les membres sélectionnés ne disposent pas d'une adresse email valide.");
         }
 
-        const targetMember = members.find(m => m.id === cerveauSelectedMemberId);
-        const cleanEmail = targetMember?.email?.trim();
-        if (!targetMember || !cleanEmail || !cleanEmail.includes('@')) {
-          throw new Error("Le membre sélectionné ne dispose pas d'une adresse email valide.");
+        let idx = 0;
+        for (const targetMember of targetsWithEmail) {
+          idx++;
+          const cleanEmail = targetMember.email!.trim();
+          const memberName =
+            targetMember.fullRosterName ||
+            `${targetMember.name || ''} ${targetMember.firstName || ''}`.trim() ||
+            targetMember.nickname ||
+            'Membre';
+
+          setSendingProgress({ current: idx, total: targetsWithEmail.length, email: cleanEmail });
+
+          const templateParams = {
+            to_email: cleanEmail,
+            subject: alertTitle,
+            message: alertContent,
+            name: memberName,
+          };
+
+          const res = await emailjs.send(
+            EMAILJS_SERVICE_ID,
+            EMAILJS_TEMPLATE_ID,
+            templateParams,
+            EMAILJS_PUBLIC_KEY
+          );
+
+          if (res.status !== 200) {
+            throw new Error(`Échec d'envoi vers ${cleanEmail} : statut HTTP ${res.status} (${res.text || 'Erreur'})`);
+          }
+
+          successfulRecipients.push(cleanEmail);
+
+          if (idx < targetsWithEmail.length) {
+            await new Promise(resolve => setTimeout(resolve, 1000));
+          }
         }
-
-        const memberName =
-          targetMember.fullRosterName ||
-          `${targetMember.name || ''} ${targetMember.firstName || ''}`.trim() ||
-          targetMember.nickname ||
-          'Membre';
-
-        setSendingProgress({ current: 1, total: 1, email: cleanEmail });
-
-        const templateParams = {
-          to_email: cleanEmail,
-          subject: alertTitle,
-          message: alertContent,
-          name: memberName,
-        };
-
-        const res = await emailjs.send(
-          EMAILJS_SERVICE_ID,
-          EMAILJS_TEMPLATE_ID,
-          templateParams,
-          EMAILJS_PUBLIC_KEY
-        );
-
-        if (res.status !== 200) {
-          throw new Error(`Échec d'envoi vers ${cleanEmail} : statut HTTP ${res.status} (${res.text || 'Erreur'})`);
-        }
-
-        successfulRecipients.push(cleanEmail);
 
         if (cerveauDispatchChannel === 'GENERAL') {
-          broadcastCerveauAlert(cerveauAlertTitle.trim(), alertContent, 'APP');
+          broadcastCerveauAlert(cerveauAlertTitle.trim(), alertContent, 'APP', undefined, targetMemberIds);
         }
 
         setEmailModalData({
@@ -1924,7 +2083,11 @@ export const AdminPortal: React.FC = () => {
           recipients: successfulRecipients,
         });
 
-        setToastMessage(`✉️ 1 alerte Cerveau transmise avec succès à ${memberName} (${cleanEmail}) !`);
+        setToastMessage(
+          targetsWithEmail.length === 1
+            ? `✉️ 1 alerte Cerveau transmise avec succès (${successfulRecipients[0]}) !`
+            : `✉️ ${successfulRecipients.length} alertes Cerveau transmises avec succès sur ${targetsWithEmail.length} !`
+        );
         setTimeout(() => setToastMessage(null), 5000);
       } else {
         // Filtrer et dédoublonner les membres avec adresse email valide
@@ -1983,7 +2146,7 @@ export const AdminPortal: React.FC = () => {
         }
 
         if (cerveauDispatchChannel === 'GENERAL') {
-          broadcastCerveauAlert(cerveauAlertTitle.trim(), alertContent, 'APP');
+          broadcastCerveauAlert(cerveauAlertTitle.trim(), alertContent, 'APP', undefined, ['ALL']);
         }
 
         setEmailModalData({
@@ -3567,6 +3730,23 @@ export const AdminPortal: React.FC = () => {
                       </div>
 
                       <div className="flex items-center gap-1.5">
+                        {/* Bouton d'alerte App Cerveau ciblée */}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            handlePrepareCerveauAlertForMember(
+                              m,
+                              `🚨 RAPPEL COTISATION : ${m.nickname}`,
+                              `Bonjour frère / sœur ${m.nickname},\n\nRappel fraternel concernant la régularisation de vos cotisations (${detail.unpaidMonths} mois en attente). Merci d'effectuer votre versement pour soutenir nos caisses fraternelles.\n\nFraternellement,\nLa Trésorerie E-ROUAMA`,
+                              'APP'
+                            );
+                          }}
+                          className="p-2 rounded-xl text-xs font-black flex items-center justify-center bg-rose-600/80 hover:bg-rose-600 text-white shadow-md active:scale-95 transition-all cursor-pointer"
+                          title="Diffuser une alerte d'urgence ciblée dans l'application (Gbaïraï) pour ce membre"
+                        >
+                          <Bell className="w-3.5 h-3.5" />
+                        </button>
+
                         {/* Bouton de relance Email rapide */}
                         <button
                           type="button"
@@ -5236,7 +5416,7 @@ export const AdminPortal: React.FC = () => {
           <CerveauMembersCredentialsViewer activeRole={activeRole} />
 
           {/* Diffusion d'Alerte Cerveau & Notifications (Requirements 3 & 4) */}
-          <div className="bg-slate-900 rounded-[2.5rem] p-6 sm:p-8 border border-slate-800 shadow-xl space-y-6">
+          <div id="cerveau-alert-cockpit" className="bg-slate-900 rounded-[2.5rem] p-6 sm:p-8 border border-slate-800 shadow-xl space-y-6 scroll-mt-24">
             <h2 className="text-xl font-black text-white flex items-center gap-2 border-b border-slate-800 pb-4">
               <AlertTriangle className="w-5 h-5 text-rose-500" />
               <span>Diffusion d'Alerte Cerveau (Message d'Urgence Fraternelle)</span>
@@ -5312,20 +5492,34 @@ export const AdminPortal: React.FC = () => {
                 </div>
               </div>
 
-              {/* Contrôle de sélection du destinataire Cerveau (Tous ou membre spécifique) */}
-              {(cerveauDispatchChannel === 'MAIL' || cerveauDispatchChannel === 'GENERAL') && (
-                <EmailRecipientSelector
-                  recipientMode={cerveauRecipientMode}
-                  onRecipientModeChange={setCerveauRecipientMode}
-                  selectedMemberId={cerveauSelectedMemberId}
-                  onSelectedMemberIdChange={setCerveauSelectedMemberId}
-                  members={members}
-                  allLabel="Tous les membres (Diffusion générale)"
-                  specificLabel="Sélectionner un membre spécifique"
-                  title="Ciblage des Destinataires pour l'Alerte Cerveau par Courriel"
-                  subNotice="ℹ️ En mode 'Tous les membres', une pause de sécurité d'1 seconde est maintenue entre chaque transmission EmailJS."
-                />
-              )}
+              {/* Contrôle de sélection du destinataire Cerveau - DISPONIBLE SUR TOUS LES CANAUX */}
+              <EmailRecipientSelector
+                recipientMode={cerveauRecipientMode}
+                onRecipientModeChange={setCerveauRecipientMode}
+                selectedMemberId={cerveauSelectedMemberId}
+                onSelectedMemberIdChange={setCerveauSelectedMemberId}
+                selectedMemberIds={cerveauSelectedMemberIds}
+                onSelectedMemberIdsChange={setCerveauSelectedMemberIds}
+                members={members}
+                allLabel="Tous les membres (Diffusion générale)"
+                specificLabel="Sélectionner un membre spécifique"
+                title={
+                  cerveauDispatchChannel === 'APP'
+                    ? "Ciblage des Destinataires pour l'Alerte dans l'Application"
+                    : cerveauDispatchChannel === 'MAIL'
+                    ? "Ciblage des Destinataires pour l'Alerte par Courriel"
+                    : "Ciblage des Destinataires pour l'Envoi Général (App + Courriel)"
+                }
+                subNotice={
+                  cerveauDispatchChannel === 'APP'
+                    ? "ℹ️ En mode 'Tous les membres', l'alerte apparaît dans le fil GBAÏRAÏ de toute la communauté. En mode 'Sélectionner un membre spécifique', elle ne sera visible que par le(s) membre(s) ciblé(s)."
+                    : cerveauDispatchChannel === 'MAIL'
+                    ? "ℹ️ En mode 'Tous les membres', une pause de sécurité d'1 seconde est maintenue entre chaque transmission EmailJS."
+                    : "ℹ️ L'alerte sera transmise par courriel et ciblée dans l'application pour le(s) destinataire(s) sélectionné(s)."
+                }
+                requireEmail={cerveauDispatchChannel !== 'APP'}
+                hideAntiSpamBadge={cerveauDispatchChannel === 'APP'}
+              />
             </div>
 
             {/* Red Error Alert in Cerveau Cockpit */}
@@ -7388,25 +7582,81 @@ export const AdminPortal: React.FC = () => {
               <XCircle className="w-6 h-6" />
             </button>
 
-            <div className="flex items-center gap-3">
-              <div className="w-12 h-12 rounded-2xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-400 text-xl shrink-0">
-                <Mail className="w-6 h-6" />
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <div className="w-12 h-12 rounded-2xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-400 text-xl shrink-0">
+                  <Bell className="w-6 h-6" />
+                </div>
+                <div>
+                  <h3 className="text-lg font-black text-white">Notification de Reçu & Attestation</h3>
+                  <p className="text-xs text-slate-400">
+                    {receiptEmailModalDecl.memberNickname} •{' '}
+                    <span className="text-emerald-400 font-bold">
+                      {receiptEmailModalDecl.amount?.toLocaleString('fr-FR')} F CFA ({FUND_LABELS[receiptEmailModalDecl.fund] || receiptEmailModalDecl.fund})
+                    </span>
+                  </p>
+                </div>
               </div>
-              <div>
-                <h3 className="text-lg font-black text-white">Notification de Reçu / Attestation par Courriel</h3>
-                <p className="text-xs text-slate-400">
-                  {receiptEmailModalDecl.memberNickname} •{' '}
-                  <span className="text-emerald-400 font-bold">
-                    {receiptEmailModalDecl.amount?.toLocaleString('fr-FR')} F CFA ({FUND_LABELS[receiptEmailModalDecl.fund] || receiptEmailModalDecl.fund})
-                  </span>
-                </p>
-              </div>
+              <button
+                type="button"
+                onClick={() => handlePrepareCerveauAlertForPayment(receiptEmailModalDecl, receiptDispatchChannel)}
+                className="hidden sm:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/40 text-xs font-bold transition-all cursor-pointer"
+                title="Basculer cette annonce dans le Cockpit d'Alerte Cerveau"
+              >
+                <Megaphone className="w-3.5 h-3.5" />
+                <span>Ouvrir dans Cerveau</span>
+              </button>
             </div>
 
             <div className="space-y-4">
+              {/* Choix du canal pour la notification Trésorerie */}
+              <div>
+                <label className="block text-xs font-bold text-slate-400 uppercase mb-1.5">
+                  Canal de Notification
+                </label>
+                <div className="grid grid-cols-3 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setReceiptDispatchChannel('APP')}
+                    className={`py-2 px-3 rounded-xl border text-xs font-black transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                      receiptDispatchChannel === 'APP'
+                        ? 'bg-amber-500/20 border-amber-500 text-amber-300 shadow'
+                        : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    <span>📲</span>
+                    <span>DANS L'APP</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setReceiptDispatchChannel('MAIL')}
+                    className={`py-2 px-3 rounded-xl border text-xs font-black transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                      receiptDispatchChannel === 'MAIL'
+                        ? 'bg-amber-500/20 border-amber-500 text-amber-300 shadow'
+                        : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    <span>✉️</span>
+                    <span>COURRIEL</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setReceiptDispatchChannel('GENERAL')}
+                    className={`py-2 px-3 rounded-xl border text-xs font-black transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                      receiptDispatchChannel === 'GENERAL'
+                        ? 'bg-amber-500/20 border-amber-500 text-amber-300 shadow'
+                        : 'bg-slate-950 border-slate-800 text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    <span>🌐</span>
+                    <span>APP + MAIL</span>
+                  </button>
+                </div>
+              </div>
+
               <div>
                 <label className="block text-xs font-bold text-slate-400 uppercase mb-1">
-                  Objet du Courriel
+                  Objet du Message / Titre
                 </label>
                 <input
                   type="text"
@@ -7439,37 +7689,66 @@ export const AdminPortal: React.FC = () => {
                 members={members}
                 allLabel="Tous les membres (Diffusion générale)"
                 specificLabel="Sélectionner un membre spécifique"
-                title="Ciblage du Destinataire pour l'Attestation de Reçu"
-                subNotice="ℹ️ Par défaut, le membre à l'origine du versement est présélectionné. En mode 'Tous les membres', une temporisation d'1 seconde est maintenue entre chaque transmission EmailJS."
+                title={
+                  receiptDispatchChannel === 'APP'
+                    ? "Ciblage du Destinataire dans l'Application"
+                    : receiptDispatchChannel === 'MAIL'
+                    ? "Ciblage du Destinataire par Courriel"
+                    : "Ciblage du Destinataire (App + Courriel)"
+                }
+                subNotice={
+                  receiptDispatchChannel === 'APP'
+                    ? "ℹ️ Par défaut, le membre à l'origine du versement est ciblé pour recevoir ce reçu en privé dans son fil GBAÏRAÏ."
+                    : "ℹ️ Par défaut, le membre à l'origine du versement est présélectionné. En mode 'Tous les membres', une temporisation d'1 seconde est maintenue entre chaque transmission EmailJS."
+                }
+                requireEmail={receiptDispatchChannel !== 'APP'}
+                hideAntiSpamBadge={receiptDispatchChannel === 'APP'}
               />
             </div>
 
-            <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-800">
+            <div className="flex flex-col-reverse sm:flex-row sm:items-center justify-between gap-3 pt-3 border-t border-slate-800">
               <button
                 type="button"
-                onClick={() => setReceiptEmailModalDecl(null)}
-                className="bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold px-4 py-2.5 rounded-xl text-xs transition-colors cursor-pointer"
+                onClick={() => handlePrepareCerveauAlertForPayment(receiptEmailModalDecl, receiptDispatchChannel)}
+                className="text-xs text-rose-400 hover:text-rose-300 font-bold inline-flex items-center gap-1 cursor-pointer sm:hidden"
               >
-                Annuler
+                <Megaphone className="w-3.5 h-3.5" />
+                <span>Ouvrir dans le Cockpit Cerveau</span>
               </button>
-              <button
-                type="button"
-                disabled={isSendingEmail}
-                onClick={handleSendReceiptEmail}
-                className="bg-amber-600 hover:bg-amber-500 text-white font-black px-5 py-2.5 rounded-xl text-xs flex items-center gap-2 shadow-lg transition-all active:scale-95 disabled:opacity-50 cursor-pointer"
-              >
-                {isSendingEmail ? (
-                  <>
-                    <Loader2 className="w-4 h-4 animate-spin text-white" />
-                    <span>Transmission EmailJS en cours...</span>
-                  </>
-                ) : (
-                  <>
-                    <Send className="w-4 h-4" />
-                    <span>Transmettre par Courriel</span>
-                  </>
-                )}
-              </button>
+
+              <div className="flex items-center justify-end gap-3 w-full sm:w-auto">
+                <button
+                  type="button"
+                  onClick={() => setReceiptEmailModalDecl(null)}
+                  className="bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold px-4 py-2.5 rounded-xl text-xs transition-colors cursor-pointer"
+                >
+                  Annuler
+                </button>
+                <button
+                  type="button"
+                  disabled={isSendingEmail}
+                  onClick={handleSendReceiptEmail}
+                  className="bg-amber-600 hover:bg-amber-500 text-white font-black px-5 py-2.5 rounded-xl text-xs flex items-center gap-2 shadow-lg transition-all active:scale-95 disabled:opacity-50 cursor-pointer"
+                >
+                  {isSendingEmail ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin text-white" />
+                      <span>Transmission en cours...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Send className="w-4 h-4" />
+                      <span>
+                        {receiptDispatchChannel === 'APP'
+                          ? "Publier dans l'App (Gbaïraï)"
+                          : receiptDispatchChannel === 'MAIL'
+                          ? "Transmettre par Courriel"
+                          : "Diffuser (App + Courriel)"}
+                      </span>
+                    </>
+                  )}
+                </button>
+              </div>
             </div>
           </div>
         </div>

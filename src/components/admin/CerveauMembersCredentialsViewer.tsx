@@ -98,7 +98,7 @@ export const CerveauMembersCredentialsViewer: React.FC<CerveauMembersCredentials
         const mNick = normalizeRoster(m.nickname);
         if (dNick && mNick && dNick === mNick) return true;
         if (m.id === '2' && (dFirst === 'ORTINIEL' || dNick === 'ESPRIT')) return true;
-        if (m.id === '11' && (dFirst === 'LEGER' || dNick === 'CLEMSO')) return true;
+        if (m.id === '11' && (dFirst === 'LEGER' || dNick === 'CLEMSO' || dNick === "L'ELU DE DIEU" || dNick === "ELU DE DIEU")) return true;
         if (d.email && m.email && d.email.toLowerCase().trim() === m.email.toLowerCase().trim()) return true;
         if (d.phone && m.phone && d.phone.replace(/\D/g, '') === m.phone.replace(/\D/g, '')) return true;
         return false;

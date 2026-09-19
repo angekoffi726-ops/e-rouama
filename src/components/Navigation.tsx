@@ -25,9 +25,52 @@ export const Navigation: React.FC<NavigationProps> = ({ activeTab, setActiveTab 
   const currentNick = currentUser?.member?.nickname || currentUser?.nickname;
   const activeGbairaiMessages = rawMessages.filter(msg => {
     if (msg.dispatchChannel === 'MAIL') return false;
-    if (currentUser?.id && msg.payerId === currentUser.id) return false;
-    if (currentUserId && msg.payerId === currentUserId) return false;
-    if (currentNick && msg.category === 'ALERTE' && msg.content?.includes(currentNick) && msg.content?.includes("vient de s'acquitter")) return false;
+
+    // Filtrage strict par targetMemberIds (Ciblage des destinataires)
+    const isSpecificallyTargeted = Boolean(
+      msg.targetMemberIds &&
+      !msg.targetMemberIds.includes('ALL') &&
+      ((currentUserId && msg.targetMemberIds.includes(currentUserId)) ||
+       (currentUser?.id && msg.targetMemberIds.includes(currentUser.id)))
+    );
+
+    if (msg.targetMemberIds && msg.targetMemberIds.length > 0) {
+      const isForEveryone = msg.targetMemberIds.includes('ALL');
+      if (!isForEveryone && isMember && !isSpecificallyTargeted) {
+        return false;
+      }
+    }
+
+    // Filtrage strict par excludedMemberIds (Auteur / payeur masqué pour lui-même)
+    if (msg.excludedMemberIds && msg.excludedMemberIds.length > 0) {
+      if (currentUser?.id && msg.excludedMemberIds.includes(currentUser.id)) return false;
+      if (currentUserId && msg.excludedMemberIds.includes(currentUserId)) return false;
+    }
+
+    // Masquage de courtoisie si l'utilisateur est le payeur (alerte générale de paiement)
+    if (!isSpecificallyTargeted) {
+      if (currentUser?.id && msg.payerId && String(msg.payerId) === String(currentUser.id)) return false;
+      if (currentUserId && msg.payerId && String(msg.payerId) === String(currentUserId)) return false;
+      
+      const memberNamesToCheck = [
+        currentNick,
+        currentUser?.member?.firstName,
+        currentUser?.member?.nickname,
+        currentUser?.firstName,
+        (currentUser as any)?.nickname,
+      ].filter(Boolean) as string[];
+
+      const isPaymentAnnouncement =
+        (msg.category === 'ALERTE' || msg.category === 'ANNONCE') &&
+        (msg.content?.includes("vient de s'acquitter") || msg.content?.includes("vient d'effectuer un versement"));
+
+      if (isPaymentAnnouncement) {
+        if (memberNamesToCheck.some(name => msg.content?.includes(name) || msg.title?.includes(name))) {
+          return false;
+        }
+      }
+    }
+
     if (currentUserId && msg.dismissedBy && msg.dismissedBy.includes(currentUserId)) return false;
     if (isMember) {
       if (msg.targetAudience === 'TOUS') return true;
