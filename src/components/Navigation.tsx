@@ -22,8 +22,12 @@ export const Navigation: React.FC<NavigationProps> = ({ activeTab, setActiveTab 
   const rawMessages = gbairaiMessages || newsItems || [];
 
   // Messages actifs réellement visibles pour l'utilisateur
+  const currentNick = currentUser?.member?.nickname || currentUser?.nickname;
   const activeGbairaiMessages = rawMessages.filter(msg => {
     if (msg.dispatchChannel === 'MAIL') return false;
+    if (currentUser?.id && msg.payerId === currentUser.id) return false;
+    if (currentUserId && msg.payerId === currentUserId) return false;
+    if (currentNick && msg.category === 'ALERTE' && msg.content?.includes(currentNick) && msg.content?.includes("vient de s'acquitter")) return false;
     if (currentUserId && msg.dismissedBy && msg.dismissedBy.includes(currentUserId)) return false;
     if (isMember) {
       if (msg.targetAudience === 'TOUS') return true;

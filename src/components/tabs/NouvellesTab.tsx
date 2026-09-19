@@ -48,30 +48,47 @@ export const NouvellesTab: React.FC<NouvellesTabProps> = ({ onNavigateTab }) => 
 
   const sourceMessages = gbairaiMessages || newsItems || [];
 
-  // Filter news items automatically and strictly for the member or admin based on real Firestore data
-  const visibleNews = sourceMessages.filter(item => {
-    if (item.dispatchChannel === 'MAIL') return false;
+  // 2. FILTRAGE DU DESTINATAIRE DE L'ALERTE (GBAÏRAÏ) :
+  // Masque le message si l'utilisateur connecté est l'auteur du paiement
+  const currentNick = currentUser?.member?.nickname || currentUser?.nickname;
 
-    // If dismissed by current member in Firestore or local cache, hide from personal feed
-    if (currentMemberId) {
-      if (item.dismissedBy && item.dismissedBy.includes(currentMemberId)) {
-        return false;
-      }
-      if (localDismissedIds.includes(item.id)) {
-        return false;
-      }
+  const visibleMessages = sourceMessages.filter(msg => {
+    if (msg.dispatchChannel === 'MAIL') return false;
+
+    // Masquage strict si l'utilisateur connecté est l'auteur du paiement
+    if (currentUser?.id && msg.payerId === currentUser.id) {
+      return false;
     }
-
-    // If user is a member, only show news targeted at TOUS or matching their exact dues status
-    if (isMember) {
-      if (item.targetAudience === 'TOUS') return true;
-      if (item.targetAudience === memberDuesStatus) return true;
+    if (currentMemberId && msg.payerId === currentMemberId) {
+      return false;
+    }
+    // Sécurité rétrocompatible pour les annonces générées sans payerId
+    if (currentNick && msg.category === 'ALERTE' && msg.content?.includes(currentNick) && msg.content?.includes("vient de s'acquitter")) {
       return false;
     }
 
-    // Admins see all news items
+    // Si masqué/rejeté par le membre dans Firestore ou le cache local
+    if (currentMemberId) {
+      if (msg.dismissedBy && msg.dismissedBy.includes(currentMemberId)) {
+        return false;
+      }
+      if (localDismissedIds.includes(msg.id)) {
+        return false;
+      }
+    }
+
+    // Si l'utilisateur est un membre, ne montrer que les annonces pour TOUS ou son statut exact
+    if (isMember) {
+      if (msg.targetAudience === 'TOUS') return true;
+      if (msg.targetAudience === memberDuesStatus) return true;
+      return false;
+    }
+
+    // Les administrateurs voient toutes les annonces
     return true;
   });
+
+  const visibleNews = visibleMessages;
 
   // Dynamic unread count strictly for active visible messages
   const unreadGbairaiCount = currentMemberId

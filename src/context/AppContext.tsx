@@ -182,7 +182,8 @@ interface AppContextType {
   broadcastCerveauAlert: (
     titleOrMember: string,
     contentOrMonth?: string,
-    dispatchChannel?: 'APP' | 'MAIL' | 'GENERAL'
+    dispatchChannel?: 'APP' | 'MAIL' | 'GENERAL',
+    payerId?: string
   ) => void;
   deleteNewsItem: (newsId: string) => void;
   dismissNewsForMember: (newsId: string) => void;
@@ -287,7 +288,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (savedSession) {
         const parsed = JSON.parse(savedSession);
         if (parsed && !parsed.type && (parsed.firstName || parsed.nickname || parsed.id)) {
-          return { type: 'MEMBER', member: parsed };
+          return { type: 'MEMBER', id: parsed.id, member: parsed };
+        }
+        if (parsed && parsed.type === 'MEMBER' && parsed.member?.id && !parsed.id) {
+          parsed.id = parsed.member.id;
         }
         return parsed;
       }
@@ -303,10 +307,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (!resolved) {
         return null;
       }
+      let userObj: CurrentUser;
       if (!('type' in resolved)) {
-        return { type: 'MEMBER', member: resolved as RouamaMember };
+        userObj = { type: 'MEMBER', id: (resolved as RouamaMember).id, member: resolved as RouamaMember };
+      } else {
+        userObj = { ...resolved };
+        if (userObj.type === 'MEMBER' && userObj.member?.id && !userObj.id) {
+          userObj.id = userObj.member.id;
+        }
       }
-      return resolved as CurrentUser;
+      return userObj;
     });
   };
 
@@ -513,6 +523,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                   normalizeRosterString(m.firstName) === 'ORTINIEL' ||
                   normalizeRosterString(m.nickname) === 'ESPRIT'
                 )) ||
+                (official.id === '11' && (
+                  normalizeRosterString(m.nickname) === 'CLEMSO' ||
+                  normalizeRosterString(m.firstName) === 'LEGER' ||
+                  normalizeRosterString(m.firstName) === 'LÉGER'
+                )) ||
                 (m.phone && official.phone && m.phone.replace(/\D/g, '') === official.phone.replace(/\D/g, '')) ||
                 (m.email && official.email && m.email.toLowerCase().trim() === official.email.toLowerCase().trim())
               ) {
@@ -537,7 +552,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             ) {
               setDoc(doc(db, 'members', existing.id || official.id), {
                 firstName: effectiveFirstName,
+                login: effectiveFirstName,
                 nickname: effectiveNickname,
+                surname: effectiveNickname,
                 fullRosterName: effectiveFullRosterName,
               }, { merge: true }).catch(console.warn);
             }
@@ -914,7 +931,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       normalizeRosterString(m.firstName) === clean ||
       normalizeRosterString(m.nickname) === clean ||
       normalizeRosterString(m.fullRosterName).includes(clean) ||
-      (m.id === '2' && (clean === 'ORTINIEL' || clean === 'ESPRIT'))
+      (m.id === '2' && (clean === 'ORTINIEL' || clean === 'ESPRIT')) ||
+      (m.id === '11' && (clean === 'CLEMSO' || clean === 'LEGER' || clean === 'STANIS' || clean === 'VENCESLAS' || clean === "L'ELU DE DIEU" || clean === "ELU DE DIEU"))
     );
   };
 
@@ -1633,12 +1651,60 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       console.warn('Erreur addDoc transaction:', txErr);
     }
 
-    // 4. Déclencher l'alerte fraternelle Cerveau
+    // 4. Déclencher l'alerte fraternelle Cerveau (Imputation chronologique stricte et exclusion de l'auteur)
     try {
-      if (targetDecl.memberNickname) {
+      const payerId = targetDecl.memberId;
+      const payerMember = members.find(m => m.id === payerId);
+      const memberName = targetDecl.memberNickname || payerMember?.nickname || targetDecl.memberName || payerMember?.firstName || 'Un membre';
+
+      if (targetDecl.fund === 'COTISATION') {
+        const nbMoisPayes = Math.max(1, Math.floor(targetDecl.amount / 500));
+
+        // Détermine le premier mois impayé du membre (imputation chronologique depuis Janvier 2026) :
+        // On cumule les versements cotisations déjà validés pour ce membre avant ce reçu
+        const previousTotalPaid = declarations
+          .filter(d => d.memberId === targetDecl.memberId && d.fund === 'COTISATION' && d.status === 'APPROVED' && d.id !== targetId)
+          .reduce((sum, d) => sum + d.amount, 0);
+
+        const previousMonthsPaid = Math.floor(previousTotalPaid / 500);
+
+        const startYear = 2026;
+        const monthNames = [
+          'Janvier', 'Février', 'Mars', 'Avril', 'Mai', 'Juin',
+          'Juillet', 'Août', 'Septembre', 'Octobre', 'Novembre', 'Décembre'
+        ];
+
+        const getMonthFormatted = (idx: number) => {
+          const y = startYear + Math.floor(idx / 12);
+          const m = idx % 12;
+          return `${monthNames[m]} ${y}`;
+        };
+
+        const startMonthIdx = previousMonthsPaid;
+        const endMonthIdx = previousMonthsPaid + nbMoisPayes - 1;
+        const startMonthName = getMonthFormatted(startMonthIdx);
+        const endMonthName = getMonthFormatted(endMonthIdx);
+
+        const periodeCouverte = nbMoisPayes === 1 ? startMonthName : `${startMonthName} à ${endMonthName}`;
+
+        const alertText = `${memberName} vient de s'acquitter de sa cotisation pour la période de ${periodeCouverte} (${nbMoisPayes} mois). Bravo pour l'engagement fraternel !`;
+
         broadcastCerveauAlert(
-          targetDecl.memberNickname,
-          targetDecl.month || `${FUND_LABELS[targetDecl.fund] || targetDecl.fund} (${targetDecl.amount.toLocaleString('fr-FR')} F CFA)`
+          memberName,
+          alertText,
+          'APP',
+          payerId
+        );
+      } else {
+        const fundLabel = FUND_LABELS[targetDecl.fund] || targetDecl.fund;
+        const sub = targetDecl.subCategory ? ` (${targetDecl.subCategory})` : '';
+        const alertText = `${memberName} vient d'effectuer un versement de ${targetDecl.amount.toLocaleString('fr-FR')} F CFA pour ${fundLabel}${sub}. Bravo pour l'engagement fraternel !`;
+
+        broadcastCerveauAlert(
+          memberName,
+          alertText,
+          'APP',
+          payerId
         );
       }
     } catch (e) {
@@ -1672,24 +1738,35 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const hideReceipt = async (declarationId: string) => {
     if (!declarationId) return;
     const targetId = declarationId.trim();
-    // Retrait immédiat de l'affichage local
-    setDeclarations(prev => prev.map(p => 
-      ((p.id || (p as any)._id || (p as any).docId) === targetId) ? { ...p, isHidden: true, status: 'hidden' } : p
-    ));
+    // Retrait immédiat de l'affichage local (React State)
+    setDeclarations(prev =>
+      prev.filter(p => {
+        const pId = p.id || (p as any)._id || (p as any).docId;
+        return pId !== targetId;
+      })
+    );
 
+    // Traitement Firestore en arrière-plan
     try {
-      const updateData = { isHidden: true, status: 'hidden', hiddenAt: new Date() };
-      await updateDoc(doc(db, 'payments', targetId), updateData).catch(async () => {
-        await setDoc(doc(db, 'payments', targetId), updateData, { merge: true }).catch(() => {});
-      });
-      await updateDoc(doc(db, 'receipts', targetId), updateData).catch(async () => {
-        await setDoc(doc(db, 'receipts', targetId), updateData, { merge: true }).catch(() => {});
-      });
-      await updateDoc(doc(db, 'declarations', targetId), updateData).catch(async () => {
-        await setDoc(doc(db, 'declarations', targetId), updateData, { merge: true }).catch(() => {});
-      });
-    } catch (err) {
-      console.error('Erreur hideReceipt Firestore:', err);
+      await deleteDoc(doc(db, 'payments', targetId));
+    } catch (e) {
+      try {
+        await updateDoc(doc(db, 'payments', targetId), { status: 'deleted', isHidden: true });
+      } catch (err) {}
+    }
+    try {
+      await deleteDoc(doc(db, 'receipts', targetId));
+    } catch (e) {
+      try {
+        await updateDoc(doc(db, 'receipts', targetId), { status: 'deleted', isHidden: true });
+      } catch (err) {}
+    }
+    try {
+      await deleteDoc(doc(db, 'declarations', targetId));
+    } catch (e) {
+      try {
+        await updateDoc(doc(db, 'declarations', targetId), { status: 'deleted', isHidden: true });
+      } catch (err) {}
     }
   };
 
@@ -1748,7 +1825,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const broadcastCerveauAlert = (
     titleOrMember: string,
     contentOrMonth?: string,
-    dispatchChannel: 'APP' | 'MAIL' | 'GENERAL' = 'APP'
+    dispatchChannel: 'APP' | 'MAIL' | 'GENERAL' = 'APP',
+    payerId?: string
   ) => {
     const rawContent = contentOrMonth || '';
     const isFormattedMonth = typeof rawContent === 'string' && rawContent.includes('-') && rawContent.length === 7;
@@ -1762,7 +1840,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     // STRICT: Ne rajoute aucune mention automatique si un contenu est déjà fourni
     const alertContent = isFormattedMonth
-      ? `${titleOrMember} vient de s'acquitter de sa cotisation pour le mois de ${formattedDate}. Bravo pour l'engagement fraternel !`
+      ? `${titleOrMember} vient de s'acquitter de sa cotisation pour la période de ${formattedDate} (1 mois). Bravo pour l'engagement fraternel !`
       : rawContent
       ? rawContent
       : `Information transmise pour ${titleOrMember}.`;
@@ -1782,6 +1860,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       date: new Date().toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }),
       readBy: [],
       dispatchChannel,
+      payerId: payerId || undefined,
     };
 
     setDoc(doc(db, 'news', alertNews.id), sanitizeFirestore(alertNews)).catch(console.warn);

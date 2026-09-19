@@ -160,6 +160,7 @@ export interface NewsItem {
   dispatchChannel?: 'APP' | 'MAIL' | 'GENERAL';
   linkTab?: TabType;
   targetDocId?: string;
+  payerId?: string;
 }
 
 export interface Committee {

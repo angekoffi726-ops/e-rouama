@@ -349,68 +349,69 @@ export const FinancesTab: React.FC = () => {
   // STATE: 3. HISTORIQUE DE MES VERSEMENTS
   // --------------------------------------------------------------------------
   const [historyFilter, setHistoryFilter] = useState<'TOUS' | 'COTISATION' | 'TRANCHES'>('TOUS');
-  const [payments, setPayments] = useState<any[]>(() => declarations.filter(p => p.status !== 'deleted'));
+  const [payments, setPayments] = useState<any[]>(() =>
+    declarations.filter(p => !p.isHidden && p.status !== 'hidden' && p.status !== 'deleted')
+  );
   useEffect(() => {
-    setPayments(declarations.filter(p => p.status !== 'deleted'));
+    setPayments(declarations.filter(p => !p.isHidden && p.status !== 'hidden' && p.status !== 'deleted'));
   }, [declarations]);
 
   const currentUserId = currentMemberId;
-  const memberHistory = payments.filter(p => p.memberId === currentUserId && p.status !== 'deleted');
+  // 3. FILTRAGE DES VUES (MASQUAGE EFFECTIF) DANS L'HISTORIQUE PERSONNEL :
+  const memberHistory = payments.filter(
+    p => p.memberId === currentUserId && !p.isHidden && p.status !== 'hidden' && p.status !== 'deleted'
+  );
   const filteredDeclarations = memberHistory.filter(d => {
-    if (d.status === 'deleted') return false;
+    if (d.isHidden === true || d.status === 'hidden' || d.status === 'deleted') return false;
     if (historyFilter === 'COTISATION') return d.fund === 'COTISATION';
     if (historyFilter === 'TRANCHES') return d.fund !== 'COTISATION';
     return true;
   });
 
-  // Active events and project lookups for dynamic rubric enablement
-  const handleDeleteHistoryItem = async (d: any) => {
-    const targetId = d?.id || d?._id || d?.docId;
-    if (!targetId) return;
+  // 2. FONCTION DE MASQUAGE (handleHidePayment) SANS ÉCHEC :
+  const handleHidePayment = async (paymentItem: any) => {
+    // Récupération sécurisée de l'ID
+    const targetId = paymentItem?.id || paymentItem?._id || paymentItem?.docId;
 
-    const isConfirmed = window.confirm(
-      "Êtes-vous sûr de vouloir SUPPRIMER DÉFINITIVEMENT cette demande ?"
+    // 1. Mise à jour IMMÉDIATE de l'interface (React State)
+    setPayments(prevPayments =>
+      prevPayments.filter(p => {
+        const pId = p.id || (p as any)._id || (p as any).docId;
+        return pId !== targetId && p !== paymentItem;
+      })
     );
-    if (!isConfirmed) return;
 
-    // 3. MISE À JOUR EN TEMPS RÉEL (STATE) :
-    // Force le retrait immédiat du tableau local au clic avant même d'attendre la réponse du serveur :
-    setPayments(prev => prev.filter(p => (p.id || (p as any)._id || (p as any).docId) !== targetId && p !== d));
-
-    try {
-      // 1. DOUBLE ACTION (SÉCURITÉ ET DISPARITION VISUELLE) :
-      // a. Change le statut du document dans Firestore à 'deleted'
-      const updateData = { status: 'deleted', deletedAt: new Date() };
-      await updateDoc(doc(db, "payments", targetId), updateData).catch(async () => {
-        await setDoc(doc(db, "payments", targetId), updateData, { merge: true }).catch(() => {});
-      });
-      await updateDoc(doc(db, "receipts", targetId), updateData).catch(async () => {
-        await setDoc(doc(db, "receipts", targetId), updateData, { merge: true }).catch(() => {});
-      });
-      await updateDoc(doc(db, "declarations", targetId), updateData).catch(async () => {
-        await setDoc(doc(db, "declarations", targetId), updateData, { merge: true }).catch(() => {});
-      });
-
-      // b. Lance en parallèle la suppression brute deleteDoc dans un bloc try/catch séparé
+    // 2. Traitement Firestore en arrière-plan
+    if (targetId) {
       try {
-        await Promise.allSettled([
-          deleteDoc(doc(db, "payments", targetId)),
-          deleteDoc(doc(db, "receipts", targetId)),
-          deleteDoc(doc(db, "declarations", targetId)),
-          deleteDoc(doc(db, "transactions", targetId)),
-          deleteReceipt(targetId),
-        ]);
-      } catch (delErr) {
-        console.warn("Suppression brute ignorée :", delErr);
+        const docRef = doc(db, "payments", targetId);
+        await deleteDoc(docRef);
+      } catch (e) {
+        try {
+          const docRef = doc(db, "payments", targetId);
+          await updateDoc(docRef, { status: 'deleted', isHidden: true });
+        } catch (err) {
+          console.log("Erreur Firestore ignorée, ligne retirée localement");
+        }
       }
-
-      alert("Demande supprimée avec succès !");
-    } catch (err) {
-      console.error('Erreur suppression déclaration rejetée:', err);
-      setPayments(prev => prev.filter(p => p !== d && (p.id || (p as any)._id || (p as any).docId) !== targetId));
-      alert("Retiré de l'affichage.");
+      try {
+        await deleteDoc(doc(db, "receipts", targetId));
+      } catch (e) {
+        try {
+          await updateDoc(doc(db, "receipts", targetId), { status: 'deleted', isHidden: true });
+        } catch (err) {}
+      }
+      try {
+        await deleteDoc(doc(db, "declarations", targetId));
+      } catch (e) {
+        try {
+          await updateDoc(doc(db, "declarations", targetId), { status: 'deleted', isHidden: true });
+        } catch (err) {}
+      }
     }
   };
+
+  const handleDeleteHistoryItem = handleHidePayment;
 
   const activeSoiree = activities.find(
     a => a.status === 'PUBLISHED' && (a.fixedType === 'SOIREE_ROUAMA' || a.title?.toLowerCase().includes('soirée') || a.title?.toLowerCase().includes('soiree'))
@@ -1773,76 +1774,75 @@ export const FinancesTab: React.FC = () => {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100 font-medium text-gray-800">
-                  {filteredDeclarations.map(d => (
-                    <tr key={d.id} className="hover:bg-gray-50 transition-colors">
-                      <td className="py-3 px-4 text-gray-500 font-mono">{d.date}</td>
+                  {filteredDeclarations.map(payment => (
+                    <tr key={payment.id} className="hover:bg-gray-50 transition-colors">
+                      <td className="py-3 px-4 text-gray-500 font-mono">{payment.date}</td>
                       <td className="py-3 px-4 font-bold">
-                        {FUND_LABELS[d.fund]}
-                        {d.subCategory && (
+                        {FUND_LABELS[payment.fund]}
+                        {payment.subCategory && (
                           <span className="block text-[10px] text-slate-500 font-normal">
-                            {d.subCategory}
+                            {payment.subCategory}
                           </span>
                         )}
                       </td>
                       <td className="py-3 px-4">
                         <span
                           className={`inline-block px-2.5 py-0.5 rounded-full text-[10px] font-black ${
-                            d.fund === 'COTISATION'
+                            payment.fund === 'COTISATION'
                               ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
-                              : d.paymentType === 'TOTAL'
+                              : payment.paymentType === 'TOTAL'
                               ? 'bg-blue-100 text-blue-800 border border-blue-300'
                               : 'bg-amber-100 text-amber-800 border border-amber-300'
                           }`}
                         >
-                          {d.fund === 'COTISATION'
-                            ? `Mensualité fixe (${Math.round(d.amount / 500)} mois)`
-                            : d.paymentType === 'TOTAL'
+                          {payment.fund === 'COTISATION'
+                            ? `Mensualité fixe (${Math.round(payment.amount / 500)} mois)`
+                            : payment.paymentType === 'TOTAL'
                             ? 'Règlement Total'
                             : 'Acompte par tranche'}
                         </span>
                       </td>
                       <td className="py-3 px-4 font-black text-gray-900 font-mono text-sm">
-                        {d.amount.toLocaleString('fr-FR')} F CFA
+                        {payment.amount.toLocaleString('fr-FR')} F CFA
                       </td>
                       <td className="py-3 px-4 font-mono text-xs text-gray-600">
-                        {d.reference.startsWith('data:image')
+                        {payment.reference.startsWith('data:image')
                           ? 'Capture de reçu'
-                          : d.reference.length > 30
-                          ? `${d.reference.substring(0, 30)}...`
-                          : d.reference}
+                          : payment.reference.length > 30
+                          ? `${payment.reference.substring(0, 30)}...`
+                          : payment.reference}
                       </td>
                       <td className="py-3 px-4 text-right whitespace-nowrap">
                         <div className="inline-flex items-center justify-end gap-2">
                           <span
                             className={`inline-flex items-center gap-1 px-3 py-1 rounded-full text-[10px] font-black ${
-                              d.status === 'APPROVED'
+                              payment.status === 'APPROVED'
                                 ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
-                                : d.status === 'REJECTED'
+                                : payment.status === 'REJECTED'
                                 ? 'bg-rose-100 text-rose-800 border border-rose-300'
                                 : 'bg-amber-100 text-amber-800 border border-amber-300'
                             }`}
                           >
-                            {d.status === 'APPROVED' && <CheckCircle2 className="w-3 h-3 text-emerald-600" />}
-                            {d.status === 'REJECTED' && <XCircle className="w-3 h-3 text-rose-600" />}
-                            {d.status === 'PENDING' && <Clock className="w-3 h-3 text-amber-600 animate-spin" />}
+                            {payment.status === 'APPROVED' && <CheckCircle2 className="w-3 h-3 text-emerald-600" />}
+                            {payment.status === 'REJECTED' && <XCircle className="w-3 h-3 text-rose-600" />}
+                            {payment.status === 'PENDING' && <Clock className="w-3 h-3 text-amber-600 animate-spin" />}
                             <span>
-                              {d.status === 'APPROVED'
+                              {payment.status === 'APPROVED'
                                 ? 'VALIDÉ PAR TRÉSORIER'
-                                : d.status === 'REJECTED'
-                                ? `REJETÉ (${d.rejectionReason || 'Non conforme'})`
+                                : payment.status === 'REJECTED'
+                                ? `REJETÉ (${payment.rejectionReason || 'Non conforme'})`
                                 : 'EN ATTENTE VALIDATION'}
                             </span>
                           </span>
 
-                          {d.status === 'REJECTED' && (
+                          {(payment.status === 'REJECTED' || payment.status === 'PENDING') && (
                             <button
                               type="button"
-                              onClick={() => handleDeleteHistoryItem(d)}
-                              className="btn-erreur bg-rose-50 hover:bg-rose-100 text-rose-700 hover:text-rose-900 border border-rose-200 px-2.5 py-1 rounded-xl text-[10px] font-black inline-flex items-center gap-1 shadow-sm transition-all cursor-pointer active:scale-95"
-                              title="Supprimer définitivement cette déclaration rejetée de votre historique"
+                              onClick={() => handleHidePayment(payment)}
+                              className="btn-erreur bg-slate-100 hover:bg-amber-50 text-slate-600 hover:text-amber-800 border border-slate-300 hover:border-amber-400 px-2.5 py-1 rounded-xl text-[10px] font-black inline-flex items-center gap-1 shadow-sm transition-all cursor-pointer active:scale-95"
+                              title="Masquer définitivement cette ligne de test/erreur"
                             >
-                              <Trash2 className="w-3 h-3 text-rose-600" />
-                              <span>Supprimer</span>
+                              🙈 Masquer
                             </button>
                           )}
                         </div>

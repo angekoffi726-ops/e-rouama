@@ -82,9 +82,30 @@
         "status": { "type": "string" }
       },
       "required": ["id", "title"]
+    },
+    "NewsItem": {
+      "title": "NewsItem",
+      "description": "Communiqués et alertes GBAÏRAÏ",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "content": { "type": "string" },
+        "authorRole": { "type": "string" },
+        "targetAudience": { "type": "string" },
+        "category": { "type": "string" },
+        "date": { "type": "string" },
+        "payerId": { "type": "string" },
+        "readBy": { "type": "array", "items": { "type": "string" } }
+      },
+      "required": ["id", "title", "content"]
     }
   },
   "firestore": {
+    "/news/{newsId}": {
+      "schema": "NewsItem",
+      "description": "Communiqués et alertes GBAÏRAÏ"
+    },
     "/members/{memberId}": {
       "schema": "Member",
       "description": "Membres et profils"

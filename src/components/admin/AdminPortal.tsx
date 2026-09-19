@@ -926,10 +926,16 @@ export const AdminPortal: React.FC = () => {
 
   // 2. FONCTION DE MASQUAGE DÉFINITIF (TRÉSORIER & MEMBRE)
   const handleHidePayment = async (paymentItem: any) => {
+    // Récupération sécurisée de l'ID
     const targetId = paymentItem?.id || paymentItem?._id || paymentItem?.docId;
-    if (!targetId) return;
 
-    if (!window.confirm("Voulez-vous masquer définitivement cette ligne de test/erreur ?")) return;
+    // 1. Mise à jour IMMÉDIATE de l'interface (React State)
+    setPayments(prevPayments =>
+      prevPayments.filter(p => {
+        const pId = p.id || (p as any)._id || (p as any).docId;
+        return pId !== targetId && p !== paymentItem;
+      })
+    );
 
     // Fermer les modales de prévisualisation si nécessaire
     if (previewDeclaration && ((previewDeclaration.id || (previewDeclaration as any)._id || (previewDeclaration as any).docId) === targetId)) {
@@ -940,30 +946,33 @@ export const AdminPortal: React.FC = () => {
       setRejectModalDeclaration(null);
     }
 
-    // Mettre à jour l'affichage local immédiatement
-    setPayments(prev => prev.map(p => 
-      ((p.id === targetId || (p as any)._id === targetId || (p as any).docId === targetId))
-        ? { ...p, isHidden: true, status: 'hidden' }
-        : p
-    ));
-
-    // Mettre à jour Firestore
-    try {
-      const updateData = { isHidden: true, status: 'hidden', hiddenAt: new Date() };
-      const docRef = doc(db, "payments", targetId);
-      await updateDoc(docRef, updateData).catch(async () => {
-        await setDoc(docRef, updateData, { merge: true }).catch(() => {});
-      });
-      const receiptRef = doc(db, "receipts", targetId);
-      await updateDoc(receiptRef, updateData).catch(async () => {
-        await setDoc(receiptRef, updateData, { merge: true }).catch(() => {});
-      });
-      const declRef = doc(db, "declarations", targetId);
-      await updateDoc(declRef, updateData).catch(async () => {
-        await setDoc(declRef, updateData, { merge: true }).catch(() => {});
-      });
-    } catch (err) {
-      console.error("Erreur de masquage :", err);
+    // 2. Traitement Firestore en arrière-plan
+    if (targetId) {
+      try {
+        const docRef = doc(db, "payments", targetId);
+        await deleteDoc(docRef);
+      } catch (e) {
+        try {
+          const docRef = doc(db, "payments", targetId);
+          await updateDoc(docRef, { status: 'deleted', isHidden: true });
+        } catch (err) {
+          console.log("Erreur Firestore ignorée, ligne retirée localement");
+        }
+      }
+      try {
+        await deleteDoc(doc(db, "receipts", targetId));
+      } catch (e) {
+        try {
+          await updateDoc(doc(db, "receipts", targetId), { status: 'deleted', isHidden: true });
+        } catch (err) {}
+      }
+      try {
+        await deleteDoc(doc(db, "declarations", targetId));
+      } catch (e) {
+        try {
+          await updateDoc(doc(db, "declarations", targetId), { status: 'deleted', isHidden: true });
+        } catch (err) {}
+      }
     }
   };
 
@@ -2300,32 +2309,32 @@ export const AdminPortal: React.FC = () => {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-800/60 font-medium">
-                      {pendingPayments.map(d => {
-                          const progress = getMemberRubricProgress(d.memberId, d.fund, d.subCategory);
-                          const remainingAfter = Math.max(0, progress.remainingDue - d.amount);
+                      {pendingPayments.map(payment => {
+                          const progress = getMemberRubricProgress(payment.memberId, payment.fund, payment.subCategory);
+                          const remainingAfter = Math.max(0, progress.remainingDue - payment.amount);
                           return (
-                            <tr key={d.id} className="hover:bg-slate-800/40 transition-colors">
+                            <tr key={payment.id} className="hover:bg-slate-800/40 transition-colors">
                               <td className="py-3 px-4">
-                                <span className="font-extrabold text-white block">{d.memberNickname}</span>
-                                <span className="text-[11px] text-slate-400 font-mono">{d.date}</span>
+                                <span className="font-extrabold text-white block">{payment.memberNickname}</span>
+                                <span className="text-[11px] text-slate-400 font-mono">{payment.date}</span>
                               </td>
                               <td className="py-3 px-4">
-                                <div className="font-bold text-amber-400">{FUND_LABELS[d.fund]}</div>
-                                {d.subCategory && (
-                                  <span className="text-[10px] text-slate-400 block">{d.subCategory}</span>
+                                <div className="font-bold text-amber-400">{FUND_LABELS[payment.fund]}</div>
+                                {payment.subCategory && (
+                                  <span className="text-[10px] text-slate-400 block">{payment.subCategory}</span>
                                 )}
                                 <span
                                   className={`inline-block mt-1 px-2 py-0.5 rounded-full text-[10px] font-black ${
-                                    d.paymentType === 'TOTAL'
+                                    payment.paymentType === 'TOTAL'
                                       ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
                                       : 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
                                   }`}
                                 >
-                                  {d.paymentType === 'TOTAL' ? 'Règlement Totalité' : 'Acompte par Tranche'}
+                                  {payment.paymentType === 'TOTAL' ? 'Règlement Totalité' : 'Acompte par Tranche'}
                                 </span>
                               </td>
                               <td className="py-3 px-4 font-black text-emerald-400 text-base font-mono">
-                                {d.amount.toLocaleString('fr-FR')} F CFA
+                                {payment.amount.toLocaleString('fr-FR')} F CFA
                               </td>
                               <td className="py-3 px-4 text-xs">
                                 <div className="text-slate-400">
@@ -2340,25 +2349,25 @@ export const AdminPortal: React.FC = () => {
                                   type="button"
                                   onClick={() => {
                                     setPreviewReceiptImgError(false);
-                                    setPreviewDeclaration(d);
+                                    setPreviewDeclaration(payment);
                                   }}
                                   className="font-mono text-xs text-amber-300 underline hover:text-amber-200 flex items-center gap-1 max-w-[200px] truncate"
                                   title="Voir les détails et le reçu"
                                 >
                                   <Eye className="w-3.5 h-3.5 shrink-0" />
                                   <span className="truncate">
-                                    {d.receiptImage || d.reference.startsWith('data:image')
+                                    {payment.receiptImage || payment.reference.startsWith('data:image')
                                       ? '📸 Voir Reçu'
-                                      : d.reference.length > 25
-                                      ? `${d.reference.substring(0, 25)}...`
-                                      : d.reference}
+                                      : payment.reference.length > 25
+                                      ? `${payment.reference.substring(0, 25)}...`
+                                      : payment.reference}
                                   </span>
                                 </button>
                               </td>
                               <td className="py-3 px-4 text-right space-x-2 whitespace-nowrap">
                                 <button
                                   type="button"
-                                  onClick={() => handleOpenReceiptEmailModal(d)}
+                                  onClick={() => handleOpenReceiptEmailModal(payment)}
                                   className="bg-amber-600/80 hover:bg-amber-600 text-white font-black px-3 py-2 rounded-xl text-xs shadow inline-flex items-center gap-1 active:scale-95 transition-all cursor-pointer"
                                   title="Notifier le membre par courriel (EmailJS)"
                                 >
@@ -2367,7 +2376,7 @@ export const AdminPortal: React.FC = () => {
                                 </button>
                                 <button
                                   type="button"
-                                  onClick={() => handleValidateReceipt(d)}
+                                  onClick={() => handleValidateReceipt(payment)}
                                   className="bg-emerald-600 hover:bg-emerald-500 text-white font-black px-3.5 py-2 rounded-xl text-xs shadow inline-flex items-center gap-1.5 active:scale-95 transition-all cursor-pointer"
                                   title="Valider le versement et créditer le compte du membre"
                                 >
@@ -2376,7 +2385,7 @@ export const AdminPortal: React.FC = () => {
                                 </button>
                                 <button
                                   type="button"
-                                  onClick={() => handleOpenRejectModal(d)}
+                                  onClick={() => handleOpenRejectModal(payment)}
                                   className="bg-rose-600 hover:bg-rose-500 text-white font-black px-3.5 py-2 rounded-xl text-xs shadow inline-flex items-center gap-1.5 active:scale-95 transition-all cursor-pointer"
                                   title="Rejeter ce reçu de dépôt"
                                 >
@@ -2385,11 +2394,11 @@ export const AdminPortal: React.FC = () => {
                                 </button>
                                 <button
                                   type="button"
-                                  onClick={() => handleDeletePayment(d)}
+                                  onClick={() => handleHidePayment(payment)}
                                   className="btn-erreur bg-slate-800 hover:bg-amber-950/40 text-slate-300 hover:text-amber-400 border border-slate-700 hover:border-amber-700/50 font-black px-3 py-2 rounded-xl text-xs shadow inline-flex items-center gap-1.5 active:scale-95 transition-all cursor-pointer"
-                                  title="Supprimer définitivement cette déclaration de test / erreur"
+                                  title="Masquer définitivement cette déclaration de test / erreur"
                                 >
-                                  🗑️ Erreur / Supprimer
+                                  🙈 Masquer
                                 </button>
                               </td>
                             </tr>
@@ -7216,11 +7225,11 @@ export const AdminPortal: React.FC = () => {
                   </button>
                   <button
                     type="button"
-                    onClick={() => handleDeletePayment(previewDeclaration)}
+                    onClick={() => handleHidePayment(previewDeclaration)}
                     className="btn-erreur bg-slate-800 hover:bg-amber-950/50 text-slate-300 hover:text-amber-400 border border-slate-700 hover:border-amber-700/60 font-black px-4 py-2.5 rounded-xl text-xs flex items-center gap-1.5 transition-all cursor-pointer"
-                    title="Supprimer définitivement cette déclaration de test / erreur"
+                    title="Masquer définitivement cette déclaration de test / erreur"
                   >
-                    🗑️ Erreur / Supprimer
+                    🙈 Masquer
                   </button>
                   {previewDeclaration.status === 'PENDING' && (
                     <button

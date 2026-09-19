@@ -192,6 +192,9 @@ function MainLayout() {
   const messagesList = gbairaiMessages || newsItems || [];
   const activeGbairaiMessages = messagesList.filter(msg => {
     if (msg.dispatchChannel === 'MAIL') return false;
+    if (currentUser?.id && msg.payerId === currentUser.id) return false;
+    if (memberId && msg.payerId === memberId) return false;
+    if (memberNickname && msg.category === 'ALERTE' && msg.content?.includes(memberNickname) && msg.content?.includes("vient de s'acquitter")) return false;
     if (memberId && msg.dismissedBy && msg.dismissedBy.includes(memberId)) return false;
     if (currentUser?.type === 'MEMBER') {
       if (msg.targetAudience === 'TOUS') return true;

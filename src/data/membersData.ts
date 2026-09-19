@@ -93,9 +93,9 @@ export const INITIAL_ROUAMA_MEMBERS: RouamaMember[] = [
   },
   {
     id: '11',
-    firstName: 'LEGER',
-    fullRosterName: 'LEGER / STANIS / VENCESLAS (CLEMSO)',
-    nickname: 'CLEMSO',
+    firstName: 'LÉGER',
+    fullRosterName: "LÉGER / STANIS / VENCESLAS (L'ÉLU DE DIEU)",
+    nickname: "L'ÉLU DE DIEU",
     phone: '2250787154627',
     email: 'stanisleger@gmail.com',
     isRegistered: false,
