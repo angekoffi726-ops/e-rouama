@@ -227,11 +227,31 @@ export interface AgrProject {
   estimatedCost: number; // Montant total du projet (en FCFA)
   requiredAmountPerMember: number; // Montant de contribution requis par membre (variable, défini à la création)
   eventDate?: string; // Date de réalisation
+  dateRealisation?: string; // Date de réalisation (alias officiel)
   paymentDeadline?: string; // Date limite de paiement
   expectedRoi?: string;
   description: string;
   pilotTeam?: string[];
-  status: 'DRAFT' | 'PENDING_PAYOR' | 'APPROVED_PAYOR' | 'PUBLISHED' | 'ARCHIVED';
+  status:
+    | 'pending_payor_approval'
+    | 'approved_by_payor'
+    | 'returned_for_correction'
+    | 'active'
+    | 'archived'
+    | 'DRAFT'
+    | 'PENDING_PAYOR'
+    | 'APPROVED_PAYOR'
+    | 'PUBLISHED'
+    | 'ARCHIVED';
+  payorFeedback?: string; // Motif obligatoire si retourné pour correction
+  payorSignature?: {
+    signedBy: string;
+    signedAt: string;
+    stampUrl: string;
+    role: string;
+  };
+  officialDocGenerated?: boolean;
+  officialDocContent?: string;
   tresorierFeasibility?: 'PENDING' | 'APPROVED' | 'REJECTED';
   currentReturn: number;
   date: string;
@@ -241,7 +261,7 @@ export interface AgrProject {
 export interface ArchiveDoc {
   id: string;
   title: string;
-  type: 'PV' | 'REGLEMENT' | 'BILAN_FINANCIER';
+  type: 'PV' | 'REGLEMENT' | 'BILAN_FINANCIER' | 'PROJET_AGR';
   content: string;
   author: string;
   date: string;
@@ -261,7 +281,8 @@ export interface SecretaryPV {
   attendeesCount?: number;
   content: string;
   attendance: { memberId: string; present: boolean }[];
-  status: 'DRAFT' | 'SENT_TO_PAYOR' | 'APPROVED_PAYOR' | 'SENT_TO_COM' | 'ARCHIVED';
+  status: 'DRAFT' | 'SENT_TO_PAYOR' | 'APPROVED_PAYOR' | 'SENT_TO_COM' | 'ARCHIVED' | 'returned_for_correction';
+  payorFeedback?: string;
 }
 
 export interface FinancialBilan {
@@ -273,7 +294,8 @@ export interface FinancialBilan {
   balances: Record<FundType, number>;
   summary: string;
   date: string;
-  status: 'PENDING_PAYOR' | 'APPROVED_PAYOR' | 'ACK_COM_RECU' | 'ARCHIVED';
+  status: 'PENDING_PAYOR' | 'APPROVED_PAYOR' | 'ACK_COM_RECU' | 'ARCHIVED' | 'returned_for_correction';
+  payorFeedback?: string;
   treasurerSignatureDate?: string;
   payorSignatureDate?: string;
   sentToSecretariat: boolean;

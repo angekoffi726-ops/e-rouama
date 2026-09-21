@@ -85,10 +85,21 @@ interface AppContextType {
   // Helper
   getMemberDuesStatus: (memberId: string) => DuesStatus;
   getMemberDuesDetail: (memberId: string) => MemberDuesDetail;
-  getMemberRubricProgress: (memberId: string, fund: FundType, subCategory?: string) => MemberRubricProgress;
+  getMemberRubricProgress: (
+    memberId: string,
+    fund: FundType,
+    subCategory?: string,
+    overrideRequiredAmount?: number,
+    overrideTitle?: string
+  ) => MemberRubricProgress;
   getActiveFinancialEvent: (fund: 'LOISIRS' | 'CAS_SOCIAUX') => FinancialEvent | undefined;
   getActiveAgrProject: () => AgrProject | undefined;
-  getAllMembersRubricSummary: (fund: FundType, subCategory?: string) => {
+  getAllMembersRubricSummary: (
+    fund: FundType,
+    subCategory?: string,
+    overrideRequiredAmount?: number,
+    overrideTitle?: string
+  ) => {
     totalRequired: number;
     totalAdvanced: number;
     totalRemaining: number;
@@ -160,17 +171,26 @@ interface AppContextType {
   deleteFinancialEvent: (eventId: string) => void;
 
   // Projects AGR
-  createProject: (project: Omit<AgrProject, 'id' | 'status' | 'tresorierFeasibility' | 'currentReturn'>) => void;
+  createProject: (project: Omit<AgrProject, 'id' | 'status' | 'tresorierFeasibility' | 'currentReturn'> & { status?: AgrProject['status'] }) => void;
+  updateProject: (projectId: string, updates: Partial<AgrProject>) => void;
+  deleteProject: (projectId: string) => void;
   approveProjectPayor: (projectId: string) => void;
+  returnProjectForCorrectionPayor: (projectId: string, feedback: string) => void;
   assessProjectTresorier: (projectId: string, feasible: boolean) => void;
   publishProject: (projectId: string) => void;
   archiveProject: (projectId: string) => void;
 
   createSecretaryPV: (pv: Omit<SecretaryPV, 'id' | 'status'>) => void;
+  updateSecretaryPV: (pvId: string, updates: Partial<SecretaryPV>) => void;
+  returnPVForCorrectionPayor: (pvId: string, feedback: string) => void;
+  deleteSecretaryPV: (pvId: string) => void;
   approvePVPayor: (pvId: string) => void;
   publishPVCOM: (pvId: string) => void;
 
   createFinancialBilan: (title: string, period: string, summary: string) => FinancialBilan;
+  updateFinancialBilan: (bilanId: string, updates: Partial<FinancialBilan>) => void;
+  returnBilanForCorrectionPayor: (bilanId: string, feedback: string) => void;
+  deleteFinancialBilan: (bilanId: string) => void;
   approveBilanPayor: (bilanId: string) => void;
   sendBilanToSecretariat: (bilanId: string) => void;
   sendBilanFromSecretariatToCom: (bilanId: string) => void;
@@ -205,6 +225,37 @@ const LOCAL_STORAGE_KEY = 'erouama_app_state_v2';
 const EROUAMA_REGISTERED_USERS_KEY = 'EROUAMA_REGISTERED_USERS';
 const EROUAMA_ACTIVE_SESSION_KEY = 'erouama_active_session';
 export const ADMIN_CREDENTIALS_KEY = 'erouama_admin_credentials';
+
+export const isRealizationDateReached = (dateStr?: string): boolean => {
+  if (!dateStr || typeof dateStr !== 'string') return false;
+  const trimmed = dateStr.trim();
+  if (!trimmed) return false;
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  // Format YYYY-MM-DD
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+    const [y, m, d] = trimmed.split('-').map(Number);
+    const target = new Date(y, m - 1, d);
+    return today.getTime() >= target.getTime();
+  }
+
+  // Format DD/MM/YYYY
+  if (/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(trimmed)) {
+    const [d, m, y] = trimmed.split('/').map(Number);
+    const target = new Date(y, m - 1, d);
+    return today.getTime() >= target.getTime();
+  }
+
+  const parsed = new Date(trimmed);
+  if (!isNaN(parsed.getTime())) {
+    parsed.setHours(0, 0, 0, 0);
+    return today.getTime() >= parsed.getTime();
+  }
+
+  return false;
+};
 
 export const normalizeRosterString = (str: string): string => {
   return (str || '')
@@ -678,12 +729,26 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     );
     unsubscribes.push(unsubActivities);
 
-    // 5. PROJETS AGR
+    // 5. PROJETS AGR (Avec synchronisation dateRealisation et archivage automatique au Grenier)
     const unsubProjects = onSnapshot(
       collection(db, 'projects'),
       (snapshot) => {
         const loaded: AgrProject[] = [];
-        snapshot.forEach(d => loaded.push({ id: d.id, ...(d.data() as any) }));
+        snapshot.forEach(d => {
+          const item = { id: d.id, ...(d.data() as any) } as AgrProject;
+          if (!item.dateRealisation && item.eventDate) item.dateRealisation = item.eventDate;
+          if (!item.eventDate && item.dateRealisation) item.eventDate = item.dateRealisation;
+
+          // Archivage automatique dès que la date de réalisation est atteinte ou dépassée
+          const isLive = item.status === 'active' || item.status === 'PUBLISHED';
+          const targetDate = item.dateRealisation || item.eventDate;
+          if (isLive && targetDate && isRealizationDateReached(targetDate)) {
+            item.status = 'archived';
+            setDoc(doc(db, 'projects', item.id), { status: 'archived' }, { merge: true }).catch(console.warn);
+          }
+
+          loaded.push(item);
+        });
         loaded.sort((a, b) => b.id.localeCompare(a.id));
         setProjects(loaded);
       },
@@ -1320,22 +1385,35 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       case 'ANNIVERSAIRE':
         return 10000;
       case 'SOIREE_ROUAMA': {
-        const soireeAct = activities.find(a => a.status === 'PUBLISHED' && (a.fixedType === 'SOIREE_ROUAMA' || a.title?.toLowerCase().includes('soirée') || a.title?.toLowerCase().includes('soiree')));
-        if (soireeAct && soireeAct.budget && soireeAct.budget > 0) {
-          return Math.round(soireeAct.budget / (members.length || 12));
+        const soireeActs = activities.filter(a => a.status === 'PUBLISHED' && (a.fixedType === 'SOIREE_ROUAMA' || a.title?.toLowerCase().includes('soirée') || a.title?.toLowerCase().includes('soiree')));
+        if (subCategory) {
+          const specific = soireeActs.find(a => a.id === subCategory || a.title === subCategory);
+          if (specific) {
+            return specific.budget && specific.budget > 0 ? Math.round(specific.budget / (members.length || 12)) : 10000;
+          }
         }
-        return 10000;
+        const soireeAct = soireeActs[0];
+        if (soireeAct) {
+          return soireeAct.budget && soireeAct.budget > 0 ? Math.round(soireeAct.budget / (members.length || 12)) : 10000;
+        }
+        return 0; // Si aucune soirée publiée, la rubrique est inactive (montant 0)
       }
       case 'LOISIRS': {
-        const activeEvt = financialEvents.find(e => e.fund === 'LOISIRS' && e.status === 'PUBLISHED');
+        const activeEvts = financialEvents.filter(e => e.fund === 'LOISIRS' && e.status === 'PUBLISHED');
+        if (subCategory) {
+          const specific = activeEvts.find(e => e.id === subCategory || e.title === subCategory || e.subCategory === subCategory);
+          if (specific) return specific.requiredAmountPerMember;
+        }
+        const activeEvt = activeEvts[0];
         return activeEvt ? activeEvt.requiredAmountPerMember : 0;
       }
       case 'CAS_SOCIAUX': {
-        const activeEvt = financialEvents.find(e => {
-          if (e.fund !== 'CAS_SOCIAUX' || e.status !== 'PUBLISHED') return false;
-          if (subCategory && e.subCategory && e.subCategory !== subCategory) return false;
-          return true;
-        });
+        const activeEvts = financialEvents.filter(e => e.fund === 'CAS_SOCIAUX' && e.status === 'PUBLISHED');
+        if (subCategory) {
+          const specific = activeEvts.find(e => e.id === subCategory || e.subCategory === subCategory || e.title === subCategory);
+          if (specific) return specific.requiredAmountPerMember;
+        }
+        const activeEvt = activeEvts[0];
         return activeEvt ? activeEvt.requiredAmountPerMember : 0;
       }
       case 'COTISATION': {
@@ -1343,7 +1421,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         return Math.max(500, (now.getMonth() + 1) * 500);
       }
       case 'AGR': {
-        const activeProj = projects.find(p => p.status === 'PUBLISHED');
+        const activeProjs = projects.filter(p => p.status === 'PUBLISHED' || p.status === 'active');
+        if (subCategory) {
+          const specific = activeProjs.find(p => p.id === subCategory || p.title === subCategory);
+          if (specific) return specific.requiredAmountPerMember || 0;
+        }
+        const activeProj = activeProjs[0];
         return activeProj ? (activeProj.requiredAmountPerMember || 0) : 0;
       }
       default:
@@ -1354,13 +1437,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const getMemberRubricProgress = (
     memberId: string,
     fund: FundType,
-    subCategory?: string
+    subCategory?: string,
+    overrideRequiredAmount?: number,
+    overrideTitle?: string
   ): MemberRubricProgress => {
-    const totalRequired = getRequiredAmountForRubric(fund, subCategory);
+    const totalRequired = overrideRequiredAmount !== undefined ? overrideRequiredAmount : getRequiredAmountForRubric(fund, subCategory);
 
     const memberDecls = declarations.filter(d => {
       if (d.memberId !== memberId || d.fund !== fund) return false;
-      if (subCategory && d.subCategory && d.subCategory !== subCategory) return false;
+      if (subCategory && d.subCategory) {
+        if (d.subCategory !== subCategory && !d.subCategory.includes(subCategory) && !subCategory.includes(d.subCategory)) {
+          return false;
+        }
+      }
       return true;
     });
 
@@ -1383,23 +1472,34 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       status = 'NON_ENTAME';
     }
 
-    let title = FUND_LABELS[fund];
-    if (fund === 'CAS_SOCIAUX') {
-      const activeEvt = financialEvents.find(e => e.fund === 'CAS_SOCIAUX' && e.status === 'PUBLISHED');
-      if (activeEvt) {
-        title = activeEvt.title;
-      } else if (subCategory) {
-        title = `Cas Sociaux (${subCategory})`;
-      }
-    } else if (fund === 'LOISIRS') {
-      const activeEvt = financialEvents.find(e => e.fund === 'LOISIRS' && e.status === 'PUBLISHED');
-      if (activeEvt) {
-        title = activeEvt.title;
-      }
-    } else if (fund === 'AGR') {
-      const activeProj = projects.find(p => p.status === 'PUBLISHED');
-      if (activeProj) {
-        title = activeProj.title;
+    let title = overrideTitle || FUND_LABELS[fund];
+    if (!overrideTitle) {
+      if (fund === 'CAS_SOCIAUX') {
+        const activeEvts = financialEvents.filter(e => e.fund === 'CAS_SOCIAUX' && e.status === 'PUBLISHED');
+        const specific = subCategory ? activeEvts.find(e => e.id === subCategory || e.subCategory === subCategory || e.title === subCategory) : activeEvts[0];
+        if (specific) {
+          title = specific.title;
+        } else if (subCategory) {
+          title = `Cas Social (${subCategory})`;
+        }
+      } else if (fund === 'LOISIRS') {
+        const activeEvts = financialEvents.filter(e => e.fund === 'LOISIRS' && e.status === 'PUBLISHED');
+        const specific = subCategory ? activeEvts.find(e => e.id === subCategory || e.title === subCategory) : activeEvts[0];
+        if (specific) {
+          title = specific.title;
+        }
+      } else if (fund === 'SOIREE_ROUAMA') {
+        const soireeActs = activities.filter(a => a.status === 'PUBLISHED' && (a.fixedType === 'SOIREE_ROUAMA' || a.title?.toLowerCase().includes('soirée') || a.title?.toLowerCase().includes('soiree')));
+        const specific = subCategory ? soireeActs.find(a => a.id === subCategory || a.title === subCategory) : soireeActs[0];
+        if (specific) {
+          title = specific.title;
+        }
+      } else if (fund === 'AGR') {
+        const activeProjs = projects.filter(p => p.status === 'PUBLISHED');
+        const specific = subCategory ? activeProjs.find(p => p.id === subCategory || p.title === subCategory) : activeProjs[0];
+        if (specific) {
+          title = specific.title;
+        }
       }
     }
 
@@ -1416,9 +1516,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
   };
 
-  const getAllMembersRubricSummary = (fund: FundType, subCategory?: string) => {
+  const getAllMembersRubricSummary = (
+    fund: FundType,
+    subCategory?: string,
+    overrideRequiredAmount?: number,
+    overrideTitle?: string
+  ) => {
     const list = members.map(m => {
-      const progress = getMemberRubricProgress(m.id, fund, subCategory);
+      const progress = getMemberRubricProgress(m.id, fund, subCategory, overrideRequiredAmount, overrideTitle);
       return {
         member: m,
         progress,
@@ -2069,6 +2174,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // Activités & Sorties
   const createActivity = (activity: Omit<EventActivity, 'id' | 'status' | 'budgetStatus'> & { status?: 'DRAFT' | 'PENDING_PAYOR' | 'APPROVED' | 'PUBLISHED' }) => {
+    // Vérification stricte des droits de création par rôle
+    // Commission ORGANISATION a les droits exclusifs sur les Événements Fixes et Sorties & Loisirs
+    if (currentUser?.type === 'ADMIN') {
+      const allowedRoles = ['ORGANISATION', 'PAYOR', 'SUPER_ADMIN'];
+      if (!allowedRoles.includes(currentUser.adminRole || '')) {
+        console.warn(`[RBAC] Création d'activité refusée pour le rôle ${currentUser.adminRole}. Rôle ORGANISATION requis.`);
+        alert(`Action non autorisée : Seule la Commission Organisation (ou Payor) est habilitée à créer et publier des Événements Fixes ou Sorties & Loisirs.`);
+        return;
+      }
+    }
+
     const newAct: EventActivity = {
       ...activity,
       id: 'ACT-' + Date.now(),
@@ -2138,6 +2254,26 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   // Événements Financiers (Loisirs, Cas Sociaux)
   const createFinancialEvent = (eventData: Omit<FinancialEvent, 'id' | 'createdAt' | 'status'>) => {
+    // Vérification stricte des droits de création par rôle :
+    // - Trésorier : autorise uniquement les Cas Sociaux
+    // - Commission Organisation : autorise les Sorties & Loisirs
+    // - Payor / Super Admin : autorise les deux
+    if (currentUser?.type === 'ADMIN') {
+      const role = currentUser.adminRole || '';
+      if (role === 'TRESORIER' && eventData.fund !== 'CAS_SOCIAUX') {
+        alert(`Action non autorisée : Le Trésorier peut uniquement créer et publier des événements de type « Cas Sociaux ». Les Sorties & Loisirs relèvent de la Commission Organisation.`);
+        return;
+      }
+      if (role === 'ORGANISATION' && eventData.fund !== 'LOISIRS') {
+        alert(`Action non autorisée : La Commission Organisation peut uniquement créer et publier des « Sorties & Loisirs ». Les Cas Sociaux relèvent du Trésorier.`);
+        return;
+      }
+      if (!['TRESORIER', 'ORGANISATION', 'PAYOR', 'SUPER_ADMIN'].includes(role)) {
+        alert(`Action non autorisée pour votre rôle d'administration.`);
+        return;
+      }
+    }
+
     const newEvent: FinancialEvent = {
       ...eventData,
       id: 'EVT-FIN-' + Date.now(),
@@ -2171,11 +2307,24 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   // Projets AGR
-  const createProject = (project: Omit<AgrProject, 'id' | 'status' | 'tresorierFeasibility' | 'currentReturn'>) => {
+  const createProject = (project: Omit<AgrProject, 'id' | 'status' | 'tresorierFeasibility' | 'currentReturn'> & { status?: AgrProject['status'] }) => {
+    // Vérification stricte des droits : Responsable Projets (PROJET), Payor ou Super Admin
+    if (currentUser?.type === 'ADMIN') {
+      const allowedRoles = ['PROJET', 'PAYOR', 'SUPER_ADMIN'];
+      if (!allowedRoles.includes(currentUser.adminRole || '')) {
+        alert(`Action non autorisée : Seul le Responsable Projets (AGR) est habilité à initier des projets AGR / investissements.`);
+        return;
+      }
+    }
+
+    const realDate = project.dateRealisation || project.eventDate || '';
     const newProj: AgrProject = {
       ...project,
       id: 'PROJ-' + Date.now(),
-      status: 'PENDING_PAYOR',
+      dateRealisation: realDate,
+      eventDate: realDate,
+      status: project.status || 'pending_payor_approval',
+      officialDocGenerated: true,
       tresorierFeasibility: 'PENDING',
       currentReturn: 0,
     };
@@ -2183,10 +2332,73 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setProjects(prev => [newProj, ...prev]);
   };
 
-  const approveProjectPayor = (projectId: string) => {
-    setDoc(doc(db, 'projects', projectId), { status: 'APPROVED_PAYOR' }, { merge: true }).catch(console.warn);
+  const updateProject = (projectId: string, updates: Partial<AgrProject>) => {
+    const sanitized = sanitizeFirestore(updates);
+    setDoc(doc(db, 'projects', projectId), sanitized, { merge: true }).catch(console.warn);
     setProjects(prev =>
-      prev.map(p => (p.id === projectId ? { ...p, status: 'APPROVED_PAYOR' } : p))
+      prev.map(p => (p.id === projectId ? { ...p, ...updates } : p))
+    );
+  };
+
+  const approveProjectPayor = (projectId: string) => {
+    const signedAt = new Date().toLocaleDateString('fr-FR', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+    const payorSignature = {
+      signedBy: 'PAYOR E-ROUAMA (Direction Générale)',
+      signedAt,
+      stampUrl: '/SIDEPO.png',
+      role: 'PAYOR',
+    };
+
+    setDoc(
+      doc(db, 'projects', projectId),
+      {
+        status: 'approved_by_payor',
+        payorSignature,
+        payorFeedback: '',
+      },
+      { merge: true }
+    ).catch(console.warn);
+
+    setProjects(prev =>
+      prev.map(p =>
+        p.id === projectId
+          ? {
+              ...p,
+              status: 'approved_by_payor',
+              payorSignature,
+              payorFeedback: '',
+            }
+          : p
+      )
+    );
+  };
+
+  const returnProjectForCorrectionPayor = (projectId: string, feedback: string) => {
+    setDoc(
+      doc(db, 'projects', projectId),
+      {
+        status: 'returned_for_correction',
+        payorFeedback: feedback,
+      },
+      { merge: true }
+    ).catch(console.warn);
+
+    setProjects(prev =>
+      prev.map(p =>
+        p.id === projectId
+          ? {
+              ...p,
+              status: 'returned_for_correction',
+              payorFeedback: feedback,
+            }
+          : p
+      )
     );
   };
 
@@ -2199,15 +2411,24 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const publishProject = (projectId: string) => {
-    setDoc(doc(db, 'projects', projectId), { status: 'PUBLISHED' }, { merge: true }).catch(console.warn);
+    // Vérification stricte des droits de publication du projet
+    if (currentUser?.type === 'ADMIN') {
+      const allowedRoles = ['PROJET', 'PAYOR', 'SUPER_ADMIN'];
+      if (!allowedRoles.includes(currentUser.adminRole || '')) {
+        alert(`Action non autorisée : Seul le Responsable Projets (AGR) ou le Payor peut publier un projet.`);
+        return;
+      }
+    }
+
+    setDoc(doc(db, 'projects', projectId), { status: 'active' }, { merge: true }).catch(console.warn);
     setProjects(prev =>
-      prev.map(p => (p.id === projectId ? { ...p, status: 'PUBLISHED' } : p))
+      prev.map(p => (p.id === projectId ? { ...p, status: 'active' } : p))
     );
     const proj = projects.find(p => p.id === projectId);
     if (proj) {
       publishNews(
         `🚀 PROJET AGR OUVERT AUX COTISATIONS : ${proj.title}`,
-        `Le projet ${proj.title} est officiellement ouvert aux cotisations ! Montant total : ${proj.estimatedCost.toLocaleString('fr-FR')} F CFA. Contribution requise par membre : ${(proj.requiredAmountPerMember || 0).toLocaleString('fr-FR')} F CFA.`,
+        `Le projet AGR "${proj.title}" a reçu l'accord officiel du Payor (visé & signé) et est désormais ouvert aux cotisations des membres ! Montant total du projet : ${proj.estimatedCost.toLocaleString('fr-FR')} F CFA. Contribution requise par membre : ${(proj.requiredAmountPerMember || 0).toLocaleString('fr-FR')} F CFA. Consultez la rubrique GAGNE-PAIN et le Suivi des Acomptes.`,
         'ANNONCE',
         'TOUS',
         'COMMISSION PROJET',
@@ -2218,17 +2439,84 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const archiveProject = (projectId: string) => {
-    setDoc(doc(db, 'projects', projectId), { status: 'ARCHIVED' }, { merge: true }).catch(console.warn);
+    setDoc(doc(db, 'projects', projectId), { status: 'archived' }, { merge: true }).catch(console.warn);
     setProjects(prev =>
-      prev.map(p => (p.id === projectId ? { ...p, status: 'ARCHIVED' } : p))
+      prev.map(p => (p.id === projectId ? { ...p, status: 'archived' } : p))
     );
   };
 
+  const deleteProject = (projectId: string) => {
+    deleteDoc(doc(db, 'projects', projectId)).catch(console.warn);
+    setProjects(prev => prev.filter(p => p.id !== projectId));
+  };
+
   // Secrétariat, PVs et Bilans
+  const generateSequentialPvId = (meetingDateStr?: string): string => {
+    // Format: PV-JJ/MM/AAAA/0001
+    let dayStr = '';
+    let monthStr = '';
+    let yearStr = '';
+
+    if (meetingDateStr && meetingDateStr.includes('-')) {
+      const parts = meetingDateStr.split('-');
+      if (parts.length === 3) {
+        yearStr = parts[0];
+        monthStr = parts[1].padStart(2, '0');
+        dayStr = parts[2].padStart(2, '0');
+      }
+    } else if (meetingDateStr && meetingDateStr.includes('/')) {
+      const parts = meetingDateStr.split('/');
+      if (parts.length === 3) {
+        if (parts[0].length === 4) {
+          yearStr = parts[0];
+          monthStr = parts[1].padStart(2, '0');
+          dayStr = parts[2].padStart(2, '0');
+        } else {
+          dayStr = parts[0].padStart(2, '0');
+          monthStr = parts[1].padStart(2, '0');
+          yearStr = parts[2];
+        }
+      }
+    }
+
+    if (!dayStr || !monthStr || !yearStr || yearStr.length !== 4) {
+      const now = new Date();
+      dayStr = String(now.getDate()).padStart(2, '0');
+      monthStr = String(now.getMonth() + 1).padStart(2, '0');
+      yearStr = String(now.getFullYear());
+    }
+
+    const datePrefix = `PV-${dayStr}/${monthStr}/${yearStr}`;
+
+    // Find highest counter among existing PVs matching the sequential format
+    let maxSeq = 0;
+    pvs.forEach(p => {
+      if (!p.id) return;
+      const match = p.id.match(/^PV-.*\/(\d+)$/);
+      if (match) {
+        const num = parseInt(match[1], 10);
+        if (!isNaN(num) && num > maxSeq) {
+          maxSeq = num;
+        }
+      }
+    });
+
+    let nextSeq = maxSeq + 1;
+    let candidateId = `${datePrefix}/${String(nextSeq).padStart(4, '0')}`;
+
+    while (pvs.some(p => p.id === candidateId)) {
+      nextSeq++;
+      candidateId = `${datePrefix}/${String(nextSeq).padStart(4, '0')}`;
+    }
+
+    return candidateId;
+  };
+
   const createSecretaryPV = (pv: Omit<SecretaryPV, 'id' | 'status'>) => {
+    const generatedId = generateSequentialPvId(pv.meetingDate);
     const newPv: SecretaryPV = {
       ...pv,
-      id: 'PV-' + Date.now(),
+      id: generatedId,
       status: 'SENT_TO_PAYOR',
     };
     setDoc(doc(db, 'secretary_pvs', newPv.id), sanitizeFirestore(newPv)).catch(console.warn);
@@ -2278,6 +2566,25 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setPvs(prev => prev.map(p => (p.id === pvId ? { ...p, status: 'ARCHIVED' } : p)));
   };
 
+  const updateSecretaryPV = (pvId: string, updates: Partial<SecretaryPV>) => {
+    setDoc(doc(db, 'secretary_pvs', pvId), sanitizeFirestore(updates), { merge: true }).catch(console.warn);
+    setPvs(prev => prev.map(p => (p.id === pvId ? { ...p, ...updates } : p)));
+  };
+
+  const returnPVForCorrectionPayor = (pvId: string, feedback: string) => {
+    const updates = {
+      status: 'returned_for_correction' as const,
+      payorFeedback: feedback,
+    };
+    setDoc(doc(db, 'secretary_pvs', pvId), updates, { merge: true }).catch(console.warn);
+    setPvs(prev => prev.map(p => (p.id === pvId ? { ...p, ...updates } : p)));
+  };
+
+  const deleteSecretaryPV = (pvId: string) => {
+    deleteDoc(doc(db, 'secretary_pvs', pvId)).catch(console.warn);
+    setPvs(prev => prev.filter(p => p.id !== pvId));
+  };
+
   const createFinancialBilan = (title: string, period: string, summary: string): FinancialBilan => {
     const totalIn = transactions.filter(t => t.type === 'DEPOT').reduce((sum, t) => sum + t.amount, 0);
     const totalOut = transactions.filter(t => t.type === 'DECAISSEMENT').reduce((sum, t) => sum + t.amount, 0);
@@ -2324,6 +2631,25 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setBilans(prev =>
       prev.map(b => (b.id === bilanId ? { ...b, ...updates } : b))
     );
+  };
+
+  const updateFinancialBilan = (bilanId: string, updates: Partial<FinancialBilan>) => {
+    setDoc(doc(db, 'secretary_bilans', bilanId), sanitizeFirestore(updates), { merge: true }).catch(console.warn);
+    setBilans(prev => prev.map(b => (b.id === bilanId ? { ...b, ...updates } : b)));
+  };
+
+  const returnBilanForCorrectionPayor = (bilanId: string, feedback: string) => {
+    const updates = {
+      status: 'returned_for_correction' as const,
+      payorFeedback: feedback,
+    };
+    setDoc(doc(db, 'secretary_bilans', bilanId), updates, { merge: true }).catch(console.warn);
+    setBilans(prev => prev.map(b => (b.id === bilanId ? { ...b, ...updates } : b)));
+  };
+
+  const deleteFinancialBilan = (bilanId: string) => {
+    deleteDoc(doc(db, 'secretary_bilans', bilanId)).catch(console.warn);
+    setBilans(prev => prev.filter(b => b.id !== bilanId));
   };
 
   const sendBilanToSecretariat = (bilanId: string) => {
@@ -2599,14 +2925,23 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         archiveFinancialEvent,
         deleteFinancialEvent,
         createProject,
+        updateProject,
+        deleteProject,
         approveProjectPayor,
+        returnProjectForCorrectionPayor,
         assessProjectTresorier,
         publishProject,
         archiveProject,
         createSecretaryPV,
+        updateSecretaryPV,
+        returnPVForCorrectionPayor,
+        deleteSecretaryPV,
         approvePVPayor,
         publishPVCOM,
         createFinancialBilan,
+        updateFinancialBilan,
+        returnBilanForCorrectionPayor,
+        deleteFinancialBilan,
         approveBilanPayor,
         sendBilanToSecretariat,
         sendBilanFromSecretariatToCom,

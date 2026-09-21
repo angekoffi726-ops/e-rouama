@@ -46,6 +46,7 @@ import {
   ExternalLink,
   AlertCircle,
   MapPin,
+  Edit,
   Edit3,
   Utensils,
   Wine,
@@ -270,7 +271,9 @@ export const AdminPortal: React.FC = () => {
     approveActivityPayor,
     projects,
     createProject,
+    updateProject,
     approveProjectPayor,
+    returnProjectForCorrectionPayor,
     publishProject,
     archiveProject,
     financialEvents,
@@ -326,13 +329,15 @@ export const AdminPortal: React.FC = () => {
     'VALIDATION' | 'MENSUELLES' | 'TRANCHES' | 'EVENEMENTS' | 'RELANCES' | 'DECAISSEMENTS' | 'HISTORIQUE' | 'BILAN'
   >('VALIDATION');
   const [monthlyFilterStatus, setMonthlyFilterStatus] = useState<'TOUS' | 'A_JOUR' | 'EN_AVANCE' | 'RETARD'>('TOUS');
+  const [trancheTrackingSelection, setTrancheTrackingSelection] = useState<string>('ANNIVERSAIRE');
   const [trancheSelectedFund, setTrancheSelectedFund] = useState<FundType>('ANNIVERSAIRE');
   const [trancheSubCategory, setTrancheSubCategory] = useState<string>('Mariage');
   const [trancheFilterStatus, setTrancheFilterStatus] = useState<'TOUS' | 'SOLDE' | 'EN_COURS' | 'NON_ENTAME'>('TOUS');
   const [expandedMemberHistoryId, setExpandedMemberHistoryId] = useState<string | null>(null);
 
-  // Trésorier: Formulaire de Création & Publication d'Événements Financiers (Sorties, Cas Sociaux)
-  const [finEventFund, setFinEventFund] = useState<'LOISIRS' | 'CAS_SOCIAUX'>('LOISIRS');
+  // Trésorier: Formulaire de Création & Publication d'Événements Financiers (Cas Sociaux exclusivement)
+  const [finEventFund, setFinEventFund] = useState<'CAS_SOCIAUX'>('CAS_SOCIAUX');
+  const [finEventSubCategory, setFinEventSubCategory] = useState<'Mariage' | 'Décès' | 'Naissance' | 'Soutien'>('Mariage');
   const [finEventTitle, setFinEventTitle] = useState<string>('');
   const [finEventDesc, setFinEventDesc] = useState<string>('');
   const [finEventAmountInput, setFinEventAmountInput] = useState<string>('');
@@ -423,6 +428,7 @@ export const AdminPortal: React.FC = () => {
   const [actLocation, setActLocation] = useState<string>('');
   const [actDesc, setActDesc] = useState<string>('');
   const [actProgram, setActProgram] = useState<string>('');
+  const [actRequiredAmount, setActRequiredAmount] = useState<string>('5000');
   const [pcoRoles, setPcoRoles] = useState<string[]>([]);
   const [pcoAdjRoles, setPcoAdjRoles] = useState<string[]>([]);
   const [restaurationRoles, setRestaurationRoles] = useState<string[]>([]);
@@ -432,7 +438,7 @@ export const AdminPortal: React.FC = () => {
   const [editingActivityId, setEditingActivityId] = useState<string | null>(null);
   const [isDeletingActivityId, setIsDeletingActivityId] = useState<string | null>(null);
 
-  // 6. Projet Form
+  // 6. Projet Form & Workflow State (Validation Double Niveau)
   const [projTitle, setProjTitle] = useState<string>('');
   const [projCategory, setProjCategory] = useState<string>('');
   const [projCostInput, setProjCostInput] = useState<string>('');
@@ -442,6 +448,13 @@ export const AdminPortal: React.FC = () => {
   const [projDesc, setProjDesc] = useState<string>('');
   const [projPilotTeam, setProjPilotTeam] = useState<string[]>([]);
   const [customPilotInput, setCustomPilotInput] = useState<string>('');
+  const [editingProjectId, setEditingProjectId] = useState<string | null>(null);
+
+  // Payor AGR Review State & Modals
+  const [payorViewingProjectDoc, setPayorViewingProjectDoc] = useState<AgrProject | null>(null);
+  const [payorReturnProjectModalProj, setPayorReturnProjectModalProj] = useState<AgrProject | null>(null);
+  const [payorReturnFeedbackText, setPayorReturnFeedbackText] = useState<string>('');
+  const [payorReturnFeedbackError, setPayorReturnFeedbackError] = useState<string | null>(null);
 
   // 7. Spiritualité Forms
   const [aelfData, setAelfData] = useState<AELFDayData | null>(null);
@@ -1109,7 +1122,7 @@ export const AdminPortal: React.FC = () => {
   const handleDeletePayment = handleHidePayment;
   const handleDeleteReceipt = handleHidePayment;
 
-  // Generate & Download PDF AGR Project Handler
+  // Generate & Download PDF AGR Project Handler (Dossier Officiel Bi-Niveau avec Cachet Payor)
   const handleGeneratePDFProject = (proj: AgrProject) => {
     const printWin = window.open('', '_blank');
     if (!printWin) {
@@ -1122,48 +1135,105 @@ export const AdminPortal: React.FC = () => {
         ? proj.pilotTeam.map(m => `<li style="margin-bottom:6px;">👤 <strong>${m}</strong></li>`).join('')
         : '<li><em>Aucun membre désigné</em></li>';
 
-    const statusText =
-      proj.status === 'PUBLISHED' || proj.status === 'APPROVED_PAYOR'
-        ? 'PROJET VALIDÉ & ACTIF'
-        : 'EN COURS D\'INSTRUCTION / PENDING';
+    const isPayorApproved =
+      proj.status === 'approved_by_payor' ||
+      proj.status === 'APPROVED_PAYOR' ||
+      proj.status === 'active' ||
+      proj.status === 'PUBLISHED' ||
+      proj.status === 'archived' ||
+      proj.status === 'ARCHIVED' ||
+      Boolean(proj.payorSignature);
+
+    let statusText = "EN ATTENTE D'INSTRUCTION";
+    let badgeColor = "#d97706";
+    let badgeBg = "#fef3c7";
+    let badgeBorder = "#f59e0b";
+
+    if (isPayorApproved) {
+      statusText = "DOSSIER OFFICIELLEMENT VALIDÉ & VISÉ PAR LE PAYOR";
+      badgeColor = "#166534";
+      badgeBg = "#dcfce7";
+      badgeBorder = "#86efac";
+    } else if (proj.status === 'returned_for_correction') {
+      statusText = "DOSSIER RETOURNÉ POUR CORRECTION PAR LE PAYOR";
+      badgeColor = "#991b1b";
+      badgeBg = "#fee2e2";
+      badgeBorder = "#fca5a5";
+    } else {
+      statusText = "⏳ EN ATTENTE DE L'ACCORD DU PAYOR";
+      badgeColor = "#b45309";
+      badgeBg = "#fef3c7";
+      badgeBorder = "#fcd34d";
+    }
+
+    const payorSignatureBlock = isPayorApproved
+      ? `
+        <div style="margin-top:10px;">
+          <img src="${proj.payorSignature?.stampUrl || '/SIDEPO.png'}" alt="Visa et Cachet Payor" style="height:70px; object-fit:contain; margin-bottom:5px;" />
+          <div style="font-size:9.5pt; font-weight:800; color:#166534; text-transform:uppercase;">
+            VISA & ACCORD DÉLIVRÉS
+          </div>
+          <div style="font-size:8.5pt; font-weight:bold; color:#1e293b;">
+            ${proj.payorSignature?.signedBy || 'LE PAYOR (DIRECTION GÉNÉRALE)'}
+          </div>
+          <div style="font-size:8pt; color:#64748b;">
+            Date : ${proj.payorSignature?.signedAt || proj.date || 'Non spécifiée'}
+          </div>
+        </div>
+      `
+      : proj.status === 'returned_for_correction'
+      ? `
+        <div style="margin-top:10px; background:#fff1f2; border:1.5px solid #fecdd3; padding:10px; border-radius:8px; text-align:left;">
+          <div style="font-size:9pt; font-weight:800; color:#b91c1c;">⚠️ RETOUR POUR CORRECTION</div>
+          <div style="font-size:8.5pt; color:#334155; margin-top:4px;">
+            <strong>Motif notifié :</strong> ${proj.payorFeedback || 'Non spécifié'}
+          </div>
+        </div>
+      `
+      : `
+        <div style="margin-top:25px; font-style:italic; font-size:9pt; color:#d97706;">
+          ⏳ En attente de décision et apposition du visa par le Payor
+        </div>
+        <div class="sig-line">Visa & Cachet Officiel du Payor</div>
+      `;
 
     const htmlContent = `
       <!DOCTYPE html>
       <html lang="fr">
       <head>
         <meta charset="UTF-8">
-        <title>PROJET AGR - ${proj.title}</title>
+        <title>DOSSIER PROJET AGR - ${proj.title}</title>
         <style>
           @page { size: A4; margin: 15mm; }
           body { font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; color: #1e293b; line-height: 1.5; margin: 0; padding: 20px; background: #fff; }
           .header { text-align: center; border-bottom: 3px double #d97706; padding-bottom: 15px; margin-bottom: 25px; }
-          .header h1 { font-size: 18pt; color: #065f46; margin: 0 0 5px 0; text-transform: uppercase; font-weight: 800; }
-          .header h2 { font-size: 12pt; color: #d97706; margin: 0 0 5px 0; font-weight: 700; }
+          .header h1 { font-size: 17pt; color: #065f46; margin: 0 0 5px 0; text-transform: uppercase; font-weight: 800; }
+          .header h2 { font-size: 11pt; color: #d97706; margin: 0 0 5px 0; font-weight: 700; text-transform: uppercase; }
           .header p { font-size: 9pt; color: #64748b; margin: 0; }
           .title-box { background: #fffbe0; border: 1.5px solid #f59e0b; border-radius: 8px; padding: 15px; text-align: center; margin-bottom: 20px; }
           .title-box h3 { margin: 0; font-size: 15pt; color: #92400e; font-weight: 800; text-transform: uppercase; }
-          .status-badge { display: inline-block; background: #dcfce7; color: #166534; font-weight: bold; font-size: 9pt; padding: 4px 12px; border-radius: 12px; border: 1px solid #86efac; margin-top: 6px; }
-          .meta-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin-bottom: 25px; background: #f8fafc; padding: 15px; border-radius: 8px; border-left: 4px solid #d97706; }
-          .meta-item { font-size: 10pt; }
-          .meta-label { font-weight: bold; color: #475569; text-transform: uppercase; font-size: 8pt; display: block; }
+          .status-badge { display: inline-block; background: ${badgeBg}; color: ${badgeColor}; font-weight: bold; font-size: 9pt; padding: 5px 14px; border-radius: 12px; border: 1.5px solid ${badgeBorder}; margin-top: 8px; }
+          .meta-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin-bottom: 20px; background: #f8fafc; padding: 15px; border-radius: 8px; border-left: 4px solid #d97706; }
+          .meta-item { font-size: 9.5pt; }
+          .meta-label { font-weight: bold; color: #475569; text-transform: uppercase; font-size: 8pt; display: block; margin-bottom: 2px; }
           .meta-value { font-weight: 700; color: #0f172a; }
-          .section-title { font-size: 11pt; font-weight: 800; color: #065f46; text-transform: uppercase; border-bottom: 1.5px solid #065f46; padding-bottom: 4px; margin-top: 20px; margin-bottom: 12px; }
-          .team-box { background: #f0fdf4; border: 1px solid #bbf7d0; padding: 15px; border-radius: 8px; margin-bottom: 20px; }
-          .team-box ul { margin: 5px 0 0 0; padding-left: 20px; color: #166534; font-size: 10pt; list-style-type: none; }
-          .content-body { font-size: 10pt; color: #334155; white-space: pre-wrap; background: #fafafa; border: 1px solid #e2e8f0; padding: 15px; border-radius: 8px; min-height: 150px; }
-          .signatures { margin-top: 40px; display: flex; justify-content: space-between; page-break-inside: avoid; }
-          .sig-box { text-align: center; width: 45%; }
-          .sig-title { font-size: 9pt; font-weight: bold; color: #475569; text-transform: uppercase; margin-bottom: 45px; }
-          .sig-line { border-top: 1px solid #94a3b8; margin-top: 10px; font-size: 8pt; color: #64748b; }
-          .footer { margin-top: 35px; text-align: center; font-size: 8pt; color: #94a3b8; border-top: 1px solid #e2e8f0; padding-top: 10px; }
+          .section-title { font-size: 10.5pt; font-weight: 800; color: #065f46; text-transform: uppercase; border-bottom: 1.5px solid #065f46; padding-bottom: 4px; margin-top: 20px; margin-bottom: 10px; }
+          .team-box { background: #f0fdf4; border: 1px solid #bbf7d0; padding: 12px 16px; border-radius: 8px; margin-bottom: 15px; }
+          .team-box ul { margin: 0; padding-left: 20px; color: #166534; font-size: 9.5pt; list-style-type: none; }
+          .content-body { font-size: 9.5pt; color: #334155; white-space: pre-wrap; background: #fafafa; border: 1px solid #e2e8f0; padding: 15px; border-radius: 8px; min-height: 120px; }
+          .signatures { margin-top: 35px; display: flex; justify-content: space-between; page-break-inside: avoid; gap: 20px; }
+          .sig-box { text-align: center; width: 48%; border: 1px dashed #cbd5e1; border-radius: 8px; padding: 12px; background: #fcfdfd; }
+          .sig-title { font-size: 9pt; font-weight: bold; color: #475569; text-transform: uppercase; margin-bottom: 10px; border-bottom: 1px solid #e2e8f0; padding-bottom: 4px; }
+          .sig-line { border-top: 1px solid #94a3b8; margin-top: 40px; font-size: 8pt; color: #64748b; }
+          .footer { margin-top: 30px; text-align: center; font-size: 8pt; color: #94a3b8; border-top: 1px solid #e2e8f0; padding-top: 8px; }
         </style>
       </head>
       <body>
         <div class="header">
           <img src="/LOGOPRO.png" alt="Logo E-ROUAMA" style="height:55px; margin-bottom:8px; object-fit:contain;" />
           <h1>ASSOCIATION ÉLÈVES & ÉTUDIANTS ROUAMA (E-ROUAMA)</h1>
-          <h2>COMMISSION PROJETS (AGR) & DIRECTION ADMINISTRATIVE</h2>
-          <p>Dossier Officiel de Montage de Projet Générateur de Revenus</p>
+          <h2>COMMISSION PROJETS (AGR) & DIRECTION DU PAYOR</h2>
+          <p>Dossier Officiel de Montage de Projet Générateur de Revenus (AGR)</p>
         </div>
 
         <div class="title-box">
@@ -1177,40 +1247,55 @@ export const AdminPortal: React.FC = () => {
             <span class="meta-value">${proj.category || 'Non spécifiée'}</span>
           </div>
           <div class="meta-item">
-            <span class="meta-label">💰 Coût Estimé (Budget)</span>
+            <span class="meta-label">💰 Coût Estimé (Budget Global)</span>
             <span class="meta-value">${proj.estimatedCost.toLocaleString('fr-FR')} F CFA</span>
           </div>
           <div class="meta-item">
-            <span class="meta-label">📅 Date de Soumission</span>
-            <span class="meta-value">${proj.date || 'Non spécifiée'}</span>
+            <span class="meta-label">💳 Contribution par Membre</span>
+            <span class="meta-value">${proj.requiredAmountPerMember ? `${proj.requiredAmountPerMember.toLocaleString('fr-FR')} F CFA` : 'Libre'}</span>
           </div>
           <div class="meta-item">
-            <span class="meta-label">📜 Référence Officielle</span>
-            <span class="meta-value">${proj.id}</span>
+            <span class="meta-label">📅 Date de Réalisation / Lancement</span>
+            <span class="meta-value">${proj.dateRealisation || proj.eventDate || 'Non spécifiée'}</span>
+          </div>
+          <div class="meta-item">
+            <span class="meta-label">⏳ Date Limite de Paiement</span>
+            <span class="meta-value">${proj.paymentDeadline || 'Non spécifiée'}</span>
+          </div>
+          <div class="meta-item">
+            <span class="meta-label">📜 Référence Officielle & Date</span>
+            <span class="meta-value">${proj.id} • ${proj.date || 'Non spécifiée'}</span>
           </div>
         </div>
 
-        <div class="section-title">👥 ÉQUIPE PILOTE (RESPONSABLES DU SUIVI)</div>
+        <div class="section-title">👥 ÉQUIPE PILOTE DÉSIGNÉE (SUIVI & EXÉCUTION)</div>
         <div class="team-box">
           <ul>${teamList}</ul>
         </div>
 
-        <div class="section-title">📝 DESCRIPTION & MODÈLE ÉCONOMIQUE DE RENTABILITÉ</div>
+        <div class="section-title">📝 DESCRIPTION DÉTAILLÉE & MODÈLE ÉCONOMIQUE DE RENTABILITÉ</div>
         <div class="content-body">${proj.description}</div>
 
         <div class="signatures">
           <div class="sig-box">
-            <div class="sig-title">La Commission Projets</div>
-            <div class="sig-line">Signature & Date</div>
+            <div class="sig-title">1. Montage : La Commission Projets</div>
+            <div style="margin-top:20px; font-size:9pt; font-weight:bold; color:#0f172a;">
+              Équipe de Montage & Pilotage
+            </div>
+            <div style="font-size:8pt; color:#64748b; margin-top:4px;">
+              Dossier instruit le ${proj.date || new Date().toLocaleDateString('fr-FR')}
+            </div>
+            <div class="sig-line">Visa de la Commission Projets</div>
           </div>
+
           <div class="sig-box">
-            <div class="sig-title">Le PAYOR / Direction</div>
-            <div class="sig-line">Visa de Validation</div>
+            <div class="sig-title">2. Approbation : Le PAYOR / Direction</div>
+            ${payorSignatureBlock}
           </div>
         </div>
 
         <div class="footer">
-          Document d'ingénierie projet généré via la plateforme E-ROUAMA • Édité le ${new Date().toLocaleString('fr-FR')}
+          Dossier officiel d'ingénierie et d'investissement émis via la plateforme E-ROUAMA • Imprimé le ${new Date().toLocaleString('fr-FR')}
         </div>
 
         <script>
@@ -1241,6 +1326,29 @@ export const AdminPortal: React.FC = () => {
       pv.attendeesCount !== undefined && pv.attendeesCount !== null && pv.attendeesCount !== ''
         ? `${pv.attendeesCount} personne(s)`
         : 'Non renseigné';
+
+    // Format document reference cleanly (PV-JJ/MM/AAAA/0001)
+    let docRef = pv.id;
+    if (docRef && (!docRef.includes('/') || docRef.length > 25)) {
+      let dayStr = '';
+      let monthStr = '';
+      let yearStr = '';
+      if (pv.meetingDate && pv.meetingDate.includes('-')) {
+        const parts = pv.meetingDate.split('-');
+        if (parts.length === 3) {
+          yearStr = parts[0];
+          monthStr = parts[1].padStart(2, '0');
+          dayStr = parts[2].padStart(2, '0');
+        }
+      }
+      if (!dayStr || !monthStr || !yearStr || yearStr.length !== 4) {
+        const d = new Date();
+        dayStr = String(d.getDate()).padStart(2, '0');
+        monthStr = String(d.getMonth() + 1).padStart(2, '0');
+        yearStr = String(d.getFullYear());
+      }
+      docRef = `PV-${dayStr}/${monthStr}/${yearStr}/0001`;
+    }
 
     const htmlContent = `
       <!DOCTYPE html>
@@ -1274,8 +1382,7 @@ export const AdminPortal: React.FC = () => {
       <body>
         <div class="header">
           <img src="/LOGOPRO.png" alt="Logo E-ROUAMA" style="height:55px; margin-bottom:8px; object-fit:contain;" />
-          <h1>ASSOCIATION ÉLÈVES & ÉTUDIANTS ROUAMA (E-ROUAMA)</h1>
-          <h2>SECRÉTARIAT GÉNÉRAL & DIRECTION ADMINISTRATIVE</h2>
+          <h1>SECRÉTARIAT GÉNÉRAL & DIRECTION ADMINISTRATIVE</h1>
           <p>Document Officiel d'Archivage • Procès-Verbal de Réunion</p>
         </div>
 
@@ -1299,7 +1406,7 @@ export const AdminPortal: React.FC = () => {
           </div>
           <div class="meta-item">
             <span class="meta-label">📜 Référence du Document</span>
-            <span class="meta-value">${pv.id}</span>
+            <span class="meta-value">${docRef}</span>
           </div>
         </div>
 
@@ -1312,7 +1419,7 @@ export const AdminPortal: React.FC = () => {
             <div class="sig-line">Signature & Cachet</div>
           </div>
           <div class="sig-box">
-            <div class="sig-title">Le PAYOR / Commissariat aux Comptes</div>
+            <div class="sig-title">LE PAYOR</div>
             <div class="sig-line">Visa de Validation</div>
           </div>
         </div>
@@ -2829,9 +2936,135 @@ export const AdminPortal: React.FC = () => {
           {/* RUBRIQUE TRANCHES : SUIVI DES ACOMPTES ET DU RECOUVREMENT */}
           {/* ========================================================= */}
           {tresorierRubrique === 'TRANCHES' && (() => {
+            // Détection dynamique des rubriques et événements publiés :
+            const publishedSocialEvents = financialEvents.filter(e => e.fund === 'CAS_SOCIAUX' && e.status === 'PUBLISHED');
+            const publishedLoisirsEvents = financialEvents.filter(e => e.fund === 'LOISIRS' && e.status === 'PUBLISHED');
+            const publishedSoiree = activities.filter(a => a.status === 'PUBLISHED' && (a.fixedType === 'SOIREE_ROUAMA' || a.title?.toLowerCase().includes('soirée') || a.title?.toLowerCase().includes('soiree')));
+            const publishedAgr = projects.filter(p => p.status === 'PUBLISHED');
+
+            // Résolution dynamique de l'élément sélectionné
+            let activeFund: FundType = 'ANNIVERSAIRE';
+            let activeSubCat: string | undefined = undefined;
+            let isCurrentRubricActive = true;
+            let currentRubricTitle = 'Cotisation Statutaire Anniversaire (21 Mars)';
+            let currentRubricAmount = 10000;
+            let currentRubricDeadline = '21 Mars 2027';
+            let currentRubricCreator = 'Statuts Rouama (Annuel)';
+
+            if (trancheTrackingSelection === 'ANNIVERSAIRE') {
+              activeFund = 'ANNIVERSAIRE';
+              isCurrentRubricActive = true;
+              currentRubricTitle = 'Cotisation Statutaire Anniversaire (21 Mars)';
+              currentRubricAmount = 10000;
+              currentRubricDeadline = '21 Mars 2027';
+              currentRubricCreator = 'Statuts Rouama (Cotisation Annuelle Fixe)';
+            } else if (trancheTrackingSelection === 'INACTIVE_SOIREE') {
+              activeFund = 'SOIREE_ROUAMA';
+              isCurrentRubricActive = false;
+              currentRubricTitle = 'Événements Fixes (Soirée Rouama)';
+              currentRubricAmount = 0;
+              currentRubricDeadline = 'En attente de publication';
+              currentRubricCreator = 'Commission Organisation';
+            } else if (trancheTrackingSelection.startsWith('SOIREE_')) {
+              activeFund = 'SOIREE_ROUAMA';
+              const id = trancheTrackingSelection.replace('SOIREE_', '');
+              const act = publishedSoiree.find(a => a.id === id) || publishedSoiree[0];
+              if (act) {
+                activeSubCat = act.id;
+                isCurrentRubricActive = true;
+                currentRubricTitle = act.title;
+                currentRubricAmount = (act.budget && act.budget > 0) ? Math.round(act.budget / (members.length || 12)) : 10000;
+                currentRubricDeadline = act.eventDate || 'Date fixée par l\'Organisation';
+                currentRubricCreator = 'Commission Organisation';
+              } else {
+                isCurrentRubricActive = false;
+                currentRubricTitle = 'Soirée Rouama';
+                currentRubricAmount = 0;
+                currentRubricDeadline = 'En attente de publication';
+                currentRubricCreator = 'Commission Organisation';
+              }
+            } else if (trancheTrackingSelection === 'INACTIVE_LOISIRS') {
+              activeFund = 'LOISIRS';
+              isCurrentRubricActive = false;
+              currentRubricTitle = 'Sorties & Loisirs (Excursions, Pique-niques)';
+              currentRubricAmount = 0;
+              currentRubricDeadline = 'En attente de publication';
+              currentRubricCreator = 'Commission Organisation';
+            } else if (trancheTrackingSelection.startsWith('LOISIRS_')) {
+              activeFund = 'LOISIRS';
+              const id = trancheTrackingSelection.replace('LOISIRS_', '');
+              const evt = publishedLoisirsEvents.find(e => e.id === id) || publishedLoisirsEvents[0];
+              if (evt) {
+                activeSubCat = evt.subCategory || evt.title || evt.id;
+                isCurrentRubricActive = true;
+                currentRubricTitle = evt.title;
+                currentRubricAmount = evt.requiredAmountPerMember;
+                currentRubricDeadline = evt.paymentDeadline || evt.eventDate || 'Date fixée par l\'Organisation';
+                currentRubricCreator = 'Commission Organisation';
+              } else {
+                isCurrentRubricActive = false;
+                currentRubricTitle = 'Sorties & Loisirs';
+                currentRubricAmount = 0;
+                currentRubricDeadline = 'En attente de publication';
+                currentRubricCreator = 'Commission Organisation';
+              }
+            } else if (trancheTrackingSelection === 'INACTIVE_CAS_SOCIAUX') {
+              activeFund = 'CAS_SOCIAUX';
+              isCurrentRubricActive = false;
+              currentRubricTitle = 'Cas Sociaux (Mariage, Décès, Naissance, Soutien)';
+              currentRubricAmount = 0;
+              currentRubricDeadline = 'Aucun cas social en cours';
+              currentRubricCreator = 'Trésorier Général';
+            } else if (trancheTrackingSelection.startsWith('CAS_SOCIAUX_')) {
+              activeFund = 'CAS_SOCIAUX';
+              const id = trancheTrackingSelection.replace('CAS_SOCIAUX_', '');
+              const evt = publishedSocialEvents.find(e => e.id === id) || publishedSocialEvents[0];
+              if (evt) {
+                activeSubCat = evt.subCategory || evt.title || evt.id;
+                isCurrentRubricActive = true;
+                currentRubricTitle = evt.title;
+                currentRubricAmount = evt.requiredAmountPerMember;
+                currentRubricDeadline = evt.paymentDeadline || evt.eventDate || 'Date fixée par le Trésorier';
+                currentRubricCreator = 'Trésorier Général';
+              } else {
+                isCurrentRubricActive = false;
+                currentRubricTitle = 'Cas Sociaux';
+                currentRubricAmount = 0;
+                currentRubricDeadline = 'Aucun cas social en cours';
+                currentRubricCreator = 'Trésorier Général';
+              }
+            } else if (trancheTrackingSelection === 'INACTIVE_AGR') {
+              activeFund = 'AGR';
+              isCurrentRubricActive = false;
+              currentRubricTitle = 'Projets AGR (Investissements)';
+              currentRubricAmount = 0;
+              currentRubricDeadline = 'En attente de montage';
+              currentRubricCreator = 'Responsable Projets (AGR)';
+            } else if (trancheTrackingSelection.startsWith('AGR_')) {
+              activeFund = 'AGR';
+              const id = trancheTrackingSelection.replace('AGR_', '');
+              const proj = publishedAgr.find(p => p.id === id) || publishedAgr[0];
+              if (proj) {
+                activeSubCat = proj.id;
+                isCurrentRubricActive = true;
+                currentRubricTitle = proj.title;
+                currentRubricAmount = proj.requiredAmountPerMember || 0;
+                currentRubricDeadline = proj.paymentDeadline || proj.eventDate || 'En cours';
+                currentRubricCreator = 'Responsable Projets (AGR)';
+              } else {
+                isCurrentRubricActive = false;
+                currentRubricTitle = 'Projets AGR';
+                currentRubricAmount = 0;
+                currentRubricDeadline = 'En attente de publication';
+                currentRubricCreator = 'Responsable Projets (AGR)';
+              }
+            }
+
             const summary = getAllMembersRubricSummary(
-              trancheSelectedFund,
-              trancheSelectedFund === 'CAS_SOCIAUX' ? trancheSubCategory : undefined
+              activeFund,
+              activeSubCat,
+              isCurrentRubricActive ? currentRubricAmount : 0,
+              currentRubricTitle
             );
 
             // Filter members according to trancheFilterStatus
@@ -2849,7 +3082,7 @@ export const AdminPortal: React.FC = () => {
                   <div>
                     <h2 className="text-xl sm:text-2xl font-black text-white flex items-center gap-2.5">
                       <Coins className="w-6 h-6 text-[#E67E22]" />
-                      <span>Suivi des Acomptes & Tranches (Anniversaires, Sorties, Cas Sociaux)</span>
+                      <span>Suivi des Acomptes & Tranches (Activation Dynamique par Rubrique)</span>
                     </h2>
                     <p className="text-xs sm:text-sm text-slate-400 mt-1">
                       Vue consolidée par membre : <strong>[Montant Total] | [Montant Avancé] | [Reste à Régler] | [Historique des transactions]</strong>. (Pour les cotisations mensuelles statutaires à 500 F/mois, consultez l'onglet dédié).
@@ -2859,40 +3092,111 @@ export const AdminPortal: React.FC = () => {
                   <div className="flex items-center gap-2">
                     <span className="text-xs font-black text-slate-400">Cotisation suivie :</span>
                     <select
-                      value={trancheSelectedFund}
-                      onChange={e => setTrancheSelectedFund(e.target.value as FundType)}
-                      className="bg-slate-950 border border-slate-700 text-amber-400 text-xs font-black rounded-xl px-3 py-2 focus:outline-none focus:border-amber-400"
+                      value={trancheTrackingSelection}
+                      onChange={e => setTrancheTrackingSelection(e.target.value)}
+                      className="bg-slate-950 border border-slate-700 text-amber-400 text-xs font-black rounded-xl px-3 py-2.5 focus:outline-none focus:border-amber-400 max-w-[280px] sm:max-w-none"
                     >
-                      <option value="ANNIVERSAIRE">🎂 Anniversaire (10 000 F)</option>
-                      <option value="LOISIRS">🏖️ Sorties & Loisirs (5 000 F)</option>
-                      <option value="CAS_SOCIAUX">🤝 Cas Sociaux</option>
-                      <option value="AGR">🌱 Projets AGR (Investissements)</option>
+                      <optgroup label="🎂 Cotisation Statutaire Annuelle">
+                        <option value="ANNIVERSAIRE">🎂 Anniversaire (10 000 F CFA) [Actif]</option>
+                      </optgroup>
+
+                      <optgroup label="✨ Événements Fixes (Commission Organisation)">
+                        {publishedSoiree.length === 0 ? (
+                          <option value="INACTIVE_SOIREE">
+                            ✨ Soirée Rouama [Désactivé - En attente de publication]
+                          </option>
+                        ) : (
+                          publishedSoiree.map(act => (
+                            <option key={act.id} value={`SOIREE_${act.id}`}>
+                              ✨ {act.title} ({((act.budget && act.budget > 0) ? Math.round(act.budget / (members.length || 12)) : 10000).toLocaleString('fr-FR')} F) [Actif]
+                            </option>
+                          ))
+                        )}
+                      </optgroup>
+
+                      <optgroup label="🏖️ Sorties & Loisirs (Commission Organisation)">
+                        {publishedLoisirsEvents.length === 0 ? (
+                          <option value="INACTIVE_LOISIRS">
+                            🏖️ Sorties & Loisirs [Désactivé - En attente de publication]
+                          </option>
+                        ) : (
+                          publishedLoisirsEvents.map(evt => (
+                            <option key={evt.id} value={`LOISIRS_${evt.id}`}>
+                              🏖️ {evt.title} ({evt.requiredAmountPerMember.toLocaleString('fr-FR')} F) [Actif]
+                            </option>
+                          ))
+                        )}
+                      </optgroup>
+
+                      <optgroup label="🤝 Cas Sociaux (Trésorier Général)">
+                        {publishedSocialEvents.length === 0 ? (
+                          <option value="INACTIVE_CAS_SOCIAUX">
+                            🤝 Cas Sociaux [Désactivé - Aucun cas en cours]
+                          </option>
+                        ) : (
+                          publishedSocialEvents.map(evt => (
+                            <option key={evt.id} value={`CAS_SOCIAUX_${evt.id}`}>
+                              🤝 {evt.title} ({evt.requiredAmountPerMember.toLocaleString('fr-FR')} F) [Actif]
+                            </option>
+                          ))
+                        )}
+                      </optgroup>
+
+                      <optgroup label="🌱 Projets AGR / Investissements (Commission Projet)">
+                        {publishedAgr.length === 0 ? (
+                          <option value="INACTIVE_AGR">
+                            🌱 Projets AGR [Désactivé - En attente de publication]
+                          </option>
+                        ) : (
+                          publishedAgr.map(proj => (
+                            <option key={proj.id} value={`AGR_${proj.id}`}>
+                              🌱 {proj.title} ({proj.requiredAmountPerMember ? `${proj.requiredAmountPerMember.toLocaleString('fr-FR')} F` : 'Libre'}) [Actif]
+                            </option>
+                          ))
+                        )}
+                      </optgroup>
                     </select>
                   </div>
                 </div>
 
-                {/* Subcategory pills if CAS_SOCIAUX */}
-                {trancheSelectedFund === 'CAS_SOCIAUX' && (
-                  <div className="p-4 bg-slate-950 border border-slate-800 rounded-2xl flex flex-wrap items-center gap-2">
-                    <span className="text-xs font-black text-slate-400 mr-2">Événement social :</span>
-                    {[
-                      { key: 'Mariage', label: "Mariage d'un membre (30 000 F CFA)" },
-                      { key: 'Décès', label: 'Décès (5 000 F CFA)' },
-                      { key: 'Naissance', label: 'Naissance (2 000 F CFA)' },
-                    ].map(item => (
-                      <button
-                        type="button"
-                        key={item.key}
-                        onClick={() => setTrancheSubCategory(item.key)}
-                        className={`px-3 py-1.5 rounded-xl text-xs font-extrabold transition-all ${
-                          trancheSubCategory === item.key
-                            ? 'bg-amber-500 text-slate-950 shadow font-black'
-                            : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
-                        }`}
-                      >
-                        {item.label}
-                      </button>
-                    ))}
+                {/* Status Notice : Active vs Inactive Banner */}
+                {!isCurrentRubricActive ? (
+                  <div className="p-5 bg-gradient-to-r from-amber-950/40 via-slate-950 to-slate-950 border border-amber-500/30 rounded-2xl flex items-start gap-4">
+                    <div className="w-10 h-10 rounded-xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-400 shrink-0 text-lg">
+                      ⚠️
+                    </div>
+                    <div className="space-y-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-sm font-black text-amber-300">
+                          Rubrique « {currentRubricTitle} » : DÉSACTIVÉE / EN ATTENTE DE PUBLICATION
+                        </span>
+                        <span className="text-[10px] font-black bg-rose-500/20 text-rose-300 border border-rose-500/30 px-2.5 py-0.5 rounded-full">
+                          🔴 0 ÉVÉNEMENT EN COURS
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-400 leading-relaxed">
+                        Tant qu'aucun événement ou projet n'a été publié par son responsable habilité (<strong className="text-white">{currentRubricCreator}</strong>), cette cotisation reste désactivée (montant requis = 0 F CFA). Dès qu'un événement est publié, son montant statutaire et les acomptes des 12 membres s'activeront automatiquement ici.
+                      </p>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="p-4 bg-emerald-950/20 border border-emerald-500/30 rounded-2xl flex flex-wrap items-center justify-between gap-4">
+                    <div className="flex items-center gap-3">
+                      <div className="w-9 h-9 rounded-xl bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center text-emerald-400 font-black text-sm">
+                        🟢
+                      </div>
+                      <div>
+                        <span className="text-xs font-black text-emerald-300 uppercase tracking-wide">
+                          Rubrique Active : {currentRubricTitle}
+                        </span>
+                        <p className="text-xs text-slate-300 font-medium">
+                          Cotisation requise : <strong className="text-amber-400 font-mono">{currentRubricAmount.toLocaleString('fr-FR')} F CFA / membre</strong> • Échéance : <strong className="text-white">{currentRubricDeadline}</strong> • Habilité : <strong className="text-slate-400">{currentRubricCreator}</strong>
+                        </p>
+                      </div>
+                    </div>
+                    <span className="bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 px-3 py-1 rounded-full text-xs font-black">
+                      ✓ OUVERT AUX COTISATIONS
+                    </span>
                   </div>
                 )}
 
@@ -3164,7 +3468,7 @@ export const AdminPortal: React.FC = () => {
           })()}
 
           {/* ========================================================= */}
-          {/* RUBRIQUE : GESTION & PUBLICATION ÉVÉNEMENTS (SORTIES & CAS SOCIAUX) */}
+          {/* RUBRIQUE : GESTION & PUBLICATION DES CAS SOCIAUX (TRÉSORIER) */}
           {/* ========================================================= */}
           {tresorierRubrique === 'EVENEMENTS' && (
             <div className="space-y-8">
@@ -3174,71 +3478,131 @@ export const AdminPortal: React.FC = () => {
                   <div>
                     <h2 className="text-xl font-black text-white flex items-center gap-2">
                       <Plus className="w-5 h-5 text-emerald-400" />
-                      <span>Publication d'un Événement Financier (Sorties & Loisirs / Cas Sociaux)</span>
+                      <span>Publication d'un Cas Social (Mariage, Décès, Naissance, Soutien)</span>
                     </h2>
                     <p className="text-xs text-slate-400 mt-1">
-                      Créez et publiez les événements ou cas sociaux exigeant une cotisation. Dès publication, la rubrique devient instantanément active et accessible aux membres.
+                      Le Trésorier Général est le responsable statutaire exclusif habilité à ouvrir et publier les cotisations de Cas Sociaux. Dès publication, la rubrique est immédiatement activée dans le « Suivi des Acomptes » et ouverte aux 12 membres.
                     </p>
                   </div>
                   <span className="text-[11px] font-bold text-amber-400 bg-amber-500/10 border border-amber-500/30 px-3 py-1.5 rounded-xl self-start sm:self-auto">
-                    Trésorier Général
+                    Compétence Exclusive Trésorier
                   </span>
                 </div>
 
-                <div className="space-y-4">
-                  {/* Rubrique Choice */}
+                <div className="space-y-5">
+                  {/* Nature du Cas Social (4 types statutaires) */}
                   <div>
                     <label className="block text-xs font-bold text-slate-400 uppercase mb-2">
-                      1. Rubrique Concernée
+                      1. Nature du Cas Social (Règles & Barème Statutaire)
                     </label>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
                       <button
                         type="button"
-                        onClick={() => setFinEventFund('LOISIRS')}
-                        className={`p-4 rounded-2xl border text-left flex items-center gap-3 transition-all ${
-                          finEventFund === 'LOISIRS'
-                            ? 'bg-blue-600/20 text-blue-300 border-blue-500 ring-2 ring-blue-500/40'
+                        onClick={() => {
+                          setFinEventFund('CAS_SOCIAUX');
+                          setFinEventSubCategory('Mariage');
+                          setFinEventAmountInput('30000');
+                          if (!finEventTitle || finEventTitle.includes('Cas Social') || finEventTitle.includes('Mariage') || finEventTitle.includes('Décès') || finEventTitle.includes('Naissance')) {
+                            setFinEventTitle('Mariage Statutaire - Frère ...');
+                          }
+                        }}
+                        className={`p-4 rounded-2xl border text-left transition-all cursor-pointer ${
+                          finEventSubCategory === 'Mariage'
+                            ? 'bg-rose-600/20 text-rose-300 border-rose-500 ring-2 ring-rose-500/40 shadow-lg'
                             : 'bg-slate-950 text-slate-400 border-slate-800 hover:border-slate-700'
                         }`}
                       >
-                        <span className="text-2xl">🏖️</span>
-                        <div>
-                          <strong className="block text-sm font-black text-white">Sorties & Loisirs</strong>
-                          <span className="text-[11px] text-slate-400">Excursion, pique-nique, cohésion fraternelle</span>
-                        </div>
+                        <span className="text-2xl block mb-1">💍</span>
+                        <strong className="block text-sm font-black text-white">Mariage</strong>
+                        <span className="text-[11px] text-amber-400 font-mono font-bold block mt-0.5">30 000 F CFA / membre</span>
+                        <span className="text-[10px] text-slate-400 mt-1 block">Cotisation obligatoire statutaire</span>
                       </button>
 
                       <button
                         type="button"
-                        onClick={() => setFinEventFund('CAS_SOCIAUX')}
-                        className={`p-4 rounded-2xl border text-left flex items-center gap-3 transition-all ${
-                          finEventFund === 'CAS_SOCIAUX'
-                            ? 'bg-rose-600/20 text-rose-300 border-rose-500 ring-2 ring-rose-500/40'
+                        onClick={() => {
+                          setFinEventFund('CAS_SOCIAUX');
+                          setFinEventSubCategory('Décès');
+                          setFinEventAmountInput('5000');
+                          if (!finEventTitle || finEventTitle.includes('Cas Social') || finEventTitle.includes('Mariage') || finEventTitle.includes('Décès') || finEventTitle.includes('Naissance')) {
+                            setFinEventTitle('Obsèques & Soutien Deuil - ...');
+                          }
+                        }}
+                        className={`p-4 rounded-2xl border text-left transition-all cursor-pointer ${
+                          finEventSubCategory === 'Décès'
+                            ? 'bg-rose-600/20 text-rose-300 border-rose-500 ring-2 ring-rose-500/40 shadow-lg'
                             : 'bg-slate-950 text-slate-400 border-slate-800 hover:border-slate-700'
                         }`}
                       >
-                        <span className="text-2xl">🤝</span>
-                        <div>
-                          <strong className="block text-sm font-black text-white">Cas Sociaux</strong>
-                          <span className="text-[11px] text-slate-400">Mariage, Naissance, Décès, Soutien fraternel</span>
-                        </div>
+                        <span className="text-2xl block mb-1">🕊️</span>
+                        <strong className="block text-sm font-black text-white">Décès / Obsèques</strong>
+                        <span className="text-[11px] text-amber-400 font-mono font-bold block mt-0.5">5 000 F CFA / membre</span>
+                        <span className="text-[10px] text-slate-400 mt-1 block">Solidarité deuil statutaire</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setFinEventFund('CAS_SOCIAUX');
+                          setFinEventSubCategory('Naissance');
+                          setFinEventAmountInput('2000');
+                          if (!finEventTitle || finEventTitle.includes('Cas Social') || finEventTitle.includes('Mariage') || finEventTitle.includes('Décès') || finEventTitle.includes('Naissance')) {
+                            setFinEventTitle('Naissance Nouveau-né - Frère ...');
+                          }
+                        }}
+                        className={`p-4 rounded-2xl border text-left transition-all cursor-pointer ${
+                          finEventSubCategory === 'Naissance'
+                            ? 'bg-rose-600/20 text-rose-300 border-rose-500 ring-2 ring-rose-500/40 shadow-lg'
+                            : 'bg-slate-950 text-slate-400 border-slate-800 hover:border-slate-700'
+                        }`}
+                      >
+                        <span className="text-2xl block mb-1">👶</span>
+                        <strong className="block text-sm font-black text-white">Naissance</strong>
+                        <span className="text-[11px] text-amber-400 font-mono font-bold block mt-0.5">2 000 F CFA / membre</span>
+                        <span className="text-[10px] text-slate-400 mt-1 block">Heureux événement familial</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setFinEventFund('CAS_SOCIAUX');
+                          setFinEventSubCategory('Soutien');
+                          setFinEventAmountInput('5000');
+                          if (!finEventTitle || finEventTitle.includes('Cas Social') || finEventTitle.includes('Mariage') || finEventTitle.includes('Décès') || finEventTitle.includes('Naissance')) {
+                            setFinEventTitle('Soutien Fraternel Exceptionnel - ...');
+                          }
+                        }}
+                        className={`p-4 rounded-2xl border text-left transition-all cursor-pointer ${
+                          finEventSubCategory === 'Soutien'
+                            ? 'bg-rose-600/20 text-rose-300 border-rose-500 ring-2 ring-rose-500/40 shadow-lg'
+                            : 'bg-slate-950 text-slate-400 border-slate-800 hover:border-slate-700'
+                        }`}
+                      >
+                        <span className="text-2xl block mb-1">🤝</span>
+                        <strong className="block text-sm font-black text-white">Soutien Fraternel</strong>
+                        <span className="text-[11px] text-amber-400 font-mono font-bold block mt-0.5">Montant libre / AG</span>
+                        <span className="text-[10px] text-slate-400 mt-1 block">Maladie, sinistre ou urgence</span>
                       </button>
                     </div>
+                  </div>
+
+                  {/* Clarification des compétences */}
+                  <div className="p-3 bg-slate-950/80 border border-slate-800 rounded-xl flex items-center gap-2 text-slate-400 text-xs">
+                    <span className="text-sm">ℹ️</span>
+                    <span>
+                      <strong>Rappel des compétences :</strong> Les <em>Événements Fixes</em> (Soirée Rouama, Anniversaire) et <em>Sorties & Loisirs</em> sont gérés et publiés par la <strong>Commission Organisation</strong>. Les <em>Projets AGR</em> relèvent de la <strong>Commission Projets</strong>.
+                    </span>
                   </div>
 
                   {/* Title & Amount per member */}
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <div>
                       <label className="block text-xs font-bold text-slate-400 uppercase mb-2">
-                        2. Titre de l'Événement ou du Cas Social
+                        2. Titre Précis du Cas Social
                       </label>
                       <input
                         type="text"
-                        placeholder={
-                          finEventFund === 'LOISIRS'
-                            ? 'Ex: Grande Sortie Détente Assinie 2027'
-                            : 'Ex: Soutien Mariage Frère Jean & Sœur Marie'
-                        }
+                        placeholder="Ex: Soutien Mariage Frère Jean & Sœur Marie"
                         value={finEventTitle}
                         onChange={e => setFinEventTitle(e.target.value)}
                         className="w-full bg-slate-950 border border-slate-800 rounded-2xl px-4 py-3 text-sm font-bold text-white focus:outline-none focus:border-amber-500"
@@ -3251,10 +3615,10 @@ export const AdminPortal: React.FC = () => {
                       </label>
                       <input
                         type="number"
-                        placeholder={finEventFund === 'LOISIRS' ? 'Ex: 5000' : 'Ex: 30000'}
+                        placeholder="Ex: 30000"
                         value={finEventAmountInput}
                         onChange={e => setFinEventAmountInput(e.target.value)}
-                        className="w-full bg-slate-950 border border-slate-800 rounded-2xl px-4 py-3 text-sm font-bold text-white focus:outline-none focus:border-amber-500"
+                        className="w-full bg-slate-950 border border-slate-800 rounded-2xl px-4 py-3 text-sm font-bold text-white focus:outline-none focus:border-amber-500 font-mono"
                       />
                     </div>
                   </div>
@@ -3263,7 +3627,7 @@ export const AdminPortal: React.FC = () => {
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <div>
                       <label className="block text-xs font-bold text-slate-400 uppercase mb-2">
-                        4. Date de Réalisation / Événement
+                        4. Date de Célébration / Événement
                       </label>
                       <input
                         type="date"
@@ -3289,11 +3653,11 @@ export const AdminPortal: React.FC = () => {
                   {/* Description */}
                   <div>
                     <label className="block text-xs font-bold text-slate-400 uppercase mb-2">
-                      6. Description & Modalités
+                      6. Description & Modalités de la Cérémonie
                     </label>
                     <textarea
                       rows={2}
-                      placeholder="Précisez le lieu, les dispositions pratiques et les conditions pour les membres..."
+                      placeholder="Précisez le lieu de la cérémonie, les dispositions pratiques et la remise officielle du don..."
                       value={finEventDesc}
                       onChange={e => setFinEventDesc(e.target.value)}
                       className="w-full bg-slate-950 border border-slate-800 rounded-2xl p-4 text-sm font-medium text-white focus:outline-none focus:border-amber-500"
@@ -3305,12 +3669,12 @@ export const AdminPortal: React.FC = () => {
                     type="button"
                     onClick={() => {
                       if (!finEventTitle.trim()) {
-                        alert('Veuillez renseigner le titre de l\'événement.');
+                        alert('Veuillez renseigner le titre du cas social.');
                         return;
                       }
                       const amt = Number(finEventAmountInput);
                       if (!amt || amt <= 0) {
-                        alert('Veuillez indiquer un montant requis par membre valide (ex: 5 000 F CFA).');
+                        alert('Veuillez indiquer un montant requis par membre valide (ex: 30 000 F CFA pour un mariage).');
                         return;
                       }
                       if (!finEventDate.trim() || !finEventDeadline.trim()) {
@@ -3319,7 +3683,8 @@ export const AdminPortal: React.FC = () => {
                       }
 
                       createFinancialEvent({
-                        fund: finEventFund,
+                        fund: 'CAS_SOCIAUX',
+                        subCategory: finEventSubCategory || 'Mariage',
                         title: finEventTitle.trim(),
                         description: finEventDesc.trim(),
                         requiredAmountPerMember: amt,
@@ -3328,17 +3693,17 @@ export const AdminPortal: React.FC = () => {
                         createdBy: 'TRÉSORIER GÉNÉRAL',
                       });
 
-                      alert(`🔔 Événement "${finEventTitle}" publié avec succès ! La rubrique est désormais activée pour tous les membres.`);
+                      alert(`🔔 Cas Social « ${finEventTitle} » publié avec succès ! La rubrique est désormais activée pour tous les membres dans le Suivi des Acomptes.`);
                       setFinEventTitle('');
                       setFinEventDesc('');
-                      setFinEventAmountInput('');
+                      setFinEventAmountInput('30000');
                       setFinEventDate('');
                       setFinEventDeadline('');
                     }}
                     className="w-full sm:w-auto bg-emerald-600 hover:bg-emerald-500 text-white font-black py-3.5 px-8 rounded-2xl shadow-lg text-sm flex items-center justify-center gap-2 transition-all active:scale-95 cursor-pointer"
                   >
                     <Send className="w-4 h-4 text-emerald-200" />
-                    <span>🔔 Publier Immédiatement & Ouvrir les Cotisations Membres</span>
+                    <span>🔔 Publier Immédiatement & Activer les Acomptes</span>
                   </button>
                 </div>
               </div>
@@ -3347,23 +3712,61 @@ export const AdminPortal: React.FC = () => {
               <div className="bg-slate-900 rounded-[2.5rem] p-6 sm:p-8 border border-slate-800 shadow-xl space-y-4">
                 <h3 className="text-base font-black text-white flex items-center gap-2">
                   <Coins className="w-5 h-5 text-amber-500" />
-                  <span>Statut en Temps Réel des Rubriques Cotisables (Espace Membre)</span>
+                  <span>Statut en Temps Réel des Rubriques Cotisables (Rôle & Activation)</span>
                 </h3>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-                  {/* Anniversaire */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3.5">
+                  {/* 1. Anniversaire */}
                   <div className="p-4 rounded-2xl bg-slate-950 border border-amber-500/30 space-y-2">
                     <div className="flex items-center justify-between">
                       <span className="text-xs font-black text-amber-300">🎂 Anniversaire</span>
                       <span className="text-[10px] font-black bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 px-2 py-0.5 rounded-full">
-                        🟢 Toujours Actif
+                        🟢 Actif
                       </span>
                     </div>
-                    <p className="text-xs text-slate-300 font-bold">21 Mars (Fixe annuel)</p>
-                    <p className="text-[11px] text-amber-400 font-mono">10 000 F CFA / membre</p>
+                    <p className="text-xs text-slate-300 font-bold">21 Mars (Statutaire)</p>
+                    <p className="text-[11px] text-amber-400 font-mono">10 000 F / membre</p>
+                    <span className="text-[10px] text-slate-500 block">Annuel permanent</span>
                   </div>
 
-                  {/* Loisirs */}
+                  {/* 2. Soirée Rouama */}
+                  {(() => {
+                    const active = activities.find(a => a.status === 'PUBLISHED' && (a.fixedType === 'SOIREE_ROUAMA' || a.title?.toLowerCase().includes('soirée') || a.title?.toLowerCase().includes('soiree')));
+                    return (
+                      <div className={`p-4 rounded-2xl border space-y-2 ${
+                        active
+                          ? 'bg-slate-950 border-amber-500/40'
+                          : 'bg-slate-950/50 border-slate-800 border-dashed opacity-75'
+                      }`}>
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-black text-amber-300">✨ Soirée Rouama</span>
+                          <span className={`text-[10px] font-black px-2 py-0.5 rounded-full border ${
+                            active
+                              ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
+                              : 'bg-slate-800 text-slate-400 border-slate-700'
+                          }`}>
+                            {active ? '🟢 Actif' : '⚪ Grisé'}
+                          </span>
+                        </div>
+                        {active ? (
+                          <>
+                            <p className="text-xs text-white font-bold truncate">{active.title}</p>
+                            <p className="text-[11px] text-amber-400 font-mono">
+                              {((active.budget && active.budget > 0) ? Math.round(active.budget / (members.length || 12)) : 10000).toLocaleString('fr-FR')} F / membre
+                            </p>
+                            <span className="text-[10px] text-slate-400 block">Com. Organisation</span>
+                          </>
+                        ) : (
+                          <>
+                            <p className="text-xs text-slate-500 italic">En attente publication</p>
+                            <span className="text-[10px] text-slate-600 block">Géré par Organisation</span>
+                          </>
+                        )}
+                      </div>
+                    );
+                  })()}
+
+                  {/* 3. Loisirs */}
                   {(() => {
                     const active = financialEvents?.find(e => e.fund === 'LOISIRS' && e.status === 'PUBLISHED');
                     return (
@@ -3379,7 +3782,7 @@ export const AdminPortal: React.FC = () => {
                               ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
                               : 'bg-slate-800 text-slate-400 border-slate-700'
                           }`}>
-                            {active ? '🟢 Actif' : '⚪ Grisé / Fermé'}
+                            {active ? '🟢 Actif' : '⚪ Grisé'}
                           </span>
                         </div>
                         {active ? (
@@ -3388,15 +3791,19 @@ export const AdminPortal: React.FC = () => {
                             <p className="text-[11px] text-blue-400 font-mono">
                               {active.requiredAmountPerMember.toLocaleString('fr-FR')} F CFA / membre
                             </p>
+                            <span className="text-[10px] text-slate-400 block">Com. Organisation</span>
                           </>
                         ) : (
-                          <p className="text-xs text-slate-500 italic">Aucune sortie programmée</p>
+                          <>
+                            <p className="text-xs text-slate-500 italic">Aucune sortie programmée</p>
+                            <span className="text-[10px] text-slate-600 block">Géré par Organisation</span>
+                          </>
                         )}
                       </div>
                     );
                   })()}
 
-                  {/* Cas Sociaux */}
+                  {/* 4. Cas Sociaux */}
                   {(() => {
                     const active = financialEvents?.find(e => e.fund === 'CAS_SOCIAUX' && e.status === 'PUBLISHED');
                     return (
@@ -3412,7 +3819,7 @@ export const AdminPortal: React.FC = () => {
                               ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
                               : 'bg-slate-800 text-slate-400 border-slate-700'
                           }`}>
-                            {active ? '🟢 Actif' : '⚪ Grisé / Fermé'}
+                            {active ? '🟢 Actif' : '⚪ Grisé'}
                           </span>
                         </div>
                         {active ? (
@@ -3421,15 +3828,19 @@ export const AdminPortal: React.FC = () => {
                             <p className="text-[11px] text-rose-400 font-mono">
                               {active.requiredAmountPerMember.toLocaleString('fr-FR')} F CFA / membre
                             </p>
+                            <span className="text-[10px] text-emerald-400 block">Géré par Trésorier</span>
                           </>
                         ) : (
-                          <p className="text-xs text-slate-500 italic">Aucun cas social en cours</p>
+                          <>
+                            <p className="text-xs text-slate-500 italic">Aucun cas social en cours</p>
+                            <span className="text-[10px] text-emerald-400 block">Géré par Trésorier</span>
+                          </>
                         )}
                       </div>
                     );
                   })()}
 
-                  {/* Projets AGR */}
+                  {/* 5. Projets AGR */}
                   {(() => {
                     const active = projects?.find(p => p.status === 'PUBLISHED');
                     return (
@@ -3445,7 +3856,7 @@ export const AdminPortal: React.FC = () => {
                               ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
                               : 'bg-slate-800 text-slate-400 border-slate-700'
                           }`}>
-                            {active ? '🟢 Actif' : '⚪ Grisé / Fermé'}
+                            {active ? '🟢 Actif' : '⚪ Grisé'}
                           </span>
                         </div>
                         {active ? (
@@ -3454,9 +3865,13 @@ export const AdminPortal: React.FC = () => {
                             <p className="text-[11px] text-purple-400 font-mono">
                               {(active.requiredAmountPerMember || 0).toLocaleString('fr-FR')} F CFA / membre
                             </p>
+                            <span className="text-[10px] text-slate-400 block">Com. Projets</span>
                           </>
                         ) : (
-                          <p className="text-xs text-slate-500 italic">Aucun projet AGR lancé</p>
+                          <>
+                            <p className="text-xs text-slate-500 italic">Aucun projet AGR lancé</p>
+                            <span className="text-[10px] text-slate-600 block">Géré par Com. Projets</span>
+                          </>
                         )}
                       </div>
                     );
@@ -4727,8 +5142,11 @@ export const AdminPortal: React.FC = () => {
                   {pvs.map(p => (
                     <div key={p.id} className="bg-slate-950 p-4 rounded-2xl border border-slate-800 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs">
                       <div className="space-y-1">
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 flex-wrap">
                           <span className="font-extrabold text-white text-sm">{p.title}</span>
+                          <span className="text-[10px] font-mono text-amber-300 font-bold bg-amber-500/10 px-2 py-0.5 rounded-md border border-amber-500/20">
+                            {p.id}
+                          </span>
                           <span className={`px-2 py-0.5 text-[10px] font-black rounded-full border ${
                             p.status === 'APPROVED_PAYOR' || p.status === 'ARCHIVED'
                               ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
@@ -4921,8 +5339,11 @@ export const AdminPortal: React.FC = () => {
                   .map(p => (
                     <div key={p.id} className="bg-slate-950 p-5 rounded-2xl border border-slate-800 flex flex-col md:flex-row items-start md:items-center justify-between gap-4 text-xs">
                       <div className="space-y-1.5">
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 flex-wrap">
                           <p className="font-black text-white text-base">{p.title}</p>
+                          <span className="text-[10px] font-mono text-amber-300 font-bold bg-amber-500/10 px-2 py-0.5 rounded-md border border-amber-500/20">
+                            {p.id}
+                          </span>
                           <span className="bg-amber-500/10 text-amber-400 border border-amber-500/20 px-2.5 py-0.5 rounded-full text-[10px] font-bold">
                             En Attente Validation
                           </span>
@@ -5007,67 +5428,202 @@ export const AdminPortal: React.FC = () => {
               )}
             </div>
 
-            {/* Validation Projects */}
-            <div className="space-y-3 pt-4 border-t border-slate-800">
-              <h3 className="text-xs font-black text-slate-400 uppercase">C. Projets AGR (Commission Projets)</h3>
-              {projects.filter(p => p.status === 'PENDING_PAYOR').length === 0 ? (
-                <p className="text-xs text-slate-500 py-3 italic">Aucun projet AGR en attente de validation.</p>
+            {/* Validation Projets AGR (Montage Bi-Niveau & Approval Payor) */}
+            <div className="space-y-4 pt-4 border-t border-slate-800">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <h3 className="text-xs font-black text-slate-400 uppercase tracking-wider flex items-center gap-2">
+                  <span>C. Dossiers Projets AGR à Approuver (Commission Projets)</span>
+                  {projects.filter(p => p.status === 'pending_payor_approval' || p.status === 'PENDING_PAYOR').length > 0 && (
+                    <span className="bg-amber-500/20 text-amber-300 border border-amber-500/40 px-2 py-0.5 rounded-full text-[10px] font-bold">
+                      {projects.filter(p => p.status === 'pending_payor_approval' || p.status === 'PENDING_PAYOR').length} en attente
+                    </span>
+                  )}
+                </h3>
+                <span className="text-[10px] text-slate-500 font-medium">
+                  Processus officiel : Examen ➜ Visa & Signature Payor OU Retour pour correction
+                </span>
+              </div>
+
+              {/* Projets en attente de validation */}
+              {projects.filter(p => p.status === 'pending_payor_approval' || p.status === 'PENDING_PAYOR').length === 0 ? (
+                <div className="p-4 bg-slate-950/60 rounded-2xl border border-slate-800/80 text-center">
+                  <p className="text-xs text-slate-500 italic">Aucun dossier projet AGR en attente d'approbation pour le moment.</p>
+                </div>
               ) : (
-                projects
-                  .filter(p => p.status === 'PENDING_PAYOR')
-                  .map(p => (
-                    <div key={p.id} className="bg-slate-950 p-4 sm:p-5 rounded-2xl border border-slate-800 flex flex-col md:flex-row items-start md:items-center justify-between gap-4 text-xs">
-                      <div className="space-y-2 flex-1">
-                        <div className="flex items-center gap-2">
-                          <p className="font-extrabold text-white text-sm">{p.title}</p>
-                          <span className="bg-amber-500/10 text-amber-400 border border-amber-500/20 px-2.5 py-0.5 rounded-full text-[10px] font-bold">
-                            {p.category}
-                          </span>
-                        </div>
-                        <p className="text-slate-300 font-medium">
-                          Coût estimé : <strong className="text-amber-400">{p.estimatedCost.toLocaleString('fr-FR')} F CFA</strong> • Soumis le : {p.date}
-                        </p>
-                        {p.pilotTeam && p.pilotTeam.length > 0 && (
-                          <div className="flex flex-wrap items-center gap-1.5 pt-1">
-                            <span className="font-bold text-slate-400 text-[11px] flex items-center gap-1">
-                              👥 Équipe Pilote :
+                <div className="space-y-3">
+                  {projects
+                    .filter(p => p.status === 'pending_payor_approval' || p.status === 'PENDING_PAYOR')
+                    .map(p => (
+                      <div
+                        key={p.id}
+                        className="bg-slate-950 p-5 rounded-2xl border-2 border-amber-500/40 shadow-lg flex flex-col space-y-4 text-xs"
+                      >
+                        <div className="flex flex-col md:flex-row md:items-center justify-between gap-2 border-b border-slate-800 pb-3">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="text-base font-black text-white">{p.title}</span>
+                            <span className="bg-amber-500/20 text-amber-300 border border-amber-500/30 px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase">
+                              {p.category}
                             </span>
+                            <span className="bg-amber-400 text-slate-950 font-black px-2.5 py-0.5 rounded-full text-[10px] flex items-center gap-1">
+                              <span>⏳ En Attente Accord Payor</span>
+                            </span>
+                          </div>
+                          <span className="text-[11px] text-slate-400 font-mono">Réf : {p.id}</span>
+                        </div>
+
+                        {/* Financial and Realization Details */}
+                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 bg-slate-900/80 p-3.5 rounded-xl border border-slate-800">
+                          <div>
+                            <span className="text-[10px] uppercase font-bold text-slate-400 block">💰 Budget Global</span>
+                            <span className="text-sm font-black text-amber-400">{p.estimatedCost.toLocaleString('fr-FR')} F CFA</span>
+                          </div>
+                          <div>
+                            <span className="text-[10px] uppercase font-bold text-slate-400 block">💳 Contribution / Membre</span>
+                            <span className="text-sm font-black text-emerald-400">
+                              {p.requiredAmountPerMember ? `${p.requiredAmountPerMember.toLocaleString('fr-FR')} F CFA` : 'Libre'}
+                            </span>
+                          </div>
+                          <div>
+                            <span className="text-[10px] uppercase font-bold text-slate-400 block">📅 Date de Réalisation</span>
+                            <span className="text-xs font-bold text-white">{p.dateRealisation || p.eventDate || 'Non fixée'}</span>
+                          </div>
+                          <div>
+                            <span className="text-[10px] uppercase font-bold text-slate-400 block">⏳ Date Limite Paiement</span>
+                            <span className="text-xs font-bold text-rose-300">{p.paymentDeadline || 'Non fixée'}</span>
+                          </div>
+                        </div>
+
+                        {/* Pilot Team */}
+                        {p.pilotTeam && p.pilotTeam.length > 0 && (
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <span className="text-[11px] font-bold text-slate-400">👥 Équipe Pilote Chargée du Projet :</span>
                             {p.pilotTeam.map((m, idx) => (
-                              <span key={idx} className="bg-slate-900 text-amber-300 px-2.5 py-0.5 rounded-lg border border-slate-800 font-bold text-[11px]">
-                                {m}
+                              <span key={idx} className="bg-slate-900 text-amber-300 px-2 py-0.5 rounded-lg border border-slate-800 text-[11px] font-bold">
+                                👤 {m}
                               </span>
                             ))}
                           </div>
                         )}
-                        {p.description && (
-                          <p className="text-slate-400 text-xs italic bg-slate-900/60 p-2.5 rounded-xl border border-slate-800/60 mt-1">
-                            {p.description}
-                          </p>
-                        )}
-                      </div>
 
-                      <div className="flex items-center gap-2 shrink-0 self-end md:self-center">
-                        <button
-                          type="button"
-                          onClick={() => handleGeneratePDFProject(p)}
-                          className="bg-slate-800 hover:bg-slate-700 text-amber-400 font-extrabold px-3 py-2 rounded-xl border border-slate-700 flex items-center gap-1.5 transition-all active:scale-95 text-xs"
-                          title="Imprimer le PDF du projet"
-                        >
-                          <Printer className="w-3.5 h-3.5" />
-                          <span>PDF</span>
-                        </button>
-                        <button
-                          onClick={() => {
-                            approveProjectPayor(p.id);
-                            alert('Projet AGR approuvé par le PAYOR !');
-                          }}
-                          className="bg-emerald-600 hover:bg-emerald-500 text-white font-black px-4 py-2 rounded-xl flex items-center gap-1 shadow active:scale-95 transition-all text-xs"
-                        >
-                          <CheckCircle2 className="w-3.5 h-3.5" /> Valider Le Projet
-                        </button>
+                        {/* Description / Business Model Preview */}
+                        {p.description && (
+                          <div className="p-3 bg-slate-900/60 rounded-xl border border-slate-800/80 text-slate-300 text-xs leading-relaxed whitespace-pre-line">
+                            {p.description}
+                          </div>
+                        )}
+
+                        {/* Action Buttons for Payor */}
+                        <div className="flex flex-wrap items-center justify-end gap-2.5 pt-2 border-t border-slate-800">
+                          {/* 1. Ouvrir le document officiel */}
+                          <button
+                            type="button"
+                            onClick={() => setPayorViewingProjectDoc(p)}
+                            className="bg-slate-800 hover:bg-slate-700 text-amber-300 border border-slate-700 font-bold px-3.5 py-2 rounded-xl flex items-center gap-1.5 transition-all text-xs active:scale-95"
+                            title="Ouvrir et examiner le dossier officiel du projet"
+                          >
+                            <FileText className="w-3.5 h-3.5 text-amber-400" />
+                            <span>📑 Ouvrir le Dossier Officiel</span>
+                          </button>
+
+                          {/* Print PDF directly */}
+                          <button
+                            type="button"
+                            onClick={() => handleGeneratePDFProject(p)}
+                            className="bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 font-bold px-3 py-2 rounded-xl flex items-center gap-1.5 transition-all text-xs active:scale-95"
+                            title="Imprimer ou enregistrer le PDF officiel"
+                          >
+                            <Printer className="w-3.5 h-3.5 text-slate-400" />
+                            <span>PDF</span>
+                          </button>
+
+                          {/* 2. Action Retour pour correction */}
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setPayorReturnProjectModalProj(p);
+                              setPayorReturnFeedbackText('');
+                              setPayorReturnFeedbackError(null);
+                            }}
+                            className="bg-rose-950/80 hover:bg-rose-900 text-rose-200 border border-rose-700/60 font-bold px-3.5 py-2 rounded-xl flex items-center gap-1.5 transition-all text-xs active:scale-95"
+                          >
+                            <XCircle className="w-3.5 h-3.5 text-rose-400" />
+                            <span>↩️ Retour pour correction</span>
+                          </button>
+
+                          {/* 3. Action Approuver le Projet */}
+                          <button
+                            type="button"
+                            onClick={() => {
+                              approveProjectPayor(p.id);
+                              setToastMessage(`✅ Projet "${p.title}" approuvé par le Payor ! Visa & cachet apposés.`);
+                            }}
+                            className="bg-emerald-600 hover:bg-emerald-500 text-white font-black px-4 py-2 rounded-xl flex items-center gap-1.5 shadow-lg active:scale-95 transition-all text-xs"
+                          >
+                            <CheckCircle2 className="w-4 h-4" />
+                            <span>✅ Approuver le Projet (Apposer Visa)</span>
+                          </button>
+                        </div>
                       </div>
+                    ))}
+                </div>
+              )}
+
+              {/* Historique des décisions Projets Payor (Approuvés ou Retournés) */}
+              {projects.filter(p => p.status !== 'pending_payor_approval' && p.status !== 'PENDING_PAYOR').length > 0 && (
+                <div className="pt-2">
+                  <details className="bg-slate-950/80 rounded-2xl border border-slate-800 p-3.5 group">
+                    <summary className="text-xs font-bold text-slate-400 cursor-pointer flex items-center justify-between">
+                      <span>Historique des dossiers de projets déjà traités par le Payor ({projects.filter(p => p.status !== 'pending_payor_approval' && p.status !== 'PENDING_PAYOR').length})</span>
+                      <span className="text-[10px] text-slate-500 group-open:rotate-180 transition-transform">▼</span>
+                    </summary>
+                    <div className="space-y-2 mt-3 pt-3 border-t border-slate-800">
+                      {projects
+                        .filter(p => p.status !== 'pending_payor_approval' && p.status !== 'PENDING_PAYOR')
+                        .map(p => {
+                          const isApproved = p.status === 'approved_by_payor' || p.status === 'APPROVED_PAYOR' || p.status === 'active' || p.status === 'PUBLISHED' || p.status === 'archived';
+                          return (
+                            <div key={p.id} className="p-3 bg-slate-900/60 rounded-xl border border-slate-800 flex items-center justify-between gap-2 text-xs">
+                              <div>
+                                <span className="font-bold text-white">{p.title}</span>
+                                <span className="text-slate-400 ml-2">({(p.estimatedCost ?? 0).toLocaleString('fr-FR')} F CFA)</span>
+                                {p.status === 'returned_for_correction' && (
+                                  <p className="text-[11px] text-rose-400 italic mt-0.5">
+                                    Motif du retour : {p.payorFeedback}
+                                  </p>
+                                )}
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                                  p.status === 'returned_for_correction'
+                                    ? 'bg-rose-500/20 text-rose-300 border border-rose-500/30'
+                                    : isApproved
+                                    ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                                    : 'bg-slate-800 text-slate-400'
+                                }`}>
+                                  {p.status === 'returned_for_correction'
+                                    ? '⚠️ Retourné pour correction'
+                                    : p.status === 'approved_by_payor'
+                                    ? '🟢 Approuvé par Payor (En attente pub)'
+                                    : p.status === 'active' || p.status === 'PUBLISHED'
+                                    ? '🚀 Publié / Actif'
+                                    : p.status === 'archived'
+                                    ? '📦 Archivé'
+                                    : p.status}
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => handleGeneratePDFProject(p)}
+                                  className="text-amber-400 hover:text-amber-300 font-bold px-2 py-1 bg-slate-800 rounded-lg text-[11px]"
+                                >
+                                  PDF
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })}
                     </div>
-                  ))
+                  </details>
+                </div>
               )}
             </div>
 
@@ -5867,7 +6423,36 @@ export const AdminPortal: React.FC = () => {
               </div>
             </div>
 
-            {/* 3. Description & Objectifs */}
+            {/* 3. Contribution Requise par Membre (Activation Trésorerie & Suivi Acomptes) */}
+            <div className="bg-slate-950/80 rounded-2xl p-5 border border-amber-500/30 space-y-3">
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <label className="block text-xs font-black text-amber-300 uppercase flex items-center gap-2">
+                  <Coins className="w-4 h-4 text-amber-400" />
+                  <span>Contribution Requise par Membre (F CFA)</span>
+                </label>
+                <span className="text-[10px] text-amber-400/80 font-semibold">
+                  Active automatiquement la rubrique dans le Suivi des Acomptes
+                </span>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 items-center">
+                <input
+                  type="number"
+                  placeholder={actCategoryType === 'FIXE' ? 'Ex: 10000' : 'Ex: 5000'}
+                  value={actRequiredAmount}
+                  onChange={e => setActRequiredAmount(e.target.value)}
+                  className="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 text-sm font-bold text-amber-300 font-mono focus:outline-none focus:border-amber-400"
+                />
+                <p className="text-xs text-slate-400 leading-relaxed">
+                  {actCategoryType === 'FIXE' ? (
+                    <>Cotisation pour la <strong>Soirée Rouama</strong> (budget global estimé : <span className="text-amber-300 font-mono font-bold">{((Number(actRequiredAmount) || 10000) * (members.length || 12)).toLocaleString('fr-FR')} F CFA</span> pour {members.length || 12} membres).</>
+                  ) : (
+                    <>Cotisation pour <strong>Sorties & Loisirs</strong>. Dès publication, la rubrique s'activera dynamiquement dans le Suivi des Acomptes pour les 12 membres.</>
+                  )}
+                </p>
+              </div>
+            </div>
+
+            {/* 4. Description & Objectifs */}
             <div>
               <label className="block text-xs font-bold text-slate-400 uppercase mb-2">
                 Description & Objectifs
@@ -5881,7 +6466,7 @@ export const AdminPortal: React.FC = () => {
               />
             </div>
 
-            {/* 4. Programme Déroulé */}
+            {/* 5. Programme Déroulé */}
             <div>
               <label className="block text-xs font-bold text-slate-400 uppercase mb-2">
                 Programme Déroulé
@@ -6046,6 +6631,9 @@ export const AdminPortal: React.FC = () => {
                   ];
 
                   try {
+                    const reqAmtNum = Number(actRequiredAmount) || (actCategoryType === 'FIXE' ? 10000 : 5000);
+                    const totalBudgetCalc = reqAmtNum * (members.length || 12);
+
                     if (editingActivityId) {
                       await updateActivity(editingActivityId, {
                         title: actTitle.trim(),
@@ -6059,11 +6647,29 @@ export const AdminPortal: React.FC = () => {
                         location: actLocation.trim(),
                         description: actDesc.trim(),
                         program: actProgram.trim(),
+                        budget: totalBudgetCalc,
                         adHocRoles,
                         committees: structuredCommittees,
                         status: 'PUBLISHED',
                       });
-                      alert("Événement mis à jour avec succès ! Il est visible en temps réel dans l'onglet SHOW.");
+
+                      // Synchroniser avec les événements financiers si Sortie / Loisir
+                      if (actCategoryType === 'SIMPLE') {
+                        const existingFin = financialEvents.find(e => e.fund === 'LOISIRS' && (e.id === editingActivityId || e.title.toLowerCase().trim() === actTitle.toLowerCase().trim()));
+                        if (!existingFin) {
+                          createFinancialEvent({
+                            fund: 'LOISIRS',
+                            title: actTitle.trim(),
+                            description: actDesc.trim() || 'Sortie & Loisirs organisée par la Commission Organisation',
+                            requiredAmountPerMember: reqAmtNum,
+                            eventDate: formattedDate,
+                            paymentDeadline: formattedDate,
+                            createdBy: 'COMMISSION ORGANISATION',
+                          });
+                        }
+                      }
+
+                      alert("Événement mis à jour avec succès ! Il est visible en temps réel dans l'onglet SHOW et synchronisé avec la Trésorerie.");
                     } else {
                       createActivity({
                         title: actTitle.trim(),
@@ -6077,11 +6683,26 @@ export const AdminPortal: React.FC = () => {
                         location: actLocation.trim(),
                         description: actDesc.trim(),
                         program: actProgram.trim(),
+                        budget: totalBudgetCalc,
                         adHocRoles,
                         committees: structuredCommittees,
                         createdBy: 'COMMISSION ORGANISATION',
                       });
-                      alert("Événement publié avec succès par la Commission Organisation ! Il est immédiatement visible dans l'onglet SHOW.");
+
+                      // Enregistrement automatique en Trésorerie si Sortie / Loisirs
+                      if (actCategoryType === 'SIMPLE') {
+                        createFinancialEvent({
+                          fund: 'LOISIRS',
+                          title: actTitle.trim(),
+                          description: actDesc.trim() || 'Sortie & Loisirs organisée par la Commission Organisation',
+                          requiredAmountPerMember: reqAmtNum,
+                          eventDate: formattedDate,
+                          paymentDeadline: formattedDate,
+                          createdBy: 'COMMISSION ORGANISATION',
+                        });
+                      }
+
+                      alert("Événement publié avec succès par la Commission Organisation ! La rubrique est immédiatement activée dans le Suivi des Acomptes et visible dans SHOW.");
                     }
 
                     // Reset form
@@ -6092,6 +6713,7 @@ export const AdminPortal: React.FC = () => {
                     setActLocation('');
                     setActDesc('');
                     setActProgram('');
+                    setActRequiredAmount('10000');
                     setPcoRoles([]);
                     setPcoAdjRoles([]);
                     setRestaurationRoles([]);
@@ -6247,6 +6869,16 @@ export const AdminPortal: React.FC = () => {
                               setActLocation(act.location || '');
                               setActDesc(act.description || '');
                               setActProgram(act.program || '');
+
+                              const matchingFin = financialEvents.find(e => e.fund === 'LOISIRS' && e.title.toLowerCase().trim() === (act.title || '').toLowerCase().trim());
+                              if (matchingFin) {
+                                setActRequiredAmount(String(matchingFin.requiredAmountPerMember));
+                              } else if (act.budget && act.budget > 0) {
+                                setActRequiredAmount(String(Math.round(act.budget / (members.length || 12))));
+                              } else {
+                                setActRequiredAmount(act.eventType === 'FIXE' ? '10000' : '5000');
+                              }
+
                               setPcoRoles(pcoList.length > 0 ? pcoList : (pcoDisplay !== 'Non désigné' ? [pcoDisplay] : []));
                               setPcoAdjRoles(pcoAdjList.length > 0 ? pcoAdjList : (pcoAdjDisplay !== 'Non désigné' ? [pcoAdjDisplay] : []));
                               setRestaurationRoles(restList.length > 0 ? restList : (restDisplay !== 'Non désigné' ? [restDisplay] : []));
@@ -6276,12 +6908,19 @@ export const AdminPortal: React.FC = () => {
                               setIsDeletingActivityId(act.id);
                               try {
                                 await deleteActivity(act.id);
+                                if (act.eventType === 'SIMPLE') {
+                                  const relatedFin = financialEvents.find(e => e.fund === 'LOISIRS' && (e.title.toLowerCase().trim() === act.title.toLowerCase().trim() || e.id === act.id));
+                                  if (relatedFin) {
+                                    archiveFinancialEvent(relatedFin.id);
+                                  }
+                                }
                                 if (editingActivityId === act.id) {
                                   setActTitle('');
                                   setActDate('');
                                   setActLocation('');
                                   setActDesc('');
                                   setActProgram('');
+                                  setActRequiredAmount('10000');
                                   setPcoRoles([]);
                                   setPcoAdjRoles([]);
                                   setRestaurationRoles([]);
@@ -6390,10 +7029,51 @@ export const AdminPortal: React.FC = () => {
             allowedActionsText="Montage des dossiers AGR, soumission des projets générateurs de revenus et suivi de rentabilité."
           />
           <div className="bg-slate-900 rounded-[2.5rem] p-6 sm:p-8 border border-slate-800 shadow-xl space-y-6">
-          <h2 className="text-xl font-black text-white flex items-center gap-2">
-            <Rocket className="w-5 h-5 text-amber-500" />
-            <span>Montage de Projet AGR</span>
-          </h2>
+          {editingProjectId && (
+            <div className="p-4 sm:p-5 bg-rose-500/10 border-2 border-rose-500/40 rounded-2xl space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-black uppercase text-rose-400 flex items-center gap-1.5">
+                  <AlertTriangle className="w-4 h-4 text-rose-400" />
+                  <span>⚠️ Dossier Projet retourné par le Payor pour correction</span>
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEditingProjectId(null);
+                    setProjTitle('');
+                    setProjCategory('');
+                    setProjCostInput('');
+                    setProjRequiredPerMember('');
+                    setProjEventDate('');
+                    setProjPaymentDeadline('');
+                    setProjDesc('');
+                    setProjPilotTeam([]);
+                    setCustomPilotInput('');
+                  }}
+                  className="text-slate-400 hover:text-white text-xs font-bold px-2 py-1 bg-slate-800/80 rounded-lg transition-colors"
+                >
+                  ✕ Annuler la modification
+                </button>
+              </div>
+              <p className="text-xs text-rose-200">
+                <strong>Motif notifié par le Payor :</strong>{' '}
+                {projects.find(p => p.id === editingProjectId)?.payorFeedback || 'Des corrections ou précisions ont été demandées.'}
+              </p>
+              <p className="text-[11px] text-slate-400">
+                Ajustez les éléments du dossier ci-dessous, puis cliquez sur <strong>"📑 Transférer au Payor pour accord"</strong> pour lui renvoyer le dossier corrigé.
+              </p>
+            </div>
+          )}
+
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-800 pb-4">
+            <h2 className="text-xl font-black text-white flex items-center gap-2">
+              <Rocket className="w-5 h-5 text-amber-500" />
+              <span>{editingProjectId ? 'Correction du Dossier Projet AGR' : 'Montage de Projet AGR'}</span>
+            </h2>
+            <span className="text-xs font-bold text-amber-400/90 bg-amber-500/10 px-3 py-1 rounded-full border border-amber-500/20">
+              Procédure Officielle : Montage ➜ Visa Payor ➜ Publication
+            </span>
+          </div>
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div>
@@ -6584,154 +7264,306 @@ export const AdminPortal: React.FC = () => {
             </div>
           </div>
 
-          <button
-            onClick={() => {
-              if (!projTitle.trim()) {
-                alert('Veuillez spécifier le titre du projet.');
-                return;
-              }
-              const requiredAmt = Number(projRequiredPerMember) || 0;
-              createProject({
-                title: projTitle,
-                category: projCategory,
-                estimatedCost: Number(projCostInput) || 0,
-                requiredAmountPerMember: requiredAmt,
-                eventDate: projEventDate,
-                paymentDeadline: projPaymentDeadline,
-                description: projDesc,
-                pilotTeam: projPilotTeam,
-                date: new Date().toLocaleDateString('fr-FR'),
-                createdBy: 'COMMISSION PROJET',
-              });
-              alert('Projet AGR enregistré avec succès au niveau de la Commission Projet !');
-              setProjTitle('');
-              setProjCategory('');
-              setProjCostInput('');
-              setProjRequiredPerMember('');
-              setProjEventDate('');
-              setProjPaymentDeadline('');
-              setProjDesc('');
-              setProjPilotTeam([]);
-              setCustomPilotInput('');
-            }}
-            className="bg-[#E67E22] hover:bg-[#D35400] text-white font-black py-3.5 px-6 rounded-2xl shadow-lg text-sm flex items-center gap-2 active:scale-95 transition-all"
-          >
-            <Send className="w-4 h-4" />
-            <span>Enregistrer le Dossier Projet AGR</span>
-          </button>
+          <div className="flex flex-wrap items-center gap-3 pt-2">
+            <button
+              type="button"
+              onClick={() => {
+                if (!projTitle.trim()) {
+                  alert('Veuillez spécifier le titre du projet.');
+                  return;
+                }
+                const requiredAmt = Number(projRequiredPerMember) || 0;
+                const totalCost = Number(projCostInput) || 0;
+
+                if (editingProjectId) {
+                  updateProject(editingProjectId, {
+                    title: projTitle.trim(),
+                    category: projCategory,
+                    estimatedCost: totalCost,
+                    requiredAmountPerMember: requiredAmt,
+                    dateRealisation: projEventDate,
+                    eventDate: projEventDate,
+                    paymentDeadline: projPaymentDeadline,
+                    description: projDesc,
+                    pilotTeam: projPilotTeam,
+                    status: 'pending_payor_approval',
+                    officialDocGenerated: true,
+                    payorFeedback: '',
+                  });
+                  setToastMessage(`📑 Dossier révisé "${projTitle.trim()}" retransmis au Payor pour visa !`);
+                  setEditingProjectId(null);
+                } else {
+                  createProject({
+                    title: projTitle.trim(),
+                    category: projCategory,
+                    estimatedCost: totalCost,
+                    requiredAmountPerMember: requiredAmt,
+                    dateRealisation: projEventDate,
+                    eventDate: projEventDate,
+                    paymentDeadline: projPaymentDeadline,
+                    description: projDesc,
+                    pilotTeam: projPilotTeam,
+                    date: new Date().toLocaleDateString('fr-FR'),
+                    createdBy: 'COMMISSION PROJET',
+                    status: 'pending_payor_approval',
+                    officialDocGenerated: true,
+                  });
+                  setToastMessage(`📑 Dossier de projet "${projTitle.trim()}" transféré au Payor pour accord !`);
+                }
+
+                setProjTitle('');
+                setProjCategory('');
+                setProjCostInput('');
+                setProjRequiredPerMember('');
+                setProjEventDate('');
+                setProjPaymentDeadline('');
+                setProjDesc('');
+                setProjPilotTeam([]);
+                setCustomPilotInput('');
+              }}
+              className="bg-amber-600 hover:bg-amber-500 text-white font-black py-3.5 px-6 rounded-2xl shadow-lg text-sm flex items-center gap-2 active:scale-95 transition-all cursor-pointer"
+            >
+              <Send className="w-4 h-4" />
+              <span>📑 Transférer au Payor pour accord</span>
+            </button>
+
+            {editingProjectId && (
+              <button
+                type="button"
+                onClick={() => {
+                  setEditingProjectId(null);
+                  setProjTitle('');
+                  setProjCategory('');
+                  setProjCostInput('');
+                  setProjRequiredPerMember('');
+                  setProjEventDate('');
+                  setProjPaymentDeadline('');
+                  setProjDesc('');
+                  setProjPilotTeam([]);
+                  setCustomPilotInput('');
+                }}
+                className="bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold py-3.5 px-5 rounded-2xl text-sm border border-slate-700 transition-all cursor-pointer"
+              >
+                Annuler
+              </button>
+            )}
+          </div>
         </div>
 
         {/* History of AGR Projects for Commission Projets */}
         <div className="bg-slate-900 rounded-[2.5rem] p-6 sm:p-8 border border-slate-800 shadow-xl space-y-6">
-          <h2 className="text-xl font-black text-white flex items-center gap-2">
-            <Rocket className="w-5 h-5 text-emerald-500" />
-            <span>Dossiers de Projets AGR Montés & Suivis ({projects.length})</span>
-          </h2>
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-800 pb-4">
+            <h2 className="text-xl font-black text-white flex items-center gap-2">
+              <Rocket className="w-5 h-5 text-emerald-500" />
+              <span>Dossiers de Projets AGR Montés & Suivis ({projects.length})</span>
+            </h2>
+            <span className="text-xs text-slate-400">
+              Statuts : En attente Payor ➜ Approuvé Payor ➜ Publié (Cotisations) ➜ Archivé (Grenier)
+            </span>
+          </div>
 
           {projects.length === 0 ? (
             <p className="text-slate-500 text-xs italic py-4">Aucun projet AGR enregistré dans le système.</p>
           ) : (
             <div className="space-y-4">
               {projects.map(p => {
-                const isPublished = p.status === 'PUBLISHED';
+                const isApprovedByPayor = p.status === 'approved_by_payor' || p.status === 'APPROVED_PAYOR';
+                const isPublished = p.status === 'active' || p.status === 'PUBLISHED';
+                const isReturned = p.status === 'returned_for_correction';
+                const isPendingPayor = p.status === 'pending_payor_approval' || p.status === 'PENDING_PAYOR';
+                const isArchived = p.status === 'archived' || p.status === 'ARCHIVED';
+
                 return (
-                  <div key={p.id} className="bg-slate-950 p-5 rounded-2xl border border-slate-800 flex flex-col md:flex-row items-start md:items-center justify-between gap-4 text-xs">
-                    <div className="space-y-2 flex-1">
+                  <div
+                    key={p.id}
+                    className={`p-5 rounded-2xl border flex flex-col space-y-4 text-xs transition-all ${
+                      isReturned
+                        ? 'bg-rose-950/20 border-rose-500/50'
+                        : isApprovedByPayor
+                        ? 'bg-emerald-950/20 border-emerald-500/40'
+                        : isPublished
+                        ? 'bg-emerald-950/30 border-emerald-500/50'
+                        : isArchived
+                        ? 'bg-slate-950 border-slate-800 opacity-80'
+                        : 'bg-slate-950 border-amber-500/30'
+                    }`}
+                  >
+                    {/* Header & Badges */}
+                    <div className="flex flex-col md:flex-row md:items-center justify-between gap-2 border-b border-slate-800/80 pb-3">
                       <div className="flex flex-wrap items-center gap-2">
                         <p className="font-extrabold text-white text-base">{p.title}</p>
                         <span className="bg-amber-500/10 text-amber-400 border border-amber-500/20 px-2.5 py-0.5 rounded-full text-[10px] font-bold">
                           {p.category}
                         </span>
-                        <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold border ${
-                          isPublished
-                            ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30'
-                            : p.status === 'ARCHIVED'
-                            ? 'bg-slate-800 text-slate-400 border-slate-700'
-                            : 'bg-amber-500/10 text-amber-400 border-amber-500/20'
-                        }`}>
-                          {isPublished
-                            ? '🟢 OUVERT AUX COTISATIONS (PUBLIÉ)'
-                            : p.status === 'ARCHIVED'
-                            ? '📦 ARCHIVÉ / CLÔTURÉ'
-                            : 'EN ATTENTE DE PUBLICATION'}
-                        </span>
-                      </div>
 
-                      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-slate-300 font-medium">
-                        <span>Coût total : <strong className="text-amber-400">{p.estimatedCost.toLocaleString('fr-FR')} F CFA</strong></span>
-                        <span>
-                          Contribution par membre :{' '}
-                          <strong className="text-emerald-400 font-mono">
-                            {p.requiredAmountPerMember ? `${p.requiredAmountPerMember.toLocaleString('fr-FR')} F CFA` : 'Libre'}
-                          </strong>
-                        </span>
-                        {p.eventDate && <span>Lancement : <strong className="text-white">{p.eventDate}</strong></span>}
-                        {p.paymentDeadline && <span>Date limite : <strong className="text-rose-400">{p.paymentDeadline}</strong></span>}
-                      </div>
-
-                      {/* Équipe Pilote Display */}
-                      {p.pilotTeam && p.pilotTeam.length > 0 ? (
-                        <div className="flex flex-wrap items-center gap-1.5 pt-1">
-                          <span className="font-bold text-slate-400 text-[11px] flex items-center gap-1">
-                            👥 Équipe Pilote :
+                        {/* Workflow Status Badge */}
+                        {isPendingPayor && (
+                          <span className="bg-amber-500/20 text-amber-300 border border-amber-500/40 px-3 py-0.5 rounded-full text-[10px] font-black flex items-center gap-1">
+                            <span>⏳ En attente de l'accord du Payor</span>
                           </span>
-                          {p.pilotTeam.map((m, idx) => (
-                            <span key={idx} className="bg-slate-900 text-amber-300 px-2.5 py-0.5 rounded-lg border border-slate-800 font-bold text-[11px]">
-                              👤 {m}
-                            </span>
-                          ))}
-                        </div>
-                      ) : (
-                        <p className="text-slate-500 text-[11px] italic">👥 Équipe pilote : Aucun membre spécifié</p>
-                      )}
+                        )}
 
-                      {p.description && (
-                        <p className="text-slate-400 text-xs italic bg-slate-900/60 p-2.5 rounded-xl border border-slate-800/60 mt-1">
-                          {p.description}
-                        </p>
-                      )}
+                        {isReturned && (
+                          <span className="bg-rose-500/20 text-rose-300 border border-rose-500/40 px-3 py-0.5 rounded-full text-[10px] font-black flex items-center gap-1">
+                            <span>⚠️ Projet retourné par le Payor pour correction</span>
+                          </span>
+                        )}
+
+                        {isApprovedByPayor && (
+                          <span className="bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 px-3 py-0.5 rounded-full text-[10px] font-black flex items-center gap-1">
+                            <span>✅ Accord Payor Accordé (Visé & Signé)</span>
+                          </span>
+                        )}
+
+                        {isPublished && (
+                          <span className="bg-emerald-500 text-slate-950 px-3 py-0.5 rounded-full text-[10px] font-black flex items-center gap-1">
+                            <span>🟢 Ouvert aux cotisations (Publié)</span>
+                          </span>
+                        )}
+
+                        {isArchived && (
+                          <span className="bg-slate-800 text-slate-400 border border-slate-700 px-3 py-0.5 rounded-full text-[10px] font-bold flex items-center gap-1">
+                            <span>📦 Archivé dans le Grenier</span>
+                          </span>
+                        )}
+                      </div>
+
+                      <span className="text-[11px] text-slate-400 font-mono">Réf : {p.id}</span>
                     </div>
 
-                    <div className="flex flex-wrap items-center gap-2 shrink-0">
-                      {/* Publish / Archive Actions */}
-                      {!isPublished && p.status !== 'ARCHIVED' && (
+                    {/* Return feedback message if returned */}
+                    {isReturned && (
+                      <div className="p-3.5 bg-rose-500/10 border border-rose-500/30 rounded-xl space-y-1">
+                        <span className="text-[11px] font-bold text-rose-300 uppercase flex items-center gap-1">
+                          <AlertTriangle className="w-3.5 h-3.5 text-rose-400" />
+                          <span>Motif du retour notifié par le Payor :</span>
+                        </span>
+                        <p className="text-xs text-rose-100 italic bg-slate-950/60 p-2.5 rounded-lg border border-rose-500/20">
+                          {p.payorFeedback || 'Aucun motif précis spécifié.'}
+                        </p>
+                      </div>
+                    )}
+
+                    {/* Payor Approval Stamp Display */}
+                    {(isApprovedByPayor || isPublished) && p.payorSignature && (
+                      <div className="p-3 bg-emerald-500/10 border border-emerald-500/20 rounded-xl flex items-center gap-3">
+                        <img
+                          src={p.payorSignature.stampUrl || '/SIDEPO.png'}
+                          alt="Visa Payor"
+                          className="h-10 w-16 object-contain bg-white/10 p-1 rounded border border-emerald-500/30"
+                        />
+                        <div className="text-xs">
+                          <span className="font-bold text-emerald-300 block">
+                            Visa & Accord Officiel Accordés par {p.payorSignature.signedBy || 'Le Payor'}
+                          </span>
+                          <span className="text-[10px] text-slate-400">
+                            Validé le {p.payorSignature.signedAt || p.date || 'Récemment'}
+                          </span>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Metadata summary */}
+                    <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5 text-slate-300 font-medium">
+                      <span>Coût estimé : <strong className="text-amber-400">{p.estimatedCost.toLocaleString('fr-FR')} F CFA</strong></span>
+                      <span>
+                        Contribution / membre :{' '}
+                        <strong className="text-emerald-400 font-mono">
+                          {p.requiredAmountPerMember ? `${p.requiredAmountPerMember.toLocaleString('fr-FR')} F CFA` : 'Libre'}
+                        </strong>
+                      </span>
+                      <span>Date de réalisation : <strong className="text-white">{p.dateRealisation || p.eventDate || 'Non spécifiée'}</strong></span>
+                      {p.paymentDeadline && <span>Date limite cotisations : <strong className="text-rose-400">{p.paymentDeadline}</strong></span>}
+                    </div>
+
+                    {/* Pilot Team Display */}
+                    {p.pilotTeam && p.pilotTeam.length > 0 ? (
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span className="font-bold text-slate-400 text-[11px] flex items-center gap-1">
+                          👥 Équipe Pilote :
+                        </span>
+                        {p.pilotTeam.map((m, idx) => (
+                          <span key={idx} className="bg-slate-900 text-amber-300 px-2.5 py-0.5 rounded-lg border border-slate-800 font-bold text-[11px]">
+                            👤 {m}
+                          </span>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-slate-500 text-[11px] italic">👥 Équipe pilote : Aucun membre spécifié</p>
+                    )}
+
+                    {p.description && (
+                      <p className="text-slate-400 text-xs italic bg-slate-900/60 p-2.5 rounded-xl border border-slate-800/60 leading-relaxed whitespace-pre-line">
+                        {p.description}
+                      </p>
+                    )}
+
+                    {/* Actions Bar */}
+                    <div className="flex flex-wrap items-center justify-end gap-2.5 pt-2 border-t border-slate-800/80">
+                      {/* Action 1 : Si retourné pour correction -> Bouton Modifier & Corriger */}
+                      {isReturned && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingProjectId(p.id);
+                            setProjTitle(p.title);
+                            setProjCategory(p.category || '');
+                            setProjCostInput(p.estimatedCost ? String(p.estimatedCost) : '');
+                            setProjRequiredPerMember(p.requiredAmountPerMember ? String(p.requiredAmountPerMember) : '');
+                            setProjEventDate(p.dateRealisation || p.eventDate || '');
+                            setProjPaymentDeadline(p.paymentDeadline || '');
+                            setProjDesc(p.description || '');
+                            setProjPilotTeam(p.pilotTeam || []);
+                            window.scrollTo({ top: 0, behavior: 'smooth' });
+                          }}
+                          className="bg-amber-600 hover:bg-amber-500 text-white font-black px-4 py-2 rounded-xl flex items-center gap-1.5 shadow-lg active:scale-95 transition-all text-xs cursor-pointer"
+                        >
+                          <Edit className="w-3.5 h-3.5" />
+                          <span>✏️ Modifier & Corriger le Dossier</span>
+                        </button>
+                      )}
+
+                      {/* Action 2 : Si approuvé par le Payor -> Bouton Publier pour cotisations */}
+                      {isApprovedByPayor && (
                         <button
                           type="button"
                           onClick={() => {
                             publishProject(p.id);
-                            alert(`🚀 Projet "${p.title}" publié avec succès ! La rubrique AGR est désormais active dans l'espace membre.`);
+                            alert(`🚀 Projet "${p.title}" officiellement publié ! La rubrique "PROJETS AGR / INVESTISSEMENTS" est désormais active dans le Suivi des Acomptes et visible dans Gagne-Pain.`);
                           }}
-                          className="bg-emerald-600 hover:bg-emerald-500 text-white font-black px-4 py-2.5 rounded-xl flex items-center gap-1.5 shadow-lg active:scale-95 transition-all text-xs cursor-pointer"
+                          className="bg-emerald-600 hover:bg-emerald-500 text-white font-black px-4 py-2 rounded-xl flex items-center gap-1.5 shadow-lg active:scale-95 transition-all text-xs cursor-pointer"
                         >
                           <Send className="w-3.5 h-3.5" />
-                          <span>🚀 Publier pour cotisations</span>
+                          <span>🚀 Publier le Projet AGR (Activer Cotisations)</span>
                         </button>
                       )}
 
+                      {/* Action 3 : Si déjà publié -> Bouton Clôturer / Archiver au Grenier */}
                       {isPublished && (
                         <button
                           type="button"
                           onClick={() => {
-                            if (window.confirm(`Voulez-vous clôturer / archiver le projet "${p.title}" ? La rubrique AGR deviendra grisée dans l'espace membre.`)) {
+                            if (window.confirm(`Voulez-vous clôturer et archiver le projet "${p.title}" dans le Grenier ? Les cotisations seront gelées.`)) {
                               archiveProject(p.id);
-                              alert(`Projet "${p.title}" clôturé / archivé.`);
+                              alert(`Projet "${p.title}" clôturé et archivé au Grenier.`);
                             }
                           }}
-                          className="bg-slate-800 hover:bg-slate-700 text-amber-300 border border-slate-700 font-bold px-3.5 py-2.5 rounded-xl flex items-center gap-1.5 transition-all text-xs cursor-pointer"
+                          className="bg-slate-800 hover:bg-slate-700 text-amber-300 border border-slate-700 font-bold px-3.5 py-2 rounded-xl flex items-center gap-1.5 transition-all text-xs cursor-pointer"
                         >
                           <Archive className="w-3.5 h-3.5" />
-                          <span>Clôturer / Archiver</span>
+                          <span>📦 Clôturer / Archiver au Grenier</span>
                         </button>
                       )}
 
+                      {/* Action 4 : Télécharger ou imprimer le dossier officiel en PDF */}
                       <button
                         type="button"
                         onClick={() => handleGeneratePDFProject(p)}
-                        className="bg-slate-800 hover:bg-slate-700 text-amber-400 font-extrabold px-3.5 py-2.5 rounded-xl border border-slate-700 flex items-center gap-1.5 transition-all active:scale-95"
-                        title="Imprimer ou enregistrer en PDF"
+                        className="bg-slate-800 hover:bg-slate-700 text-amber-400 font-extrabold px-3.5 py-2 rounded-xl border border-slate-700 flex items-center gap-1.5 transition-all active:scale-95 text-xs"
+                        title="Imprimer ou générer le dossier officiel en PDF"
                       >
                         <Printer className="w-3.5 h-3.5" />
-                        <span>PDF</span>
+                        <span>📑 Dossier Officiel (PDF)</span>
                       </button>
                     </div>
                   </div>
@@ -7812,6 +8644,213 @@ export const AdminPortal: React.FC = () => {
               >
                 <CheckCircle2 className="w-4 h-4" />
                 <span>Compris & Fermer</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL PAYOR : EXAMEN DU DOSSIER OFFICIEL PROJET AGR */}
+      {payorViewingProjectDoc && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto animate-fadeIn">
+          <div className="bg-slate-900 border-2 border-amber-500/50 rounded-3xl max-w-2xl w-full p-6 sm:p-8 space-y-5 shadow-2xl my-8">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-4">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-400">
+                  <FileText className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-black text-white">Dossier Officiel Projet AGR</h3>
+                  <p className="text-xs text-slate-400">Examen Direction Payor • Réf : {payorViewingProjectDoc.id}</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPayorViewingProjectDoc(null)}
+                className="text-slate-400 hover:text-white p-1 rounded-xl bg-slate-800"
+              >
+                <XCircle className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Content summary */}
+            <div className="bg-slate-950 p-5 rounded-2xl border border-slate-800 space-y-4 text-xs">
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 pb-3">
+                <span className="text-base font-black text-white">{payorViewingProjectDoc.title}</span>
+                <span className="bg-amber-500/20 text-amber-300 border border-amber-500/30 px-3 py-1 rounded-full font-bold">
+                  {payorViewingProjectDoc.category}
+                </span>
+              </div>
+
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 bg-slate-900/60 p-3 rounded-xl border border-slate-800">
+                <div>
+                  <span className="text-[10px] uppercase font-bold text-slate-400 block">💰 Budget Total</span>
+                  <span className="font-black text-amber-400 text-sm">{payorViewingProjectDoc.estimatedCost.toLocaleString('fr-FR')} F CFA</span>
+                </div>
+                <div>
+                  <span className="text-[10px] uppercase font-bold text-slate-400 block">💳 / Membre</span>
+                  <span className="font-black text-emerald-400 text-sm">
+                    {payorViewingProjectDoc.requiredAmountPerMember ? `${payorViewingProjectDoc.requiredAmountPerMember.toLocaleString('fr-FR')} F` : 'Libre'}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-[10px] uppercase font-bold text-slate-400 block">📅 Réalisation</span>
+                  <span className="font-bold text-white text-xs">{payorViewingProjectDoc.dateRealisation || payorViewingProjectDoc.eventDate || 'Non spécifiée'}</span>
+                </div>
+                <div>
+                  <span className="text-[10px] uppercase font-bold text-slate-400 block">⏳ Date Limite</span>
+                  <span className="font-bold text-rose-300 text-xs">{payorViewingProjectDoc.paymentDeadline || 'Non spécifiée'}</span>
+                </div>
+              </div>
+
+              {payorViewingProjectDoc.pilotTeam && payorViewingProjectDoc.pilotTeam.length > 0 && (
+                <div>
+                  <span className="font-bold text-slate-400 text-[11px] block mb-1.5">👥 Équipe Pilote Désignée :</span>
+                  <div className="flex flex-wrap gap-1.5">
+                    {payorViewingProjectDoc.pilotTeam.map((m, idx) => (
+                      <span key={idx} className="bg-slate-900 text-amber-300 px-2.5 py-0.5 rounded-lg border border-slate-800 font-bold text-[11px]">
+                        👤 {m}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <div>
+                <span className="font-bold text-slate-400 text-[11px] block mb-1">📝 Description & Modèle Économique :</span>
+                <div className="p-3.5 bg-slate-900 rounded-xl border border-slate-800 text-slate-300 leading-relaxed whitespace-pre-line max-h-48 overflow-y-auto">
+                  {payorViewingProjectDoc.description}
+                </div>
+              </div>
+            </div>
+
+            {/* Actions for Payor in Modal */}
+            <div className="flex flex-wrap items-center justify-between gap-3 pt-3 border-t border-slate-800">
+              <button
+                type="button"
+                onClick={() => handleGeneratePDFProject(payorViewingProjectDoc)}
+                className="bg-slate-800 hover:bg-slate-700 text-amber-300 border border-slate-700 font-bold px-4 py-2.5 rounded-xl text-xs flex items-center gap-2"
+              >
+                <Printer className="w-4 h-4 text-amber-400" />
+                <span>Imprimer / PDF Officiel</span>
+              </button>
+
+              <div className="flex items-center gap-2">
+                {(payorViewingProjectDoc.status === 'pending_payor_approval' || payorViewingProjectDoc.status === 'PENDING_PAYOR') && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const p = payorViewingProjectDoc;
+                        setPayorViewingProjectDoc(null);
+                        setPayorReturnProjectModalProj(p);
+                        setPayorReturnFeedbackText('');
+                        setPayorReturnFeedbackError(null);
+                      }}
+                      className="bg-rose-950 hover:bg-rose-900 text-rose-200 border border-rose-700 font-bold px-4 py-2.5 rounded-xl text-xs flex items-center gap-1.5"
+                    >
+                      <XCircle className="w-4 h-4 text-rose-400" />
+                      <span>↩️ Retour pour correction</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        approveProjectPayor(payorViewingProjectDoc.id);
+                        setToastMessage(`✅ Projet "${payorViewingProjectDoc.title}" approuvé ! Visa Payor apposé.`);
+                        setPayorViewingProjectDoc(null);
+                      }}
+                      className="bg-emerald-600 hover:bg-emerald-500 text-white font-black px-4 py-2.5 rounded-xl text-xs flex items-center gap-1.5 shadow-lg"
+                    >
+                      <CheckCircle2 className="w-4 h-4" />
+                      <span>✅ Approuver & Signer (SIDEPO.png)</span>
+                    </button>
+                  </>
+                )}
+                {payorViewingProjectDoc.status !== 'pending_payor_approval' && payorViewingProjectDoc.status !== 'PENDING_PAYOR' && (
+                  <button
+                    type="button"
+                    onClick={() => setPayorViewingProjectDoc(null)}
+                    className="bg-slate-800 hover:bg-slate-700 text-white font-bold px-5 py-2.5 rounded-xl text-xs"
+                  >
+                    Fermer
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL PAYOR : RETOUR POUR CORRECTION AVEC MOTIF OBLIGATOIRE */}
+      {payorReturnProjectModalProj && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 animate-fadeIn">
+          <div className="bg-slate-900 border-2 border-rose-500/50 rounded-3xl max-w-lg w-full p-6 sm:p-7 space-y-4 shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-2xl bg-rose-500/20 border border-rose-500/40 flex items-center justify-center text-rose-400">
+                  <AlertTriangle className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-black text-white">Retour du Projet pour Correction</h3>
+                  <p className="text-[11px] text-slate-400 font-mono truncate max-w-xs">{payorReturnProjectModalProj.title}</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPayorReturnProjectModalProj(null)}
+                className="text-slate-400 hover:text-white p-1 rounded-xl bg-slate-800"
+              >
+                <XCircle className="w-5 h-5" />
+              </button>
+            </div>
+
+            <p className="text-xs text-slate-300 leading-relaxed">
+              Veuillez obligatoirement préciser ci-dessous au Responsable Projet les motifs du renvoi et les rectifications attendues sur ce dossier :
+            </p>
+
+            <div>
+              <textarea
+                placeholder="Précisez les corrections ou motifs du retour..."
+                value={payorReturnFeedbackText}
+                onChange={e => {
+                  setPayorReturnFeedbackText(e.target.value);
+                  if (payorReturnFeedbackError) setPayorReturnFeedbackError(null);
+                }}
+                rows={4}
+                className="w-full bg-slate-950 border border-slate-800 rounded-2xl p-3.5 text-xs text-white focus:outline-none focus:border-rose-500 font-medium"
+              />
+              {payorReturnFeedbackError && (
+                <p className="text-xs text-rose-400 font-bold mt-1.5 flex items-center gap-1">
+                  <AlertTriangle className="w-3.5 h-3.5" />
+                  <span>{payorReturnFeedbackError}</span>
+                </p>
+              )}
+            </div>
+
+            <div className="flex items-center justify-end gap-2.5 pt-2 border-t border-slate-800">
+              <button
+                type="button"
+                onClick={() => setPayorReturnProjectModalProj(null)}
+                className="bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold px-4 py-2.5 rounded-xl text-xs transition-colors"
+              >
+                Annuler
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (!payorReturnFeedbackText.trim()) {
+                    setPayorReturnFeedbackError('La saisie du motif de retour est obligatoire.');
+                    return;
+                  }
+                  returnProjectForCorrectionPayor(payorReturnProjectModalProj.id, payorReturnFeedbackText.trim());
+                  setToastMessage(`⚠️ Dossier "${payorReturnProjectModalProj.title}" retourné pour correction au Respo Projet.`);
+                  setPayorReturnProjectModalProj(null);
+                  setPayorReturnFeedbackText('');
+                }}
+                className="bg-rose-600 hover:bg-rose-500 text-white font-black px-5 py-2.5 rounded-xl text-xs shadow-lg transition-all active:scale-95 flex items-center gap-1.5"
+              >
+                <Send className="w-3.5 h-3.5" />
+                <span>Confirmer le Retour</span>
               </button>
             </div>
           </div>

@@ -26,15 +26,19 @@ signInAnonymously(auth).catch((err) => {
   console.warn('Firebase Auth note:', err);
 });
 
-// Test de connectivité initiale avec Firestore
+// Test de connectivité initiale avec Firestore avec garde-fou contre les blocages
 export async function testFirestoreConnection(): Promise<boolean> {
   try {
-    await getDocFromServer(doc(db, 'test', 'connection'));
+    const fetchPromise = getDocFromServer(doc(db, 'test', 'connection'));
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('connection timeout')), 5000)
+    );
+    await Promise.race([fetchPromise, timeoutPromise]);
     console.log('✅ Connexion Firestore opérationnelle sur e-rouama-f735a');
     return true;
   } catch (error) {
-    if (error instanceof Error && error.message.includes('the client is offline')) {
-      console.warn('⚠️ Connexion Firestore hors-ligne ou en attente:', error.message);
+    if (error instanceof Error && (error.message.includes('the client is offline') || error.message.includes('timeout'))) {
+      console.warn('⚠️ Connexion Firestore en attente de synchronisation ou hors-ligne.');
     }
     return false;
   }

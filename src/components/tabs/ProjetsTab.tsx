@@ -6,7 +6,7 @@ import { AgrProject } from '../../types';
 export const ProjetsTab: React.FC = () => {
   const { projects } = useApp();
 
-  const publishedProjects = projects.filter(p => p.status === 'PUBLISHED');
+  const publishedProjects = projects.filter(p => p.status === 'PUBLISHED' || p.status === 'active');
 
   const handlePrintProjectPDF = (proj: AgrProject) => {
     const printWin = window.open('', '_blank');
@@ -19,6 +19,14 @@ export const ProjetsTab: React.FC = () => {
       proj.pilotTeam && proj.pilotTeam.length > 0
         ? proj.pilotTeam.map(m => `<li style="margin-bottom:6px;">👤 <strong>${m}</strong></li>`).join('')
         : '<li><em>Aucun membre désigné</em></li>';
+
+    const payorSigBlock = proj.payorSignature
+      ? `<div style="text-align:center;">
+           <img src="${proj.payorSignature.stampUrl || '/SIDEPO.png'}" alt="Cachet Payor" style="height:65px; margin-bottom:5px; object-fit:contain;" />
+           <div style="font-size:8.5pt; font-weight:800; color:#065f46;">VISA ACCORDÉ & SIGNÉ</div>
+           <div style="font-size:7.5pt; color:#475569;">${proj.payorSignature.signedBy} • ${proj.payorSignature.signedAt}</div>
+         </div>`
+      : `<div class="sig-line">Visa de Validation</div>`;
 
     const htmlContent = `
       <!DOCTYPE html>
@@ -98,7 +106,7 @@ export const ProjetsTab: React.FC = () => {
           </div>
           <div class="sig-box">
             <div class="sig-title">Le PAYOR / Direction</div>
-            <div class="sig-line">Visa de Validation</div>
+            ${payorSigBlock}
           </div>
         </div>
 
