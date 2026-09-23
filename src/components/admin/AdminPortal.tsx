@@ -1317,6 +1317,45 @@ export const AdminPortal: React.FC = () => {
       // 3. Traitement applicatif (transactions, alerte Cerveau, cotisations)
       await approvePayment(targetId);
 
+      // 4. Recalcul et synchronisation en temps réel du resteADevoir du membre
+      try {
+        const payerId = decl.memberId;
+        const now = new Date();
+        const currentMonthNum = now.getMonth() + 1; // Septembre = 9
+        const nbMoisDus = Math.max(0, currentMonthNum - 1); // 8 mois
+        const montantTotalDuInitiale = nbMoisDus * 500; // 4 000 F CFA
+
+        const isPaymentValid = (d: any) => {
+          if (!d) return false;
+          if (d.isHidden || d.status === 'hidden' || d.status === 'deleted' || d.status === 'REJECTED' || d.status === 'rejected') return false;
+          const s = String(d.status || '').toLowerCase().trim();
+          return (
+            d.status === 'validated' ||
+            d.status === 'Validé' ||
+            d.status === 'approved' ||
+            d.status === 'APPROVED' ||
+            d.isValidated === true ||
+            s === 'validated' ||
+            s === 'validé' ||
+            s === 'valide' ||
+            s === 'approved'
+          );
+        };
+
+        const totalPaidCotisation = declarations
+          .filter(d => 
+            String(d.memberId).trim() === String(payerId).trim() && 
+            (d.fund === 'COTISATION' || (d as any).caisse === 'Cotisation Mensuelle' || (d as any).type === 'Cotisation Mensuelle') &&
+            (isPaymentValid(d) || d.id === targetId)
+          )
+          .reduce((sum, d) => sum + (Number(d.amount) || Number((d as any).montant) || 0), 0);
+
+        const resteApresValidation = Math.max(0, montantTotalDuInitiale - totalPaidCotisation);
+        await setDoc(doc(db, 'members', String(payerId)), { resteADevoir: resteApresValidation }, { merge: true }).catch(console.warn);
+      } catch (syncErr) {
+        console.warn('Erreur mise à jour resteADevoir dans handleValidateReceipt:', syncErr);
+      }
+
       setPreviewDeclaration(null);
       setPreviewReceiptImgError(false);
       setRejectModalDeclaration(null);
@@ -2900,7 +2939,51 @@ export const AdminPortal: React.FC = () => {
                     <tbody className="divide-y divide-slate-800/60 font-medium">
                       {pendingPayments.map(payment => {
                           const progress = getMemberRubricProgress(payment.memberId, payment.fund, payment.subCategory);
-                          const remainingAfter = Math.max(0, progress.remainingDue - payment.amount);
+                          const currentVersed = Number(payment.amount) || Number((payment as any).montant) || 0;
+
+                          // 2. LOGIQUE EXACTE DU CALCUL DU RESTE DÛ (COTISATION MENSUELLE) :
+                          let alreadyPaidAmount = progress.totalAdvanced;
+                          let resteApresValidation = 0;
+
+                          if (payment.fund === 'COTISATION') {
+                            // Détermine le nombre de mois dus du début de l'année (Janvier 2026) jusqu'au MOIS PRÉCÉDENT le mois actuel.
+                            // Exemple : En Septembre 2026, les mois dus courent de Janvier à Août = 8 mois.
+                            const now = new Date();
+                            const currentMonthNum = now.getMonth() + 1; // 1-12 (Septembre = 9)
+                            const nbMoisDus = Math.max(0, currentMonthNum - 1); // 8 mois
+                            const montantTotalDuInitiale = nbMoisDus * 500; // 8 * 500 = 4 000 F CFA
+
+                            // Calcule le total déjà validé pour le membre : alreadyPaidAmount
+                            const totalPaidCotisation = declarations
+                              .filter(d => 
+                                String(d.memberId).trim() === String(payment.memberId).trim() && 
+                                (d.fund === 'COTISATION' || (d as any).caisse === 'Cotisation Mensuelle' || (d as any).type === 'Cotisation Mensuelle') && 
+                                !d.isHidden && 
+                                d.status !== 'deleted' && 
+                                d.status !== 'hidden' &&
+                                d.status !== 'rejected' &&
+                                d.status !== 'REJECTED' &&
+                                (
+                                  d.status === 'validated' || 
+                                  d.status === 'Validé' || 
+                                  d.status === 'approved' || 
+                                  d.status === 'APPROVED' || 
+                                  (d as any).isValidated === true ||
+                                  String(d.status || '').toLowerCase().trim() === 'validated' ||
+                                  String(d.status || '').toLowerCase().trim() === 'approved' ||
+                                  String(d.status || '').toLowerCase().trim() === 'validé'
+                                ) &&
+                                d.id !== payment.id
+                              )
+                              .reduce((sum, d) => sum + (Number(d.amount) || Number((d as any).montant) || 0), 0);
+
+                            alreadyPaidAmount = totalPaidCotisation;
+                            const totalPayeApresValidation = alreadyPaidAmount + currentVersed;
+                            resteApresValidation = Math.max(0, montantTotalDuInitiale - totalPayeApresValidation);
+                          } else {
+                            resteApresValidation = Math.max(0, progress.remainingDue - currentVersed);
+                          }
+
                           return (
                             <tr key={payment.id} className="hover:bg-slate-800/40 transition-colors">
                               <td className="py-3 px-4">
@@ -2923,14 +3006,14 @@ export const AdminPortal: React.FC = () => {
                                 </span>
                               </td>
                               <td className="py-3 px-4 font-black text-emerald-400 text-base font-mono">
-                                {payment.amount.toLocaleString('fr-FR')} F CFA
+                                {currentVersed.toLocaleString('fr-FR')} F CFA
                               </td>
                               <td className="py-3 px-4 text-xs">
                                 <div className="text-slate-400">
-                                  Déjà payé : <strong className="text-emerald-400">{progress.totalAdvanced.toLocaleString('fr-FR')} F</strong>
+                                  Déjà payé : <strong className="text-emerald-400">{alreadyPaidAmount.toLocaleString('fr-FR')} F</strong>
                                 </div>
                                 <div className="text-amber-300 font-bold">
-                                  Reste après validation : {remainingAfter.toLocaleString('fr-FR')} F CFA
+                                  Reste après validation : {resteApresValidation.toLocaleString('fr-FR')} F CFA
                                 </div>
                               </td>
                               <td className="py-3 px-4">
@@ -2954,15 +3037,6 @@ export const AdminPortal: React.FC = () => {
                                 </button>
                               </td>
                               <td className="py-3 px-4 text-right space-x-2 whitespace-nowrap">
-                                <button
-                                  type="button"
-                                  onClick={() => handleOpenReceiptEmailModal(payment)}
-                                  className="bg-amber-600/80 hover:bg-amber-600 text-white font-black px-3 py-2 rounded-xl text-xs shadow inline-flex items-center gap-1 active:scale-95 transition-all cursor-pointer"
-                                  title="Notifier le membre par courriel (EmailJS)"
-                                >
-                                  <Mail className="w-3.5 h-3.5" />
-                                  <span>Notifier</span>
-                                </button>
                                 <button
                                   type="button"
                                   onClick={() => handleValidateReceipt(payment)}

@@ -84,9 +84,10 @@ export const FinancesTab: React.FC = () => {
   // --------------------------------------------------------------------------
   // STATE: 1. COTISATIONS MENSUELLES (500 FCFA / MOIS FIXE OU SAISIE LIBRE)
   // --------------------------------------------------------------------------
-  const [monthlyMonthsCount, setMonthlyMonthsCount] = useState<number>(
-    duesDetail.unpaidMonths > 0 ? duesDetail.unpaidMonths : 1
-  );
+  const initialDefaultMonths = duesDetail.unpaidMonths > 0 ? duesDetail.unpaidMonths : 1;
+  const [selectedMonths, setSelectedMonths] = useState<number>(initialDefaultMonths);
+  const [selectedAmount, setSelectedAmount] = useState<number>(initialDefaultMonths * 500);
+  const [monthlyMonthsCount, setMonthlyMonthsCount] = useState<number>(initialDefaultMonths);
   const [isCustomAmount, setIsCustomAmount] = useState<boolean>(false);
   const [customAmountInput, setCustomAmountInput] = useState<string>('2000');
   const [monthlyTxnRef, setMonthlyTxnRef] = useState<string>('');
@@ -95,19 +96,16 @@ export const FinancesTab: React.FC = () => {
   const [monthlyMsg, setMonthlyMsg] = useState<{ type: 'error' | 'success'; text: string } | null>(null);
   const [isMonthlySubmitting, setIsMonthlySubmitting] = useState(false);
 
-  // Montant calculé dynamiquement
-  const parsedCustomAmount = isCustomAmount ? (parseInt(customAmountInput, 10) || 0) : 0;
-  const monthlyAmount = isCustomAmount ? parsedCustomAmount : (monthlyMonthsCount * 500);
-
-  // Calcul du nombre de mois correspondants si c'est un multiple de 500 FCFA (ex: 2000 FCFA = 4 mois)
-  const isMultipleOf500 = monthlyAmount >= 500 && monthlyAmount % 500 === 0;
-  const calculatedMonths = isMultipleOf500 ? Math.floor(monthlyAmount / 500) : (monthlyAmount / 500);
+  // Synchronisation dynamique directe du montant sélectionné
+  const monthlyAmount = selectedAmount;
+  const isMultipleOf500 = selectedAmount >= 500 && selectedAmount % 500 === 0;
+  const calculatedMonths = Math.floor(selectedAmount / 500);
   const monthlyMonthsCountDisplay = isCustomAmount
-    ? (isMultipleOf500 ? `${calculatedMonths} mois` : `${monthlyAmount.toLocaleString('fr-FR')} F`)
-    : `${monthlyMonthsCount} mois`;
+    ? (isMultipleOf500 ? `${calculatedMonths} mois` : `${selectedAmount.toLocaleString('fr-FR')} F`)
+    : `${selectedMonths} mois`;
 
-  const isMonthlyWaveActive = monthlyAmount >= 500;
-  const isMonthlySubmitActive = monthlyReceiptFile !== null && monthlyAmount >= 500 && !isMonthlySubmitting;
+  const isMonthlyWaveActive = selectedAmount >= 500;
+  const isMonthlySubmitActive = monthlyReceiptFile !== null && selectedAmount >= 500 && !isMonthlySubmitting;
 
   const handleMonthlyFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
@@ -123,7 +121,7 @@ export const FinancesTab: React.FC = () => {
     e.preventDefault();
     setMonthlyMsg(null);
 
-    if (monthlyAmount < 500) {
+    if (selectedAmount < 500) {
       setMonthlyMsg({
         type: 'error',
         text: 'Le montant minimum de cotisation mensuelle est de 500 F CFA.',
@@ -150,12 +148,16 @@ export const FinancesTab: React.FC = () => {
         ? monthlyTxnRef.trim()
         : `REÇU-${monthlyReceiptFile?.name || 'WAVE'}`;
 
+      const totalRetardAmt = duesDetail.unpaidMonths * 500;
+      const paymentType = (totalRetardAmt > 0 && selectedAmount >= totalRetardAmt) ? 'TOTAL' : 'TRANCHE';
+
+      // Transmission exacte de selectedAmount vers Firestore
       const res = await declarePayment(
         'COTISATION',
-        monthlyAmount,
+        selectedAmount,
         refText,
         undefined,
-        'TOTAL',
+        paymentType,
         undefined,
         finalImage || undefined
       );
@@ -163,7 +165,7 @@ export const FinancesTab: React.FC = () => {
       if (res.success) {
         setMonthlyMsg({
           type: 'success',
-          text: `Votre cotisation de ${monthlyAmount.toLocaleString('fr-FR')} F CFA (${monthlyMonthsCountDisplay}) a été transmise en direct sur Firestore au Trésorier pour validation !`,
+          text: `Votre cotisation de ${selectedAmount.toLocaleString('fr-FR')} F CFA (${calculatedMonths > 0 ? `${calculatedMonths} mois` : ''}) a été transmise en direct sur Firestore au Trésorier pour validation !`,
         });
         setMonthlyTxnRef('');
         setMonthlyReceiptFile(null);
@@ -822,9 +824,11 @@ export const FinancesTab: React.FC = () => {
                       onClick={() => {
                         setIsCustomAmount(false);
                         setMonthlyMonthsCount(item.count);
+                        setSelectedMonths(item.count);
+                        setSelectedAmount(item.amount);
                       }}
                       className={`p-3 rounded-2xl text-center border transition-all ${
-                        !isCustomAmount && monthlyMonthsCount === item.count
+                        !isCustomAmount && selectedMonths === item.count
                           ? 'bg-[#355E3B] text-white border-emerald-600 shadow-md ring-2 ring-emerald-300'
                           : 'bg-gray-50 hover:bg-gray-100 text-gray-800 border-gray-200'
                       }`}
@@ -841,10 +845,13 @@ export const FinancesTab: React.FC = () => {
                       type="button"
                       onClick={() => {
                         setIsCustomAmount(false);
-                        setMonthlyMonthsCount(duesDetail.unpaidMonths);
+                        const m = duesDetail.unpaidMonths;
+                        setMonthlyMonthsCount(m);
+                        setSelectedMonths(m);
+                        setSelectedAmount(m * 500);
                       }}
                       className={`p-3 rounded-2xl text-center border transition-all ${
-                        !isCustomAmount && monthlyMonthsCount === duesDetail.unpaidMonths
+                        !isCustomAmount && selectedMonths === duesDetail.unpaidMonths
                           ? 'bg-rose-600 text-white border-rose-700 shadow-md ring-2 ring-rose-300'
                           : 'bg-rose-50 hover:bg-rose-100 text-rose-900 border-rose-200'
                       }`}
@@ -861,9 +868,10 @@ export const FinancesTab: React.FC = () => {
                     type="button"
                     onClick={() => {
                       setIsCustomAmount(true);
-                      if (!customAmountInput || customAmountInput === '0') {
-                        setCustomAmountInput('2000');
-                      }
+                      const customAmt = (!customAmountInput || customAmountInput === '0') ? 2000 : (parseInt(customAmountInput, 10) || 2000);
+                      setCustomAmountInput(String(customAmt));
+                      setSelectedAmount(customAmt);
+                      setSelectedMonths(Math.floor(customAmt / 500));
                     }}
                     className={`p-3 rounded-2xl text-center border transition-all ${
                       isCustomAmount
@@ -873,7 +881,7 @@ export const FinancesTab: React.FC = () => {
                   >
                     <span className="text-xs font-black block">Autre montant</span>
                     <span className="text-[11px] font-mono font-bold mt-0.5 block">
-                      {isCustomAmount && parsedCustomAmount > 0 ? `${parsedCustomAmount.toLocaleString('fr-FR')} F` : 'Saisie libre'}
+                      {isCustomAmount && selectedAmount > 0 ? `${selectedAmount.toLocaleString('fr-FR')} F` : 'Saisie libre'}
                     </span>
                   </button>
                 </div>
@@ -885,11 +893,11 @@ export const FinancesTab: React.FC = () => {
                       <label className="text-xs font-black text-amber-900 flex items-center gap-1.5">
                         <span>✏️ Saisie libre du montant personnalisé :</span>
                       </label>
-                      {monthlyAmount > 0 && (
+                      {selectedAmount > 0 && (
                         <span className="text-xs font-black text-[#355E3B] bg-emerald-100/90 px-3 py-1 rounded-full border border-emerald-300">
                           {isMultipleOf500
                             ? `Correspond exactement à ${calculatedMonths} mois (${calculatedMonths} × 500 F)`
-                            : `Montant personnalisé : ${monthlyAmount.toLocaleString('fr-FR')} F CFA`}
+                            : `Montant personnalisé : ${selectedAmount.toLocaleString('fr-FR')} F CFA`}
                         </span>
                       )}
                     </div>
@@ -900,7 +908,13 @@ export const FinancesTab: React.FC = () => {
                         step="500"
                         placeholder="Entrez le montant en FCFA (ex: 2000)"
                         value={customAmountInput}
-                        onChange={e => setCustomAmountInput(e.target.value)}
+                        onChange={e => {
+                          const val = e.target.value;
+                          setCustomAmountInput(val);
+                          const parsed = parseInt(val, 10) || 0;
+                          setSelectedAmount(parsed);
+                          setSelectedMonths(Math.floor(parsed / 500));
+                        }}
                         className="w-full bg-white border-2 border-amber-400 focus:border-[#E67E22] rounded-2xl px-4 py-3 text-base font-black text-gray-900 focus:outline-none font-mono shadow-inner"
                       />
                       <span className="absolute right-4 top-1/2 -translate-y-1/2 text-xs font-black text-gray-500">
@@ -913,7 +927,11 @@ export const FinancesTab: React.FC = () => {
                         <button
                           key={sugAmt}
                           type="button"
-                          onClick={() => setCustomAmountInput(String(sugAmt))}
+                          onClick={() => {
+                            setCustomAmountInput(String(sugAmt));
+                            setSelectedAmount(sugAmt);
+                            setSelectedMonths(Math.floor(sugAmt / 500));
+                          }}
                           className={`text-[11px] font-bold px-2.5 py-0.5 rounded-full border transition-all active:scale-95 ${
                             customAmountInput === String(sugAmt)
                               ? 'bg-[#E67E22] text-white border-amber-600'
@@ -1023,29 +1041,36 @@ export const FinancesTab: React.FC = () => {
               </div>
 
               {/* Submit Button */}
-              <button
-                type="submit"
-                disabled={!isMonthlySubmitActive}
-                className={`w-full font-black py-4 px-6 rounded-2xl shadow-lg transition-all text-sm sm:text-base flex items-center justify-center gap-2 ${
-                  isMonthlySubmitActive
-                    ? 'bg-[#355E3B] hover:bg-[#2A4B2F] text-white active:scale-95 cursor-pointer'
-                    : 'bg-gray-200 text-gray-400 border border-gray-300 cursor-not-allowed pointer-events-none'
-                }`}
-              >
-                {isMonthlySubmitting ? (
-                  <>
-                    <Clock className="w-5 h-5 animate-spin text-emerald-300" />
-                    <span>ENVOI DIRECT VERS FIRESTORE EN COURS...</span>
-                  </>
-                ) : (
-                  <>
-                    <CheckCircle2 className="w-5 h-5" />
-                    <span>
-                      DÉCLARER MA COTISATION ({monthlyAmount.toLocaleString('fr-FR')} F CFA{isMultipleOf500 ? ` - ${calculatedMonths} MOIS` : ''})
-                    </span>
-                  </>
-                )}
-              </button>
+              {(() => {
+                const calculatedMonths = Math.floor(selectedAmount / 500);
+                const buttonText = calculatedMonths > 0
+                  ? `DÉCLARER MA COTISATION ( ${selectedAmount.toLocaleString('fr-FR')} F CFA - ${calculatedMonths} MOIS )`
+                  : `DÉCLARER MA COTISATION ( ${selectedAmount.toLocaleString('fr-FR')} F CFA )`;
+
+                return (
+                  <button
+                    type="submit"
+                    disabled={!isMonthlySubmitActive}
+                    className={`w-full font-black py-4 px-6 rounded-2xl shadow-lg transition-all text-sm sm:text-base flex items-center justify-center gap-2 ${
+                      isMonthlySubmitActive
+                        ? 'bg-[#355E3B] hover:bg-[#2A4B2F] text-white active:scale-95 cursor-pointer'
+                        : 'bg-gray-200 text-gray-400 border border-gray-300 cursor-not-allowed pointer-events-none'
+                    }`}
+                  >
+                    {isMonthlySubmitting ? (
+                      <>
+                        <Clock className="w-5 h-5 animate-spin text-emerald-300" />
+                        <span>ENVOI DIRECT VERS FIRESTORE EN COURS...</span>
+                      </>
+                    ) : (
+                      <>
+                        <CheckCircle2 className="w-5 h-5" />
+                        <span>{buttonText}</span>
+                      </>
+                    )}
+                  </button>
+                );
+              })()}
 
               {!isMonthlySubmitActive && (
                 <p className="text-center text-xs text-amber-700 bg-amber-50 p-2.5 rounded-xl border border-amber-200 font-bold">

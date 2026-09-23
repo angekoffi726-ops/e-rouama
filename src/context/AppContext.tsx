@@ -1459,10 +1459,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // Calcul du statut des cotisations
   const getMemberDuesDetail = (memberId: string): MemberDuesDetail => {
     const now = new Date();
-    const currentDay = now.getDate();
     const currentMonthNum = now.getMonth() + 1;
 
-    const totalRequiredMonths = currentDay >= 28 ? currentMonthNum : Math.max(0, currentMonthNum - 1);
+    // Détermine le nombre de mois dus du début de l'année (Janvier 2026) jusqu'au MOIS PRÉCÉDENT le mois actuel.
+    // Exemple : En Septembre 2026, les mois dus courent de Janvier à Août = 8 mois (8 * 500 = 4 000 F CFA).
+    const totalRequiredMonths = Math.max(0, currentMonthNum - 1);
     const totalExpectedAmount = totalRequiredMonths * 500;
 
     const isPaymentValidated = (d: any) => {
@@ -1562,7 +1563,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
       case 'COTISATION': {
         const now = new Date();
-        return Math.max(500, (now.getMonth() + 1) * 500);
+        const currentMonthNum = now.getMonth() + 1; // 1-12
+        // Détermine le nombre de mois dus du début de l'année (Janvier 2026) jusqu'au MOIS PRÉCÉDENT le mois actuel.
+        // Exemple : En Septembre 2026, les mois dus courent de Janvier à Août = 8 mois (8 * 500 = 4 000 F CFA).
+        const nbMoisDus = Math.max(0, currentMonthNum - 1);
+        return nbMoisDus * 500;
       }
       case 'AGR': {
         const activeProjs = projects.filter(p => p.status === 'PUBLISHED' || p.status === 'active');
@@ -2038,6 +2043,47 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
     } catch (e) {
       console.warn('Alerte Cerveau non émise:', e);
+    }
+
+    // 6. SYNCHRONISATION EN TEMPS RÉEL DU CHAMP resteADevoir DU MEMBRE
+    try {
+      const payerId = targetDecl.memberId;
+      const now = new Date();
+      const currentMonthNum = now.getMonth() + 1;
+      const nbMoisDus = Math.max(0, currentMonthNum - 1);
+      const montantTotalDuInitiale = nbMoisDus * 500;
+
+      const isPaymentValid = (d: any) => {
+        if (!d) return false;
+        if (d.isHidden || d.status === 'hidden' || d.status === 'deleted' || d.status === 'REJECTED' || d.status === 'rejected') return false;
+        const s = String(d.status || '').toLowerCase().trim();
+        return (
+          d.status === 'validated' ||
+          d.status === 'Validé' ||
+          d.status === 'approved' ||
+          d.status === 'APPROVED' ||
+          d.isValidated === true ||
+          s === 'validated' ||
+          s === 'validé' ||
+          s === 'valide' ||
+          s === 'approved'
+        );
+      };
+
+      const allPaidCotisations = declarations
+        .filter(d => 
+          String(d.memberId).trim() === String(payerId).trim() && 
+          (d.fund === 'COTISATION' || (d as any).caisse === 'Cotisation Mensuelle' || (d as any).type === 'Cotisation Mensuelle') &&
+          (isPaymentValid(d) || d.id === targetId)
+        )
+        .reduce((sum, d) => sum + (Number(d.amount) || Number((d as any).montant) || 0), 0);
+
+      const resteApresValidation = Math.max(0, montantTotalDuInitiale - allPaidCotisations);
+
+      await setDoc(doc(db, 'members', String(payerId)), { resteADevoir: resteApresValidation }, { merge: true }).catch(console.warn);
+      setMembers(prev => prev.map(m => m.id === payerId ? { ...m, resteADevoir: resteApresValidation } : m));
+    } catch (recalcErr) {
+      console.warn('Erreur mise à jour resteADevoir:', recalcErr);
     }
   };
 

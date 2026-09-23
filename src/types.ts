@@ -41,6 +41,7 @@ export interface RouamaMember {
   avatar?: string;
   photoUrl?: string;
   assignedRole?: AdminRole;
+  resteADevoir?: number;
   updatedAt?: string;
 }
 
