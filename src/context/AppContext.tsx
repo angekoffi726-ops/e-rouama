@@ -459,6 +459,110 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     const unsubscribes: (() => void)[] = [];
 
+    // Caches internes pour le recalcul dynamique et automatique des soldes
+    let receiptsCache: any[] = [];
+    let paymentsCache: any[] = [];
+
+    const syncDynamicBalances = () => {
+      const mergedMap = new Map<string, any>();
+      receiptsCache.forEach(r => mergedMap.set(r.id, r));
+      paymentsCache.forEach(p => {
+        const existing = mergedMap.get(p.id) || {};
+        mergedMap.set(p.id, { ...existing, ...p });
+      });
+      const allDecls = Array.from(mergedMap.values());
+
+      // 1. RECALCUL AUTOMATIQUE ET DYNAMIQUE DES SOLDES (FIRESTORE) :
+      const validatedPayments = allDecls.filter(p => 
+        !p.isHidden && 
+        p.status !== 'deleted' && 
+        p.status !== 'hidden' &&
+        p.status !== 'rejected' &&
+        p.status !== 'REJECTED' &&
+        (
+          p.status === 'validated' || 
+          p.status === 'Validé' || 
+          p.status === 'approved' || 
+          p.status === 'APPROVED' || 
+          p.isValidated === true ||
+          String(p.status || '').toLowerCase().trim() === 'validated' ||
+          String(p.status || '').toLowerCase().trim() === 'approved' ||
+          String(p.status || '').toLowerCase().trim() === 'validé' ||
+          String(p.status || '').toLowerCase().trim() === 'valide'
+        )
+      );
+
+      // Calcul par sous-caisse
+      const cotisations = validatedPayments
+        .filter(p => 
+          p.type === 'Cotisation Mensuelle' || 
+          p.caisse === 'Cotisation Mensuelle' || 
+          p.fund === 'COTISATION' || 
+          (!p.type && !p.caisse && (!p.fund || p.fund === 'COTISATION')) ||
+          (!p.type && !p.caisse)
+        )
+        .reduce((acc, p) => acc + (Number(p.amount) || Number(p.montant) || 0), 0);
+
+      const anniversaire = validatedPayments
+        .filter(p => 
+          p.type === 'Anniversaire' || 
+          p.caisse === 'Anniversaire' || 
+          p.fund === 'ANNIVERSAIRE' ||
+          p.type === 'Célébration 21 mars (Anniversaire)' ||
+          p.caisse === 'Célébration 21 mars (Anniversaire)'
+        )
+        .reduce((acc, p) => acc + (Number(p.amount) || Number(p.montant) || 0), 0);
+
+      const sorties = validatedPayments
+        .filter(p => 
+          p.type === 'Sorties & Loisirs' || 
+          p.caisse === 'Sorties & Loisirs' || 
+          p.fund === 'LOISIRS' ||
+          p.type === 'Loisirs' ||
+          p.caisse === 'Loisirs' ||
+          p.type === 'Sorties' ||
+          p.caisse === 'Sorties'
+        )
+        .reduce((acc, p) => acc + (Number(p.amount) || Number(p.montant) || 0), 0);
+
+      const agr = validatedPayments
+        .filter(p => 
+          p.type === 'Projets AGR' || 
+          p.caisse === 'Projets AGR' || 
+          p.fund === 'AGR' ||
+          p.type === 'AGR' ||
+          p.caisse === 'AGR'
+        )
+        .reduce((acc, p) => acc + (Number(p.amount) || Number(p.montant) || 0), 0);
+
+      const casSociaux = validatedPayments
+        .filter(p => 
+          p.type === 'Cas Sociaux' || 
+          p.caisse === 'Cas Sociaux' || 
+          p.fund === 'CAS_SOCIAUX' ||
+          p.type === 'Cas Sociaux & Entraide' ||
+          p.caisse === 'Cas Sociaux & Entraide'
+        )
+        .reduce((acc, p) => acc + (Number(p.amount) || Number(p.montant) || 0), 0);
+
+      const computed: Record<FundType, number> = {
+        COTISATION: cotisations,
+        ANNIVERSAIRE: anniversaire,
+        LOISIRS: sorties,
+        AGR: agr,
+        CAS_SOCIAUX: casSociaux,
+        SOIREE_ROUAMA: 0,
+      };
+
+      setFundBalances(prev => ({
+        ...prev,
+        ...computed,
+      }));
+
+      // Synchronisation sur Firestore
+      setDoc(doc(db, 'treasury', 'balances'), sanitizeFirestore(computed), { merge: true }).catch(() => {});
+    };
+
     // 1. REÇUS DE PAIEMENT (Collection 'receipts' synchronisée EXCLUSIVEMENT en temps réel depuis Firestore)
     const unsubReceipts = onSnapshot(
       collection(db, 'receipts'),
@@ -506,13 +610,37 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         });
 
         // La liste affichée provient EXCLUSIVEMENT de Firestore et conserve tout l'historique
+        receiptsCache = loaded;
         setDeclarations(loaded);
+        syncDynamicBalances();
       },
       (err) => {
         console.warn('Firestore receipts listener notification:', err);
       }
     );
     unsubscribes.push(unsubReceipts);
+
+    // 1.bis PAIEMENTS DE LA CAISSE (Collection 'payments' synchronisée en temps réel depuis Firestore)
+    const unsubPayments = onSnapshot(
+      collection(db, 'payments'),
+      (snapshot) => {
+        setIsFirebaseConnected(true);
+        const loadedPayments: any[] = [];
+        snapshot.docs.forEach((docSnap) => {
+          const data = docSnap.data() as any;
+          if (data.status === 'deleted' || data.isHidden === true || data.status === 'hidden') {
+            return;
+          }
+          loadedPayments.push({ id: docSnap.id, ...data });
+        });
+        paymentsCache = loadedPayments;
+        syncDynamicBalances();
+      },
+      (err) => {
+        console.warn('Firestore payments listener notification in AppContext:', err);
+      }
+    );
+    unsubscribes.push(unsubPayments);
 
     // 2. MEMBRES DE L'ASSOCIATION (Persistance stricte sans reset ni écrasement)
     const unsubMembers = onSnapshot(
@@ -696,18 +824,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       (docSnap) => {
         setIsFirebaseConnected(true);
         if (docSnap.exists()) {
-          setFundBalances(docSnap.data() as Record<FundType, number>);
-        } else {
-          const defaultBalances: Record<FundType, number> = {
-            COTISATION: 0,
-            ANNIVERSAIRE: 0,
-            LOISIRS: 0,
-            AGR: 0,
-            CAS_SOCIAUX: 0,
-            SOIREE_ROUAMA: 0,
-          };
-          setDoc(doc(db, 'treasury', 'balances'), defaultBalances).catch(console.warn);
-          setFundBalances(defaultBalances);
+          const data = docSnap.data() as Record<FundType, number>;
+          setFundBalances(prev => {
+            const hasPositive = Object.values(data || {}).some(v => typeof v === 'number' && v > 0);
+            return hasPositive ? { ...prev, ...data } : prev;
+          });
         }
       },
       (err) => {
@@ -1344,9 +1465,32 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const totalRequiredMonths = currentDay >= 28 ? currentMonthNum : Math.max(0, currentMonthNum - 1);
     const totalExpectedAmount = totalRequiredMonths * 500;
 
+    const isPaymentValidated = (d: any) => {
+      if (!d) return false;
+      if (d.isHidden || d.status === 'hidden' || d.status === 'deleted' || d.status === 'REJECTED' || d.status === 'rejected') {
+        return false;
+      }
+      const s = String(d.status || '').toLowerCase().trim();
+      return (
+        d.status === 'validated' ||
+        d.status === 'Validé' ||
+        d.status === 'approved' ||
+        d.status === 'APPROVED' ||
+        d.isValidated === true ||
+        s === 'validated' ||
+        s === 'validé' ||
+        s === 'valide' ||
+        s === 'approved'
+      );
+    };
+
     const totalPaid = declarations
-      .filter(d => d.memberId === memberId && d.fund === 'COTISATION' && d.status === 'APPROVED')
-      .reduce((sum, d) => sum + d.amount, 0);
+      .filter(d => 
+        String(d.memberId).trim() === String(memberId).trim() && 
+        (d.fund === 'COTISATION' || (d as any).caisse === 'Cotisation Mensuelle' || (d as any).type === 'Cotisation Mensuelle') && 
+        isPaymentValidated(d)
+      )
+      .reduce((sum, d) => sum + (Number(d.amount) || Number((d as any).montant) || 0), 0);
 
     const monthsPaid = Math.floor(totalPaid / 500);
     const unpaidMonths = Math.max(0, totalRequiredMonths - monthsPaid);
@@ -1453,13 +1597,32 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return true;
     });
 
+    const isProgressValidated = (d: any) => {
+      if (!d) return false;
+      if (d.isHidden || d.status === 'hidden' || d.status === 'deleted' || d.status === 'REJECTED' || d.status === 'rejected') {
+        return false;
+      }
+      const s = String(d.status || '').toLowerCase().trim();
+      return (
+        d.status === 'validated' ||
+        d.status === 'Validé' ||
+        d.status === 'approved' ||
+        d.status === 'APPROVED' ||
+        d.isValidated === true ||
+        s === 'validated' ||
+        s === 'validé' ||
+        s === 'valide' ||
+        s === 'approved'
+      );
+    };
+
     const totalAdvanced = memberDecls
-      .filter(d => d.status === 'APPROVED')
-      .reduce((sum, d) => sum + d.amount, 0);
+      .filter(d => isProgressValidated(d))
+      .reduce((sum, d) => sum + (Number(d.amount) || Number((d as any).montant) || 0), 0);
 
     const pendingAmount = memberDecls
-      .filter(d => d.status === 'PENDING')
-      .reduce((sum, d) => sum + d.amount, 0);
+      .filter(d => !isProgressValidated(d) && !d.isHidden && d.status !== 'rejected' && d.status !== 'REJECTED' && d.status !== 'deleted' && d.status !== 'hidden')
+      .reduce((sum, d) => sum + (Number(d.amount) || Number((d as any).montant) || 0), 0);
 
     const remainingDue = totalRequired > 0 ? Math.max(0, totalRequired - totalAdvanced) : 0;
 
@@ -1719,23 +1882,66 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const targetDecl = declarations.find(d => d.id === targetId);
     if (!targetDecl) return;
 
-    // 1. Mettre à jour le statut du reçu sur Firestore dans 'receipts' via updateDoc
-    try {
-      await updateDoc(doc(db, 'receipts', targetId), { status: 'APPROVED' });
-    } catch (err) {
-      console.warn('Fallback setDoc pour receipts approvePayment:', err);
-      await setDoc(doc(db, 'receipts', targetId), { status: 'APPROVED' }, { merge: true });
+    let normalizedType = (targetDecl as any).type;
+    let normalizedCaisse = (targetDecl as any).caisse;
+    if (!normalizedType && !normalizedCaisse && targetDecl.fund) {
+      if (targetDecl.fund === 'COTISATION') {
+        normalizedType = 'Cotisation Mensuelle';
+        normalizedCaisse = 'Cotisation Mensuelle';
+      } else if (targetDecl.fund === 'ANNIVERSAIRE') {
+        normalizedType = 'Anniversaire';
+        normalizedCaisse = 'Anniversaire';
+      } else if (targetDecl.fund === 'LOISIRS') {
+        normalizedType = 'Sorties & Loisirs';
+        normalizedCaisse = 'Sorties & Loisirs';
+      } else if (targetDecl.fund === 'AGR') {
+        normalizedType = 'Projets AGR';
+        normalizedCaisse = 'Projets AGR';
+      } else if (targetDecl.fund === 'CAS_SOCIAUX') {
+        normalizedType = 'Cas Sociaux';
+        normalizedCaisse = 'Cas Sociaux';
+      }
     }
 
-    // 2. Créditer la caisse sur Firestore
+    // EXIGENCE 3 : NORMALISATION DU STATUT LORS DE LA VALIDATION :
+    // { status: 'validated', isValidated: true, validatedAt: new Date() }
+    const validationPayload = {
+      status: 'validated',
+      isValidated: true,
+      validatedAt: new Date(),
+    };
+
+    // 1. Enregistrement direct et persistant dans 'payments'
+    try {
+      await setDoc(doc(db, 'payments', targetId), sanitizeFirestore({
+        ...targetDecl,
+        id: targetId,
+        type: normalizedType || (targetDecl as any).type || 'Cotisation Mensuelle',
+        caisse: normalizedCaisse || (targetDecl as any).caisse || 'Cotisation Mensuelle',
+        ...validationPayload,
+      }), { merge: true });
+    } catch (err) {
+      console.warn('Erreur setDoc payments approvePayment:', err);
+    }
+
+    // 2. Synchronisation dans 'receipts'
+    try {
+      await updateDoc(doc(db, 'receipts', targetId), sanitizeFirestore(validationPayload));
+    } catch (err) {
+      console.warn('Fallback setDoc pour receipts approvePayment:', err);
+      await setDoc(doc(db, 'receipts', targetId), sanitizeFirestore(validationPayload), { merge: true });
+    }
+
+    // 3. Créditer la caisse sur Firestore
+    const amountVal = Number(targetDecl.amount) || Number((targetDecl as any).montant) || 0;
     const updatedFundBalances = {
       ...fundBalances,
-      [targetDecl.fund]: (fundBalances[targetDecl.fund] || 0) + targetDecl.amount,
+      [targetDecl.fund]: (fundBalances[targetDecl.fund] || 0) + amountVal,
     };
     await setDoc(doc(db, 'treasury', 'balances'), sanitizeFirestore(updatedFundBalances), { merge: true }).catch(console.warn);
     setFundBalances(updatedFundBalances);
 
-    // 3. Enregistrer la transaction sur Firestore via addDoc (ID unique généré par Firestore)
+    // 4. Enregistrer la transaction sur Firestore via addDoc (ID unique généré par Firestore)
     const displayRef =
       typeof targetDecl.reference === 'string' && targetDecl.reference.startsWith('data:')
         ? 'Capture de reçu'
@@ -1745,7 +1951,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const txRef = await addDoc(collection(db, 'transactions'), sanitizeFirestore({
         type: 'DEPOT',
         fund: targetDecl.fund,
-        amount: targetDecl.amount,
+        amount: amountVal,
         description: `Dépôt validé (${FUND_LABELS[targetDecl.fund] || targetDecl.fund}) par ${targetDecl.memberNickname} - Réf: ${displayRef}`,
         memberNickname: targetDecl.memberNickname,
         date: new Date().toLocaleDateString('fr-FR'),
@@ -1757,20 +1963,37 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       console.warn('Erreur addDoc transaction:', txErr);
     }
 
-    // 4. Déclencher l'alerte fraternelle Cerveau (Imputation chronologique stricte et exclusion de l'auteur)
+    // 5. Déclencher l'alerte fraternelle Cerveau (Imputation chronologique stricte et exclusion de l'auteur)
     try {
       const payerId = targetDecl.memberId;
       const payerMember = members.find(m => m.id === payerId);
       const memberName = targetDecl.memberNickname || payerMember?.nickname || targetDecl.memberName || payerMember?.firstName || 'Un membre';
 
       if (targetDecl.fund === 'COTISATION') {
-        const nbMoisPayes = Math.max(1, Math.floor(targetDecl.amount / 500));
+        const nbMoisPayes = Math.max(1, Math.floor(amountVal / 500));
 
         // Détermine le premier mois impayé du membre (imputation chronologique depuis Janvier 2026) :
         // On cumule les versements cotisations déjà validés pour ce membre avant ce reçu
         const previousTotalPaid = declarations
-          .filter(d => String(d.memberId).trim() === String(targetDecl.memberId).trim() && d.fund === 'COTISATION' && d.status === 'APPROVED' && d.id !== targetId)
-          .reduce((sum, d) => sum + (Number(d.amount) || 0), 0);
+          .filter(d => 
+            String(d.memberId).trim() === String(targetDecl.memberId).trim() && 
+            d.fund === 'COTISATION' && 
+            !d.isHidden && 
+            d.status !== 'deleted' && 
+            d.status !== 'hidden' &&
+            (
+              d.status === 'validated' || 
+              d.status === 'Validé' || 
+              d.status === 'approved' || 
+              d.status === 'APPROVED' || 
+              (d as any).isValidated === true ||
+              String(d.status || '').toLowerCase().trim() === 'validated' ||
+              String(d.status || '').toLowerCase().trim() === 'approved' ||
+              String(d.status || '').toLowerCase().trim() === 'validé'
+            ) && 
+            d.id !== targetId
+          )
+          .reduce((sum, d) => sum + (Number(d.amount) || Number((d as any).montant) || 0), 0);
 
         const previousMonthsPaid = Math.floor(previousTotalPaid / 500);
 

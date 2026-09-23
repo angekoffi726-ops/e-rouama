@@ -3,7 +3,7 @@ import emailjs from '@emailjs/browser';
 import { doc, deleteDoc, updateDoc, setDoc, collection, onSnapshot } from 'firebase/firestore';
 import { db } from '../../firebase';
 import { useApp } from '../../context/AppContext';
-import { AdminRole, FundType, FUND_LABELS, TargetAudience, Committee, AgrProject, FinancialBilan, NewsItem, AdHocCommitteeRoles, EventActivity, RouamaMember } from '../../types';
+import { AdminRole, FundType, FUND_LABELS, TargetAudience, Committee, AgrProject, FinancialBilan, SecretaryPV, NewsItem, AdHocCommitteeRoles, EventActivity, RouamaMember } from '../../types';
 import { ADMIN_USERS } from '../../data/membersData';
 import { sendEmailBroadcastAsync } from '../../utils/emailService';
 import { fetchAELFDailyReadings, AELFDayData } from '../../utils/aelfService';
@@ -253,6 +253,9 @@ export const AdminPortal: React.FC = () => {
     publishNews,
     deleteNewsItem,
     createFinancialBilan,
+    updateFinancialBilan,
+    returnBilanForCorrectionPayor,
+    deleteFinancialBilan,
     approveBilanPayor,
     bilans,
     sendBilanToSecretariat,
@@ -263,6 +266,9 @@ export const AdminPortal: React.FC = () => {
     archiveBilanSecretariat,
     pvs,
     createSecretaryPV,
+    updateSecretaryPV,
+    returnPVForCorrectionPayor,
+    deleteSecretaryPV,
     approvePVPayor,
     activities,
     createActivity,
@@ -272,6 +278,7 @@ export const AdminPortal: React.FC = () => {
     projects,
     createProject,
     updateProject,
+    deleteProject,
     approveProjectPayor,
     returnProjectForCorrectionPayor,
     publishProject,
@@ -297,25 +304,232 @@ export const AdminPortal: React.FC = () => {
   const userAdminRole = currentUser?.adminRole || 'TRESORIER';
   const activeRole: AdminRole = userAdminRole;
 
-  // Gestion locale et réactive des paiements / déclarations pour le panneau Trésorier
-  const [payments, setPayments] = useState<any[]>(() =>
-    declarations.filter(p => !p.isHidden && p.status !== 'hidden' && p.status !== 'deleted')
-  );
+  // 1. RECALCUL AUTOMATIQUE ET DYNAMIQUE DES SOLDES (FIRESTORE) :
+  const calculateBalances = (paymentsList: any[]) => {
+    // Filtre tous les paiements validés (insensible à la casse/format du statut)
+    const validatedPayments = (paymentsList || []).filter(p => 
+      !p.isHidden && 
+      p.status !== 'deleted' && 
+      p.status !== 'hidden' &&
+      p.status !== 'rejected' &&
+      p.status !== 'REJECTED' &&
+      (
+        p.status === 'validated' || 
+        p.status === 'Validé' || 
+        p.status === 'approved' || 
+        p.status === 'APPROVED' || 
+        p.isValidated === true ||
+        String(p.status || '').toLowerCase().trim() === 'validated' ||
+        String(p.status || '').toLowerCase().trim() === 'approved' ||
+        String(p.status || '').toLowerCase().trim() === 'validé' ||
+        String(p.status || '').toLowerCase().trim() === 'valide'
+      )
+    );
+
+    // Calcul du Solde Caisse Total
+    const total = validatedPayments.reduce((acc, p) => acc + (Number(p.amount) || Number(p.montant) || 0), 0);
+
+    // Calcul par sous-caisse
+    const cotisations = validatedPayments
+      .filter(p => 
+        p.type === 'Cotisation Mensuelle' || 
+        p.caisse === 'Cotisation Mensuelle' || 
+        p.fund === 'COTISATION' || 
+        (!p.type && !p.caisse && (!p.fund || p.fund === 'COTISATION')) ||
+        (!p.type && !p.caisse)
+      )
+      .reduce((acc, p) => acc + (Number(p.amount) || Number(p.montant) || 0), 0);
+
+    const anniversaire = validatedPayments
+      .filter(p => 
+        p.type === 'Anniversaire' || 
+        p.caisse === 'Anniversaire' || 
+        p.fund === 'ANNIVERSAIRE' ||
+        p.type === 'Célébration 21 mars (Anniversaire)' ||
+        p.caisse === 'Célébration 21 mars (Anniversaire)'
+      )
+      .reduce((acc, p) => acc + (Number(p.amount) || Number(p.montant) || 0), 0);
+
+    const sorties = validatedPayments
+      .filter(p => 
+        p.type === 'Sorties & Loisirs' || 
+        p.caisse === 'Sorties & Loisirs' || 
+        p.fund === 'LOISIRS' ||
+        p.type === 'Loisirs' ||
+        p.caisse === 'Loisirs' ||
+        p.type === 'Sorties' ||
+        p.caisse === 'Sorties'
+      )
+      .reduce((acc, p) => acc + (Number(p.amount) || Number(p.montant) || 0), 0);
+
+    const agr = validatedPayments
+      .filter(p => 
+        p.type === 'Projets AGR' || 
+        p.caisse === 'Projets AGR' || 
+        p.fund === 'AGR' ||
+        p.type === 'AGR' ||
+        p.caisse === 'AGR'
+      )
+      .reduce((acc, p) => acc + (Number(p.amount) || Number(p.montant) || 0), 0);
+
+    const casSociaux = validatedPayments
+      .filter(p => 
+        p.type === 'Cas Sociaux' || 
+        p.caisse === 'Cas Sociaux' || 
+        p.fund === 'CAS_SOCIAUX' ||
+        p.type === 'Cas Sociaux & Entraide' ||
+        p.caisse === 'Cas Sociaux & Entraide'
+      )
+      .reduce((acc, p) => acc + (Number(p.amount) || Number(p.montant) || 0), 0);
+
+    return { total, cotisations, anniversaire, sorties, agr, casSociaux };
+  };
+
+  // 2. ÉCOUTE EN TEMPS RÉEL (onSnapshot) DE LA COLLECTION 'payments'
+  const [firestorePayments, setFirestorePayments] = useState<any[]>([]);
+  const [locallyHiddenPaymentIds, setLocallyHiddenPaymentIds] = useState<Set<string>>(new Set());
+
   useEffect(() => {
-    setPayments(declarations.filter(p => !p.isHidden && p.status !== 'hidden' && p.status !== 'deleted'));
-  }, [declarations]);
+    const unsub = onSnapshot(
+      collection(db, 'payments'),
+      (snapshot) => {
+        const loaded: any[] = [];
+        snapshot.docs.forEach((docSnap) => {
+          const data = docSnap.data();
+          if (data.status === 'deleted' || data.isHidden === true || data.status === 'hidden') {
+            return;
+          }
+          let type = data.type;
+          let caisse = data.caisse;
+          if (!type && !caisse && data.fund) {
+            if (data.fund === 'COTISATION') {
+              type = 'Cotisation Mensuelle';
+              caisse = 'Cotisation Mensuelle';
+            } else if (data.fund === 'ANNIVERSAIRE') {
+              type = 'Anniversaire';
+              caisse = 'Anniversaire';
+            } else if (data.fund === 'LOISIRS') {
+              type = 'Sorties & Loisirs';
+              caisse = 'Sorties & Loisirs';
+            } else if (data.fund === 'AGR') {
+              type = 'Projets AGR';
+              caisse = 'Projets AGR';
+            } else if (data.fund === 'CAS_SOCIAUX') {
+              type = 'Cas Sociaux';
+              caisse = 'Cas Sociaux';
+            }
+          }
+          loaded.push({
+            id: docSnap.id,
+            ...data,
+            type: type || data.type,
+            caisse: caisse || data.caisse,
+          });
+        });
+        setFirestorePayments(loaded);
+      },
+      (error) => {
+        console.warn('Erreur écoute Firestore collection payments:', error);
+      }
+    );
+
+    return () => unsub();
+  }, []);
+
+  // Consolidation réactive unifiée : 'payments' Firestore + 'receipts' (declarations)
+  const payments = useMemo(() => {
+    const map = new Map<string, any>();
+
+    (declarations || []).forEach(d => {
+      const pId = d.id;
+      if (locallyHiddenPaymentIds.has(pId)) return;
+      if (!d.isHidden && d.status !== 'hidden' && d.status !== 'deleted') {
+        let type = (d as any).type;
+        let caisse = (d as any).caisse;
+        if (!type && !caisse && d.fund) {
+          if (d.fund === 'COTISATION') {
+            type = 'Cotisation Mensuelle';
+            caisse = 'Cotisation Mensuelle';
+          } else if (d.fund === 'ANNIVERSAIRE') {
+            type = 'Anniversaire';
+            caisse = 'Anniversaire';
+          } else if (d.fund === 'LOISIRS') {
+            type = 'Sorties & Loisirs';
+            caisse = 'Sorties & Loisirs';
+          } else if (d.fund === 'AGR') {
+            type = 'Projets AGR';
+            caisse = 'Projets AGR';
+          } else if (d.fund === 'CAS_SOCIAUX') {
+            type = 'Cas Sociaux';
+            caisse = 'Cas Sociaux';
+          }
+        }
+        map.set(pId, {
+          ...d,
+          type: type || (d as any).type,
+          caisse: caisse || (d as any).caisse,
+        });
+      }
+    });
+
+    (firestorePayments || []).forEach(p => {
+      const pId = p.id;
+      if (locallyHiddenPaymentIds.has(pId)) return;
+      if (!p.isHidden && p.status !== 'hidden' && p.status !== 'deleted') {
+        const existing = map.get(pId) || {};
+        map.set(pId, {
+          ...existing,
+          ...p,
+        });
+      }
+    });
+
+    return Array.from(map.values());
+  }, [declarations, firestorePayments, locallyHiddenPaymentIds]);
+
+  // Recalcul instantané et dynamique des soldes Trésorier
+  const treasuryBalances = useMemo(() => calculateBalances(payments), [payments]);
+
+  const liveFundBalances = useMemo<Record<FundType, number>>(() => ({
+    COTISATION: treasuryBalances.cotisations,
+    ANNIVERSAIRE: treasuryBalances.anniversaire,
+    LOISIRS: treasuryBalances.sorties,
+    AGR: treasuryBalances.agr,
+    CAS_SOCIAUX: treasuryBalances.casSociaux,
+    SOIREE_ROUAMA: fundBalances.SOIREE_ROUAMA || 0,
+  }), [treasuryBalances, fundBalances]);
+
+  // Vérificateur unifié de statut validé (insensible à la casse/format)
+  const isPaymentValidated = (p: any) => {
+    if (!p) return false;
+    if (p.isHidden || p.status === 'hidden' || p.status === 'deleted' || p.status === 'REJECTED' || p.status === 'rejected') {
+      return false;
+    }
+    const s = String(p.status || '').toLowerCase().trim();
+    return (
+      p.status === 'validated' ||
+      p.status === 'Validé' ||
+      p.status === 'approved' ||
+      p.status === 'APPROVED' ||
+      p.isValidated === true ||
+      s === 'validated' ||
+      s === 'validé' ||
+      s === 'valide' ||
+      s === 'approved'
+    );
+  };
 
   // 3. FILTRAGE DES VUES (MASQUAGE EFFECTIF) :
   // Dans le tableau "Validation des Reçus de Dépôt" (Trésorier) :
-  // Filtrer la liste pour ignorer toutes les lignes ayant isHidden === true ou status === 'hidden'.
+  // Les paiements déjà validés sont exclus de la file d'attente
   const pendingPayments = payments.filter(
     p =>
       !p.isHidden &&
       p.status !== 'hidden' &&
       p.status !== 'deleted' &&
-      p.status !== 'validated' &&
+      p.status !== 'REJECTED' &&
       p.status !== 'rejected' &&
-      p.status !== 'APPROVED'
+      !isPaymentValidated(p)
   );
 
   // Temporal WhatsApp Check (28th of current month to 04th of next month until 23h59 GMT)
@@ -354,6 +568,7 @@ export const AdminPortal: React.FC = () => {
   const [bilanStartDate, setBilanStartDate] = useState<string>('');
   const [bilanEndDate, setBilanEndDate] = useState<string>('');
   const [selectedPayorExportBilanId, setSelectedPayorExportBilanId] = useState<string>('');
+  const [editingBilanId, setEditingBilanId] = useState<string | null>(null);
 
   // 2. Secrétariat Forms
   const [pvTitle, setPvTitle] = useState<string>('');
@@ -362,6 +577,7 @@ export const AdminPortal: React.FC = () => {
   const [pvEndTime, setPvEndTime] = useState<string>('');
   const [pvAttendeesCount, setPvAttendeesCount] = useState<string>('');
   const [pvContent, setPvContent] = useState<string>('');
+  const [editingPvId, setEditingPvId] = useState<string | null>(null);
 
   // 3. COM Broadcast Form
   const [newsTitle, setNewsTitle] = useState<string>('');
@@ -450,11 +666,37 @@ export const AdminPortal: React.FC = () => {
   const [customPilotInput, setCustomPilotInput] = useState<string>('');
   const [editingProjectId, setEditingProjectId] = useState<string | null>(null);
 
-  // Payor AGR Review State & Modals
+  // Payor Full Document Preview Modal (PV, Project, Bilan) & Unified Return/Delete Actions
+  const [payorViewingOfficialDoc, setPayorViewingOfficialDoc] = useState<
+    | { type: 'PV'; data: SecretaryPV }
+    | { type: 'PROJECT'; data: AgrProject }
+    | { type: 'BILAN'; data: FinancialBilan }
+    | null
+  >(null);
+  const [payorReturnDocModal, setPayorReturnDocModal] = useState<{
+    type: 'PV' | 'PROJECT' | 'BILAN';
+    id: string;
+    title: string;
+  } | null>(null);
+  const [payorReturnDocFeedback, setPayorReturnDocFeedback] = useState<string>('');
+  const [payorReturnDocFeedbackError, setPayorReturnDocFeedbackError] = useState<string | null>(null);
+
+  // Payor AGR Review State & Modals (backward-compatible)
   const [payorViewingProjectDoc, setPayorViewingProjectDoc] = useState<AgrProject | null>(null);
   const [payorReturnProjectModalProj, setPayorReturnProjectModalProj] = useState<AgrProject | null>(null);
   const [payorReturnFeedbackText, setPayorReturnFeedbackText] = useState<string>('');
   const [payorReturnFeedbackError, setPayorReturnFeedbackError] = useState<string | null>(null);
+
+  // In-App Universal Confirmation Modal (avoids window.confirm which is blocked in iframes)
+  const [deleteConfirmModal, setDeleteConfirmModal] = useState<{
+    title: string;
+    itemTitle?: string;
+    itemId?: string;
+    description: string;
+    confirmLabel?: string;
+    onConfirm: () => void | Promise<void>;
+  } | null>(null);
+  const [isConfirmingAction, setIsConfirmingAction] = useState<boolean>(false);
 
   // 7. Spiritualité Forms
   const [aelfData, setAelfData] = useState<AELFDayData | null>(null);
@@ -1014,8 +1256,8 @@ export const AdminPortal: React.FC = () => {
     window.open(src, '_blank', 'noopener,noreferrer');
   };
 
-  // Total cash balance calculation
-  const totalFundBalance = (Object.values(fundBalances) as number[]).reduce((a, b) => a + b, 0);
+  // Total cash balance calculation (recalcul dynamique et réactif depuis Firestore)
+  const totalFundBalance = treasuryBalances.total;
 
   // Modal and state for receipt rejection
   const [rejectModalDeclaration, setRejectModalDeclaration] = useState<any | null>(null);
@@ -1025,13 +1267,63 @@ export const AdminPortal: React.FC = () => {
   const handleValidateReceipt = async (decl: any) => {
     if (!decl || !decl.id) return;
     try {
-      await approvePayment(decl.id);
+      const targetId = String(decl.id).trim();
+
+      let normalizedType = decl.type;
+      let normalizedCaisse = decl.caisse;
+      if (!normalizedType && !normalizedCaisse && decl.fund) {
+        if (decl.fund === 'COTISATION') {
+          normalizedType = 'Cotisation Mensuelle';
+          normalizedCaisse = 'Cotisation Mensuelle';
+        } else if (decl.fund === 'ANNIVERSAIRE') {
+          normalizedType = 'Anniversaire';
+          normalizedCaisse = 'Anniversaire';
+        } else if (decl.fund === 'LOISIRS') {
+          normalizedType = 'Sorties & Loisirs';
+          normalizedCaisse = 'Sorties & Loisirs';
+        } else if (decl.fund === 'AGR') {
+          normalizedType = 'Projets AGR';
+          normalizedCaisse = 'Projets AGR';
+        } else if (decl.fund === 'CAS_SOCIAUX') {
+          normalizedType = 'Cas Sociaux';
+          normalizedCaisse = 'Cas Sociaux';
+        }
+      }
+
+      // EXIGENCE 3 : NORMALISATION DU STATUT LORS DE LA VALIDATION :
+      // { status: 'validated', isValidated: true, validatedAt: new Date() }
+      const validationPayload = {
+        status: 'validated',
+        isValidated: true,
+        validatedAt: new Date(),
+      };
+
+      // 1. Enregistrement direct et persistant dans 'payments'
+      await setDoc(
+        doc(db, 'payments', targetId),
+        {
+          ...decl,
+          id: targetId,
+          type: normalizedType || decl.type || 'Cotisation Mensuelle',
+          caisse: normalizedCaisse || decl.caisse || 'Cotisation Mensuelle',
+          ...validationPayload,
+        },
+        { merge: true }
+      );
+
+      // 2. Synchronisation dans 'receipts'
+      await setDoc(doc(db, 'receipts', targetId), validationPayload, { merge: true });
+
+      // 3. Traitement applicatif (transactions, alerte Cerveau, cotisations)
+      await approvePayment(targetId);
+
       setPreviewDeclaration(null);
       setPreviewReceiptImgError(false);
       setRejectModalDeclaration(null);
-      const amountStr = decl.amount ? `${decl.amount.toLocaleString('fr-FR')} F CFA` : '';
+      const amountVal = Number(decl.amount) || Number(decl.montant) || 0;
+      const amountStr = amountVal ? `${amountVal.toLocaleString('fr-FR')} F CFA` : '';
       const name = decl.memberNickname || 'Membre';
-      setToastMessage(`✅ Reçu de ${name} (${amountStr}) validé avec succès sur Firestore ! Solde et cotisations synchronisés.`);
+      setToastMessage(`✅ Paiement de ${name} (${amountStr}) validé avec succès sur Firestore ! Solde Caisse mis à jour instantanément.`);
       setTimeout(() => setToastMessage(null), 4500);
     } catch (err) {
       console.error('Erreur lors de la validation du reçu:', err);
@@ -1073,12 +1365,9 @@ export const AdminPortal: React.FC = () => {
     const targetId = paymentItem?.id || paymentItem?._id || paymentItem?.docId;
 
     // 1. Mise à jour IMMÉDIATE de l'interface (React State)
-    setPayments(prevPayments =>
-      prevPayments.filter(p => {
-        const pId = p.id || (p as any)._id || (p as any).docId;
-        return pId !== targetId && p !== paymentItem;
-      })
-    );
+    if (targetId) {
+      setLocallyHiddenPaymentIds(prev => new Set([...prev, targetId]));
+    }
 
     // Fermer les modales de prévisualisation si nécessaire
     if (previewDeclaration && ((previewDeclaration.id || (previewDeclaration as any)._id || (previewDeclaration as any).docId) === targetId)) {
@@ -1682,6 +1971,29 @@ export const AdminPortal: React.FC = () => {
       ? bilanTitle
       : `Bilan Financier E-ROUAMA (${bilanPeriodMode === 'GLOBAL' ? 'Global' : 'Périodique'})`;
 
+    if (editingBilanId) {
+      updateFinancialBilan(editingBilanId, {
+        title,
+        period: periodLabel,
+        status: 'PENDING_PAYOR',
+        payorFeedback: '',
+      });
+      const updatedBilan = bilans.find(b => b.id === editingBilanId);
+      if (updatedBilan) {
+        renderAndPrintBilanPDF({
+          ...updatedBilan,
+          title,
+          period: periodLabel,
+          status: 'PENDING_PAYOR',
+          payorFeedback: '',
+        });
+      }
+      setToastMessage("✍️ Bilan Financier mis à jour et re-transmis au Payor pour visa !");
+      setEditingBilanId(null);
+      setBilanTitle('');
+      return;
+    }
+
     // 1. Record Bilan in state with status 'PENDING_PAYOR' & Trésorier signature
     const newBilan = createFinancialBilan(title, periodLabel, '');
 
@@ -1689,6 +2001,7 @@ export const AdminPortal: React.FC = () => {
     renderAndPrintBilanPDF(newBilan);
 
     setToastMessage("✍️ Bilan Financier généré avec la signature SIMAHO.png et transmis au Payor pour visa !");
+    setBilanTitle('');
   };
 
   // LOGIQUE DE SÉCURITÉ DE LA FONCTION D'IMPRESSION DU RAPPORT FINANCIER PAYOR (handleExportPDF) :
@@ -2048,31 +2361,37 @@ export const AdminPortal: React.FC = () => {
   }, [announcements]);
 
   // 2. LOGIQUE DU BOUTON SUPPRIMER (handleDeleteAnnouncement) :
-  const handleDeleteAnnouncement = async (id: string) => {
+  const handleDeleteAnnouncement = (id: string) => {
     if (!id) {
-      alert("Erreur : ID du document introuvable.");
+      setToastMessage("Erreur : ID du document introuvable.");
       return;
     }
-    if (window.confirm("Voulez-vous vraiment supprimer ce communiqué ?")) {
-      try {
-        setDeletingAnnouncementId(id);
-        await deleteDoc(doc(db, "announcements", id));
+    const item = announcements.find(a => a.id === id);
+    setDeleteConfirmModal({
+      title: "Supprimer ce Communiqué",
+      itemTitle: item?.title || "Communiqué officiel",
+      itemId: id,
+      description: "Voulez-vous vraiment supprimer définitivement ce communiqué officiel ? Il sera retiré de l'actualité de l'application.",
+      onConfirm: async () => {
         try {
-          await deleteDoc(doc(db, "news", id));
-        } catch (_) {}
+          setDeletingAnnouncementId(id);
+          await deleteDoc(doc(db, "announcements", id));
+          try {
+            await deleteDoc(doc(db, "news", id));
+          } catch (_) {}
 
-        // Mise à jour immédiate du state local
-        setAnnouncements(prev => prev.filter(a => a.id !== id));
-        deleteNewsItem(id);
-
-        alert("Communiqué supprimé avec succès.");
-      } catch (error: any) {
-        console.error("Erreur de suppression Firestore :", error);
-        alert("Échec de la suppression : " + (error?.message || error));
-      } finally {
-        setDeletingAnnouncementId(null);
-      }
-    }
+          // Mise à jour immédiate du state local
+          setAnnouncements(prev => prev.filter(a => a.id !== id));
+          deleteNewsItem(id);
+          setToastMessage("🗑️ Communiqué supprimé avec succès.");
+        } catch (error: any) {
+          console.error("Erreur de suppression Firestore :", error);
+          setToastMessage("❌ Échec de la suppression : " + (error?.message || error));
+        } finally {
+          setDeletingAnnouncementId(null);
+        }
+      },
+    });
   };
 
   // LOGIQUE D'ENVOI RÉEL CERVEAU (Diffusion d'Alerte Cerveau) - SÉQUENCE AVEC PAUSE (ANTI-CONNECTION LIMIT)
@@ -2383,7 +2702,7 @@ export const AdminPortal: React.FC = () => {
                     Cotisation Mensuelle
                   </span>
                   <p className="text-xl font-black text-emerald-400">
-                    {(fundBalances.COTISATION || 0).toLocaleString('fr-FR')} <span className="text-xs font-bold text-slate-400">F CFA</span>
+                    {(liveFundBalances.COTISATION || 0).toLocaleString('fr-FR')} <span className="text-xs font-bold text-slate-400">F CFA</span>
                   </p>
                   <span className="text-[10px] text-slate-500 block font-medium">Cotisations statutaires</span>
                 </div>
@@ -2394,7 +2713,7 @@ export const AdminPortal: React.FC = () => {
                     Célébration 21 mars (Anniversaire)
                   </span>
                   <p className="text-xl font-black text-amber-400">
-                    {(fundBalances.ANNIVERSAIRE || 0).toLocaleString('fr-FR')} <span className="text-xs font-bold text-slate-400">F CFA</span>
+                    {(liveFundBalances.ANNIVERSAIRE || 0).toLocaleString('fr-FR')} <span className="text-xs font-bold text-slate-400">F CFA</span>
                   </p>
                   <span className="text-[10px] text-slate-500 block font-medium">Événementiel 21 Mars</span>
                 </div>
@@ -2405,7 +2724,7 @@ export const AdminPortal: React.FC = () => {
                     Sorties & Loisirs
                   </span>
                   <p className="text-xl font-black text-blue-400">
-                    {(fundBalances.LOISIRS || 0).toLocaleString('fr-FR')} <span className="text-xs font-bold text-slate-400">F CFA</span>
+                    {(liveFundBalances.LOISIRS || 0).toLocaleString('fr-FR')} <span className="text-xs font-bold text-slate-400">F CFA</span>
                   </p>
                   <span className="text-[10px] text-slate-500 block font-medium">Activités récréatives</span>
                 </div>
@@ -2416,7 +2735,7 @@ export const AdminPortal: React.FC = () => {
                     Projets AGR
                   </span>
                   <p className="text-xl font-black text-purple-400">
-                    {(fundBalances.AGR || 0).toLocaleString('fr-FR')} <span className="text-xs font-bold text-slate-400">F CFA</span>
+                    {(liveFundBalances.AGR || 0).toLocaleString('fr-FR')} <span className="text-xs font-bold text-slate-400">F CFA</span>
                   </p>
                   <span className="text-[10px] text-slate-500 block font-medium">Investissements & AGR</span>
                 </div>
@@ -2427,7 +2746,7 @@ export const AdminPortal: React.FC = () => {
                     Cas Sociaux & Entraide
                   </span>
                   <p className="text-xl font-black text-rose-400">
-                    {(fundBalances.CAS_SOCIAUX || 0).toLocaleString('fr-FR')} <span className="text-xs font-bold text-slate-400">F CFA</span>
+                    {(liveFundBalances.CAS_SOCIAUX || 0).toLocaleString('fr-FR')} <span className="text-xs font-bold text-slate-400">F CFA</span>
                   </p>
                   <span className="text-[10px] text-slate-500 block font-medium">Mariage, Naissances, Décès</span>
                 </div>
@@ -3943,10 +4262,17 @@ export const AdminPortal: React.FC = () => {
                               <button
                                 type="button"
                                 onClick={() => {
-                                  if (window.confirm(`Voulez-vous clôturer / archiver l'événement "${evt.title}" ? La rubrique deviendra grisée dans l'espace membre.`)) {
-                                    archiveFinancialEvent(evt.id);
-                                    alert(`L'événement "${evt.title}" a été clôturé.`);
-                                  }
+                                  setDeleteConfirmModal({
+                                    title: "Clôturer / Archiver l'Événement",
+                                    itemTitle: evt.title,
+                                    itemId: evt.id,
+                                    description: `Voulez-vous clôturer et archiver l'événement "${evt.title}" ? La rubrique deviendra grisée dans l'espace membre.`,
+                                    confirmLabel: "Archiver l'Événement",
+                                    onConfirm: () => {
+                                      archiveFinancialEvent(evt.id);
+                                      setToastMessage(`📦 L'événement "${evt.title}" a été clôturé.`);
+                                    },
+                                  });
                                 }}
                                 className="bg-slate-800 hover:bg-slate-700 text-amber-300 border border-slate-700 font-bold px-3.5 py-2 rounded-xl flex items-center gap-1.5 transition-all text-xs cursor-pointer"
                               >
@@ -3962,9 +4288,16 @@ export const AdminPortal: React.FC = () => {
                             <button
                               type="button"
                               onClick={() => {
-                                if (window.confirm(`Supprimer définitivement l'événement "${evt.title}" ?`)) {
-                                  deleteFinancialEvent(evt.id);
-                                }
+                                setDeleteConfirmModal({
+                                  title: "Supprimer Définitivement l'Événement",
+                                  itemTitle: evt.title,
+                                  itemId: evt.id,
+                                  description: `Voulez-vous supprimer définitivement l'événement "${evt.title}" ?`,
+                                  onConfirm: () => {
+                                    deleteFinancialEvent(evt.id);
+                                    setToastMessage(`🗑️ Événement "${evt.title}" supprimé.`);
+                                  },
+                                });
                               }}
                               className="bg-rose-950/40 hover:bg-rose-900/60 text-rose-300 border border-rose-900/50 font-bold px-3 py-2 rounded-xl flex items-center gap-1 transition-all text-xs cursor-pointer"
                             >
@@ -4350,11 +4683,11 @@ export const AdminPortal: React.FC = () => {
                     <span>Bloc Entrées (Encaissements Validés)</span>
                   </h2>
                   <span className="bg-emerald-500/20 text-emerald-300 text-xs font-black px-3 py-1 rounded-full border border-emerald-500/30">
-                    {declarations.filter(d => d.status === 'APPROVED').length} encaissements
+                    {payments.filter(p => isPaymentValidated(p)).length} encaissements
                   </span>
                 </div>
 
-                {declarations.filter(d => d.status === 'APPROVED').length === 0 ? (
+                {payments.filter(p => isPaymentValidated(p)).length === 0 ? (
                   <div className="text-center py-10 bg-slate-950 rounded-2xl border border-dashed border-slate-800 text-slate-500 text-sm">
                     Aucun encaissement validé enregistré pour le moment.
                   </div>
@@ -4371,15 +4704,15 @@ export const AdminPortal: React.FC = () => {
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-800/60 font-medium">
-                        {declarations
-                          .filter(d => d.status === 'APPROVED')
+                        {payments
+                          .filter(p => isPaymentValidated(p))
                           .map(d => (
                             <tr key={d.id} className="hover:bg-slate-800/40 transition-colors">
-                              <td className="py-3 px-4 font-extrabold text-white">{d.memberNickname}</td>
-                              <td className="py-3 px-4 text-xs text-slate-400">{d.date}</td>
-                              <td className="py-3 px-4 font-bold text-amber-400">{FUND_LABELS[d.fund]}</td>
+                              <td className="py-3 px-4 font-extrabold text-white">{d.memberNickname || d.memberName || 'Membre'}</td>
+                              <td className="py-3 px-4 text-xs text-slate-400">{d.date || 'Récemment'}</td>
+                              <td className="py-3 px-4 font-bold text-amber-400">{FUND_LABELS[d.fund] || d.caisse || d.type || 'Cotisation Mensuelle'}</td>
                               <td className="py-3 px-4 font-black text-emerald-400 text-base">
-                                +{d.amount.toLocaleString('fr-FR')} F CFA
+                                +{(Number(d.amount) || Number((d as any).montant) || 0).toLocaleString('fr-FR')} F CFA
                               </td>
                               <td className="py-3 px-4 font-mono text-xs text-amber-300">
                                 <button
@@ -4561,11 +4894,40 @@ export const AdminPortal: React.FC = () => {
                 )}
               </div>
 
-              {/* Titre du Bilan */}
-              <div>
-                <label className="block text-xs font-bold text-slate-400 uppercase mb-2">
-                  Titre du Bilan Financier (Optionnel)
-                </label>
+              {/* Titre du Bilan & Mode Édition */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <label className="block text-xs font-bold text-slate-400 uppercase">
+                    {editingBilanId ? 'Modifier le Titre du Bilan Financier' : 'Titre du Bilan Financier (Optionnel)'}
+                  </label>
+                  {editingBilanId && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditingBilanId(null);
+                        setBilanTitle('');
+                      }}
+                      className="text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold px-3 py-1 rounded-xl border border-slate-700"
+                    >
+                      ✕ Annuler la modification
+                    </button>
+                  )}
+                </div>
+
+                {editingBilanId && (() => {
+                  const currBilan = bilans.find(b => b.id === editingBilanId);
+                  return currBilan?.status === 'returned_for_correction' && currBilan.payorFeedback ? (
+                    <div className="p-3.5 bg-rose-500/10 border border-rose-500/30 rounded-2xl text-xs space-y-1">
+                      <span className="text-rose-400 font-black uppercase flex items-center gap-1.5">
+                        <AlertTriangle className="w-4 h-4" /> Motif de retour notifié par le Payor :
+                      </span>
+                      <p className="text-rose-200 italic bg-slate-950/70 p-2.5 rounded-xl border border-rose-500/20">
+                        "{currBilan.payorFeedback}"
+                      </p>
+                    </div>
+                  ) : null;
+                })()}
+
                 <input
                   type="text"
                   placeholder="Ex: Bilan Financier Clôture Exercice 2026"
@@ -4582,7 +4944,7 @@ export const AdminPortal: React.FC = () => {
                 className="w-full bg-[#E67E22] hover:bg-[#D35400] text-white font-black py-4 px-6 rounded-2xl shadow-xl text-base flex items-center justify-center gap-3 transition-all active:scale-98 cursor-pointer"
               >
                 <Printer className="w-5 h-5" />
-                <span>✍️ GÉNÉRER ET TRANSMETTRE AU PAYOR</span>
+                <span>{editingBilanId ? '💾 ENREGISTRER & RE-TRANSMETTRE AU PAYOR' : '✍️ GÉNÉRER ET TRANSMETTRE AU PAYOR'}</span>
               </button>
 
               {/* List of generated bilans & Payor approval status */}
@@ -4592,45 +4954,114 @@ export const AdminPortal: React.FC = () => {
                     Historique des Bilans Générés & Statuts de Contre-Signature
                   </h3>
 
-                  {bilans.map(b => (
-                    <div
-                      key={b.id}
-                      className="bg-slate-950 p-4 rounded-2xl border border-slate-800 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs"
-                    >
-                      <div className="space-y-1">
-                        <div className="flex items-center gap-2">
-                          <p className="font-extrabold text-white text-sm">{b.title}</p>
-                          {b.status === 'APPROVED_PAYOR' ? (
-                            <span className="bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-2.5 py-0.5 rounded-full text-[10px] font-bold">
-                              🟢 Bi-Signé (SIMAHO + SIDEPO)
-                            </span>
-                          ) : (
-                            <span className="bg-amber-500/20 text-amber-400 border border-amber-500/30 px-2.5 py-0.5 rounded-full text-[10px] font-bold">
-                              ⏳ En attente du visa Payor
-                            </span>
-                          )}
-                        </div>
-                        <p className="text-slate-400">
-                          Période : {b.period} • Reçus: {b.totalIn.toLocaleString('fr-FR')} F • Dépenses: {b.totalOut.toLocaleString('fr-FR')} F
-                        </p>
-                        <p className="text-[10px] text-slate-500">
-                          ✍️ Signé Trésorier (SIMAHO.png) le : {b.treasurerSignatureDate || b.date}
-                          {b.payorSignatureDate && ` • 🟢 Visé Payor (SIDEPO.png) le : ${b.payorSignatureDate}`}
-                        </p>
-                      </div>
+                  {bilans.map(b => {
+                    const isApproved = b.status === 'APPROVED_PAYOR';
+                    const isReturned = b.status === 'returned_for_correction';
+                    return (
+                      <div
+                        key={b.id}
+                        className={`p-4 rounded-2xl border flex flex-col space-y-3 text-xs transition-all ${
+                          isReturned
+                            ? 'bg-rose-950/20 border-rose-500/40'
+                            : isApproved
+                            ? 'bg-slate-950 border-emerald-500/30'
+                            : 'bg-slate-950 border-slate-800'
+                        }`}
+                      >
+                        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+                          <div className="space-y-1">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <p className="font-extrabold text-white text-sm">{b.title}</p>
+                              <span className="text-[10px] font-mono text-amber-300 font-bold bg-amber-500/10 px-2 py-0.5 rounded-md border border-amber-500/20">
+                                {b.id}
+                              </span>
+                              {isApproved ? (
+                                <span className="bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-2.5 py-0.5 rounded-full text-[10px] font-bold">
+                                  🟢 Bi-Signé (SIMAHO + SIDEPO)
+                                </span>
+                              ) : isReturned ? (
+                                <span className="bg-rose-500/20 text-rose-300 border border-rose-500/40 px-2.5 py-0.5 rounded-full text-[10px] font-bold">
+                                  ⚠️ Retourné pour correction
+                                </span>
+                              ) : (
+                                <span className="bg-amber-500/20 text-amber-400 border border-amber-500/30 px-2.5 py-0.5 rounded-full text-[10px] font-bold">
+                                  ⏳ En attente du visa Payor
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-slate-400">
+                              Période : {b.period} • Reçus: {b.totalIn.toLocaleString('fr-FR')} F • Dépenses: {b.totalOut.toLocaleString('fr-FR')} F
+                            </p>
+                            <p className="text-[10px] text-slate-500">
+                              ✍️ Signé Trésorier (SIMAHO.png) le : {b.treasurerSignatureDate || b.date}
+                              {b.payorSignatureDate && ` • 🟢 Visé Payor (SIDEPO.png) le : ${b.payorSignatureDate}`}
+                            </p>
+                          </div>
 
-                      <div className="flex items-center gap-2">
-                        <button
-                          type="button"
-                          onClick={() => renderAndPrintBilanPDF(b)}
-                          className="bg-slate-800 hover:bg-slate-700 text-amber-400 font-bold px-3.5 py-2 rounded-xl flex items-center gap-1.5 active:scale-95 transition-all cursor-pointer"
-                        >
-                          <Printer className="w-3.5 h-3.5" />
-                          <span>Voir PDF</span>
-                        </button>
+                          <div className="flex items-center gap-2 shrink-0 flex-wrap self-end sm:self-auto">
+                            <button
+                              type="button"
+                              onClick={() => renderAndPrintBilanPDF(b)}
+                              className="bg-slate-800 hover:bg-slate-700 text-amber-400 font-bold px-3 py-1.5 rounded-xl flex items-center gap-1.5 active:scale-95 transition-all text-xs cursor-pointer"
+                            >
+                              <Printer className="w-3.5 h-3.5" />
+                              <span>Voir PDF</span>
+                            </button>
+
+                            {!isApproved && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setEditingBilanId(b.id);
+                                  setBilanTitle(b.title);
+                                  window.scrollTo({ top: 400, behavior: 'smooth' });
+                                }}
+                                className="bg-amber-600 hover:bg-amber-500 text-white font-bold px-3 py-1.5 rounded-xl flex items-center gap-1.5 transition-all text-xs cursor-pointer"
+                                title="Modifier ce bilan"
+                              >
+                                <Edit className="w-3.5 h-3.5" />
+                                <span>Modifier</span>
+                              </button>
+                            )}
+
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setDeleteConfirmModal({
+                                  title: "Supprimer ce Bilan Financier",
+                                  itemTitle: b.title,
+                                  itemId: b.id,
+                                  description: `Supprimer définitivement le Bilan "${b.title}" (${b.id}) ? Cette suppression sera synchronisée avec le Payor et le Secrétariat.`,
+                                  onConfirm: () => {
+                                    deleteFinancialBilan(b.id);
+                                    setToastMessage(`🗑️ Bilan "${b.title}" supprimé.`);
+                                  },
+                                });
+                              }}
+                              className="bg-rose-950/60 hover:bg-rose-900 text-rose-300 border border-rose-800/60 font-bold px-2.5 py-1.5 rounded-xl flex items-center gap-1 transition-all text-xs cursor-pointer"
+                              title="Supprimer définitivement ce bilan"
+                            >
+                              <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+                              <span>Supprimer</span>
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Motif du renvoi Payor */}
+                        {isReturned && b.payorFeedback && (
+                          <div className="p-3 bg-rose-900/30 border border-rose-500/30 rounded-xl space-y-1">
+                            <span className="text-[11px] font-bold text-rose-300 uppercase flex items-center gap-1">
+                              <AlertTriangle className="w-3.5 h-3.5 text-rose-400" />
+                              <span>Motif du retour formulé par le Payor :</span>
+                            </span>
+                            <p className="text-xs text-rose-100 italic bg-slate-950/60 p-2 rounded-lg">
+                              {b.payorFeedback}
+                            </p>
+                          </div>
+                        )}
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -5019,10 +5450,44 @@ export const AdminPortal: React.FC = () => {
 
           {/* Draft PV Form */}
           <div className="bg-slate-900 rounded-[2.5rem] p-6 sm:p-8 border border-slate-800 shadow-xl space-y-6">
-            <h2 className="text-xl font-black text-white flex items-center gap-2">
-              <FileText className="w-5 h-5 text-amber-500" />
-              <span>Rédaction des Procès-Verbaux (PV)</span>
-            </h2>
+            <div className="flex items-center justify-between">
+              <h2 className="text-xl font-black text-white flex items-center gap-2">
+                <FileText className="w-5 h-5 text-amber-500" />
+                <span>{editingPvId ? 'Modification du Procès-Verbal' : 'Rédaction des Procès-Verbaux (PV)'}</span>
+              </h2>
+              {editingPvId && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEditingPvId(null);
+                    setPvTitle('');
+                    setPvDate('');
+                    setPvStartTime('');
+                    setPvEndTime('');
+                    setPvAttendeesCount('');
+                    setPvContent('');
+                  }}
+                  className="text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold px-3 py-1.5 rounded-xl border border-slate-700 transition-all"
+                >
+                  ✕ Annuler la modification
+                </button>
+              )}
+            </div>
+
+            {editingPvId && (() => {
+              const currentPv = pvs.find(p => p.id === editingPvId);
+              return currentPv?.status === 'returned_for_correction' && currentPv.payorFeedback ? (
+                <div className="p-4 bg-rose-500/10 border border-rose-500/30 rounded-2xl space-y-1.5 text-xs">
+                  <div className="flex items-center gap-2 text-rose-400 font-black uppercase">
+                    <AlertTriangle className="w-4 h-4" />
+                    <span>Motif du retour notifié par le Payor pour correction :</span>
+                  </div>
+                  <p className="text-rose-200 italic bg-slate-950/70 p-3 rounded-xl border border-rose-500/20">
+                    "{currentPv.payorFeedback}"
+                  </p>
+                </div>
+              ) : null;
+            })()}
 
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
               <div className="lg:col-span-2">
@@ -5107,16 +5572,31 @@ export const AdminPortal: React.FC = () => {
                     alert('Veuillez renseigner au moins le titre et le contenu du PV.');
                     return;
                   }
-                  createSecretaryPV({
-                    title: pvTitle,
-                    meetingDate: pvDate || new Date().toISOString().split('T')[0],
-                    startTime: pvStartTime,
-                    endTime: pvEndTime,
-                    attendeesCount: pvAttendeesCount ? Number(pvAttendeesCount) : undefined,
-                    content: pvContent,
-                    attendance: members.map(m => ({ memberId: m.id, present: true })),
-                  });
-                  alert('PV rédigé et transmis au PAYOR pour validation administrative !');
+                  if (editingPvId) {
+                    updateSecretaryPV(editingPvId, {
+                      title: pvTitle.trim(),
+                      meetingDate: pvDate || new Date().toISOString().split('T')[0],
+                      startTime: pvStartTime,
+                      endTime: pvEndTime,
+                      attendeesCount: pvAttendeesCount ? Number(pvAttendeesCount) : undefined,
+                      content: pvContent.trim(),
+                      status: 'SENT_TO_PAYOR',
+                      payorFeedback: '',
+                    });
+                    setToastMessage(`✅ PV "${pvTitle.trim()}" mis à jour et re-soumis au PAYOR !`);
+                    setEditingPvId(null);
+                  } else {
+                    createSecretaryPV({
+                      title: pvTitle.trim(),
+                      meetingDate: pvDate || new Date().toISOString().split('T')[0],
+                      startTime: pvStartTime,
+                      endTime: pvEndTime,
+                      attendeesCount: pvAttendeesCount ? Number(pvAttendeesCount) : undefined,
+                      content: pvContent.trim(),
+                      attendance: members.map(m => ({ memberId: m.id, present: true })),
+                    });
+                    setToastMessage('✅ PV rédigé et transmis au PAYOR pour validation administrative !');
+                  }
                   setPvTitle('');
                   setPvDate('');
                   setPvStartTime('');
@@ -5124,10 +5604,10 @@ export const AdminPortal: React.FC = () => {
                   setPvAttendeesCount('');
                   setPvContent('');
                 }}
-                className="w-full sm:w-auto bg-[#E67E22] hover:bg-[#D35400] text-white font-black py-3.5 px-6 rounded-2xl shadow-lg text-sm flex items-center justify-center gap-2 transition-all active:scale-95"
+                className="w-full sm:w-auto bg-[#E67E22] hover:bg-[#D35400] text-white font-black py-3.5 px-6 rounded-2xl shadow-lg text-sm flex items-center justify-center gap-2 transition-all active:scale-95 cursor-pointer"
               >
                 <Send className="w-4 h-4" />
-                <span>Transmettre au PAYOR</span>
+                <span>{editingPvId ? 'Enregistrer & Re-transmettre au PAYOR' : 'Transmettre au PAYOR'}</span>
               </button>
             </div>
 
@@ -5138,44 +5618,123 @@ export const AdminPortal: React.FC = () => {
                   <FileText className="w-4 h-4 text-amber-500" />
                   <span>Historique des PV Rédigés ({pvs.length})</span>
                 </h3>
-                <div className="space-y-3 max-h-80 overflow-y-auto pr-1">
-                  {pvs.map(p => (
-                    <div key={p.id} className="bg-slate-950 p-4 rounded-2xl border border-slate-800 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs">
-                      <div className="space-y-1">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <span className="font-extrabold text-white text-sm">{p.title}</span>
-                          <span className="text-[10px] font-mono text-amber-300 font-bold bg-amber-500/10 px-2 py-0.5 rounded-md border border-amber-500/20">
-                            {p.id}
-                          </span>
-                          <span className={`px-2 py-0.5 text-[10px] font-black rounded-full border ${
-                            p.status === 'APPROVED_PAYOR' || p.status === 'ARCHIVED'
-                              ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
-                              : 'bg-amber-500/10 text-amber-400 border-amber-500/20'
-                          }`}>
-                            {p.status === 'APPROVED_PAYOR' || p.status === 'ARCHIVED' ? 'Validé PAYOR' : 'En attente PAYOR'}
-                          </span>
-                        </div>
-                        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-slate-400">
-                          <span>📅 Réunion du : {p.meetingDate || 'Non spécifiée'}</span>
-                          {(p.startTime || p.endTime) && (
-                            <span>⏱️ Horaires : {p.startTime || '--:--'} à {p.endTime || '--:--'}</span>
-                          )}
-                          {p.attendeesCount !== undefined && p.attendeesCount !== null && (
-                            <span>👥 Participants : {p.attendeesCount} pers.</span>
-                          )}
-                        </div>
-                      </div>
-
-                      <button
-                        type="button"
-                        onClick={() => handleGeneratePDFPV(p)}
-                        className="bg-slate-800 hover:bg-slate-700 text-amber-400 border border-slate-700 font-bold px-3 py-2 rounded-xl flex items-center gap-1.5 transition-all self-end sm:self-auto"
+                <div className="space-y-3 max-h-96 overflow-y-auto pr-1">
+                  {pvs.map(p => {
+                    const isApproved = p.status === 'APPROVED_PAYOR' || p.status === 'ARCHIVED';
+                    const isReturned = p.status === 'returned_for_correction';
+                    return (
+                      <div
+                        key={p.id}
+                        className={`p-4 rounded-2xl border flex flex-col space-y-3 text-xs transition-all ${
+                          isReturned
+                            ? 'bg-rose-950/20 border-rose-500/40'
+                            : isApproved
+                            ? 'bg-slate-950 border-emerald-500/30'
+                            : 'bg-slate-950 border-slate-800'
+                        }`}
                       >
-                        <Printer className="w-3.5 h-3.5" />
-                        <span>PDF / Imprimer</span>
-                      </button>
-                    </div>
-                  ))}
+                        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2">
+                          <div className="space-y-1">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="font-extrabold text-white text-sm">{p.title}</span>
+                              <span className="text-[10px] font-mono text-amber-300 font-bold bg-amber-500/10 px-2 py-0.5 rounded-md border border-amber-500/20">
+                                {p.id}
+                              </span>
+                              <span className={`px-2.5 py-0.5 text-[10px] font-black rounded-full border ${
+                                isReturned
+                                  ? 'bg-rose-500/20 text-rose-300 border-rose-500/40'
+                                  : isApproved
+                                  ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
+                                  : 'bg-amber-500/10 text-amber-400 border-amber-500/20'
+                              }`}>
+                                {isReturned
+                                  ? '⚠️ Retourné pour correction'
+                                  : isApproved
+                                  ? '🟢 Validé PAYOR'
+                                  : '⏳ En attente PAYOR'}
+                              </span>
+                            </div>
+                            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-slate-400">
+                              <span>📅 Réunion du : {p.meetingDate || 'Non spécifiée'}</span>
+                              {(p.startTime || p.endTime) && (
+                                <span>⏱️ Horaires : {p.startTime || '--:--'} à {p.endTime || '--:--'}</span>
+                              )}
+                              {p.attendeesCount !== undefined && p.attendeesCount !== null && (
+                                <span>👥 Participants : {p.attendeesCount} pers.</span>
+                              )}
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-2 self-end sm:self-auto shrink-0 flex-wrap">
+                            <button
+                              type="button"
+                              onClick={() => handleGeneratePDFPV(p)}
+                              className="bg-slate-800 hover:bg-slate-700 text-amber-400 border border-slate-700 font-bold px-3 py-1.5 rounded-xl flex items-center gap-1.5 transition-all text-xs cursor-pointer"
+                              title="Consulter et imprimer le PDF officiel"
+                            >
+                              <Printer className="w-3.5 h-3.5" />
+                              <span>PDF</span>
+                            </button>
+
+                            {!isApproved && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setEditingPvId(p.id);
+                                  setPvTitle(p.title);
+                                  setPvDate(p.meetingDate);
+                                  setPvStartTime(p.startTime || '');
+                                  setPvEndTime(p.endTime || '');
+                                  setPvAttendeesCount(p.attendeesCount ? String(p.attendeesCount) : '');
+                                  setPvContent(p.content);
+                                  window.scrollTo({ top: 400, behavior: 'smooth' });
+                                }}
+                                className="bg-amber-600 hover:bg-amber-500 text-white font-bold px-3 py-1.5 rounded-xl flex items-center gap-1.5 transition-all text-xs cursor-pointer"
+                                title="Modifier ce PV pour réédition"
+                              >
+                                <Edit className="w-3.5 h-3.5" />
+                                <span>Modifier</span>
+                              </button>
+                            )}
+
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setDeleteConfirmModal({
+                                  title: "Supprimer ce Procès-Verbal",
+                                  itemTitle: p.title,
+                                  itemId: p.id,
+                                  description: `Voulez-vous vraiment supprimer définitivement le PV "${p.title}" (${p.id}) ? Cette action est irréversible et synchronisée avec le Payor.`,
+                                  onConfirm: () => {
+                                    deleteSecretaryPV(p.id);
+                                    setToastMessage(`🗑️ Procès-Verbal "${p.title}" supprimé.`);
+                                  },
+                                });
+                              }}
+                              className="bg-rose-950/60 hover:bg-rose-900 text-rose-300 border border-rose-800/60 font-bold px-2.5 py-1.5 rounded-xl flex items-center gap-1 transition-all text-xs cursor-pointer"
+                              title="Supprimer définitivement ce PV"
+                            >
+                              <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+                              <span>Supprimer</span>
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Motif du retour s'il y a lieu */}
+                        {isReturned && p.payorFeedback && (
+                          <div className="p-3 bg-rose-900/30 border border-rose-500/30 rounded-xl space-y-1">
+                            <span className="text-[11px] font-bold text-rose-300 uppercase flex items-center gap-1">
+                              <AlertTriangle className="w-3.5 h-3.5 text-rose-400" />
+                              <span>Motif du renvoi formulé par le Payor :</span>
+                            </span>
+                            <p className="text-xs text-rose-100 italic bg-slate-950/60 p-2 rounded-lg">
+                              {p.payorFeedback}
+                            </p>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             )}
@@ -5308,7 +5867,7 @@ export const AdminPortal: React.FC = () => {
             </h2>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-3">
-              {Object.entries(fundBalances).map(([fKey, amount]) => (
+              {Object.entries(liveFundBalances).map(([fKey, amount]) => (
                 <div key={fKey} className="bg-slate-950 p-4 rounded-2xl border border-slate-800 space-y-1">
                   <p className="text-[10px] text-slate-400 font-bold uppercase truncate">
                     {FUND_LABELS[fKey as FundType]}
@@ -5337,59 +5896,113 @@ export const AdminPortal: React.FC = () => {
                 pvs
                   .filter(p => p.status === 'SENT_TO_PAYOR')
                   .map(p => (
-                    <div key={p.id} className="bg-slate-950 p-5 rounded-2xl border border-slate-800 flex flex-col md:flex-row items-start md:items-center justify-between gap-4 text-xs">
-                      <div className="space-y-1.5">
+                    <div key={p.id} className="bg-slate-950 p-5 rounded-2xl border border-slate-800 flex flex-col space-y-3 text-xs">
+                      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 border-b border-slate-800/80 pb-3">
                         <div className="flex items-center gap-2 flex-wrap">
                           <p className="font-black text-white text-base">{p.title}</p>
                           <span className="text-[10px] font-mono text-amber-300 font-bold bg-amber-500/10 px-2 py-0.5 rounded-md border border-amber-500/20">
                             {p.id}
                           </span>
                           <span className="bg-amber-500/10 text-amber-400 border border-amber-500/20 px-2.5 py-0.5 rounded-full text-[10px] font-bold">
-                            En Attente Validation
+                            ⏳ En Attente Validation Payor
                           </span>
                         </div>
-                        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-slate-300 font-medium">
-                          <span className="flex items-center gap-1">
-                            📅 Réunion : <strong className="text-white">{p.meetingDate}</strong>
+                        <span className="text-[11px] text-slate-400 font-medium">
+                          📅 Réunion du : <strong className="text-white">{p.meetingDate}</strong>
+                        </span>
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-slate-300 font-medium">
+                        {(p.startTime || p.endTime) && (
+                          <span className="flex items-center gap-1 text-amber-300">
+                            ⏱️ Horaires : <strong>{p.startTime || '--:--'} à {p.endTime || '--:--'}</strong>
                           </span>
-                          {(p.startTime || p.endTime) && (
-                            <span className="flex items-center gap-1 text-amber-300">
-                              ⏱️ Horaires : <strong>{p.startTime || '--:--'} à {p.endTime || '--:--'}</strong>
-                            </span>
-                          )}
-                          {p.attendeesCount !== undefined && p.attendeesCount !== null && (
-                            <span className="flex items-center gap-1 text-emerald-300">
-                              👥 Participants : <strong>{p.attendeesCount} personne(s)</strong>
-                            </span>
-                          )}
-                        </div>
-                        {p.content && (
-                          <div className="mt-2 p-3 bg-slate-900 border border-slate-800 rounded-xl text-slate-300 text-xs max-h-24 overflow-y-auto whitespace-pre-line">
-                            {p.content}
-                          </div>
+                        )}
+                        {p.attendeesCount !== undefined && p.attendeesCount !== null && (
+                          <span className="flex items-center gap-1 text-emerald-300">
+                            👥 Participants : <strong>{p.attendeesCount} personne(s)</strong>
+                          </span>
                         )}
                       </div>
 
-                      <div className="flex items-center gap-2 self-end md:self-center shrink-0">
+                      {p.content && (
+                        <div className="p-3 bg-slate-900/80 border border-slate-800 rounded-xl text-slate-300 text-xs max-h-20 overflow-hidden line-clamp-2 italic">
+                          "{p.content}"
+                        </div>
+                      )}
+
+                      {/* Action buttons for Payor */}
+                      <div className="flex flex-wrap items-center justify-end gap-2 pt-2 border-t border-slate-800/80">
+                        {/* 1. Aperçu Document Officiel Pleine Page */}
+                        <button
+                          type="button"
+                          onClick={() => setPayorViewingOfficialDoc({ type: 'PV', data: p })}
+                          className="bg-slate-800 hover:bg-slate-700 text-amber-300 border border-slate-700 font-bold px-3.5 py-2 rounded-xl flex items-center gap-1.5 transition-all text-xs active:scale-95 cursor-pointer"
+                          title="Ouvrir l'aperçu officiel plein format du Procès-Verbal"
+                        >
+                          <Eye className="w-3.5 h-3.5 text-amber-400" />
+                          <span>👁️ Aperçu Document Officiel</span>
+                        </button>
+
+                        {/* PDF */}
                         <button
                           type="button"
                           onClick={() => handleGeneratePDFPV(p)}
-                          className="bg-slate-800 hover:bg-slate-700 text-amber-400 font-extrabold px-3.5 py-2.5 rounded-xl border border-slate-700 flex items-center gap-1.5 transition-all active:scale-95"
-                          title="Consulter et imprimer le PDF du PV"
+                          className="bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 font-bold px-3 py-2 rounded-xl flex items-center gap-1.5 transition-all active:scale-95 text-xs cursor-pointer"
+                          title="Imprimer / Télécharger le PDF"
                         >
                           <Printer className="w-3.5 h-3.5" />
                           <span>PDF</span>
                         </button>
+
+                        {/* 2. Retour pour correction */}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setPayorReturnDocModal({ type: 'PV', id: p.id, title: p.title });
+                            setPayorReturnDocFeedback('');
+                            setPayorReturnDocFeedbackError(null);
+                          }}
+                          className="bg-rose-950/80 hover:bg-rose-900 text-rose-200 border border-rose-700/60 font-bold px-3.5 py-2 rounded-xl flex items-center gap-1.5 transition-all text-xs active:scale-95 cursor-pointer"
+                          title="Renvoyer ce PV au Secrétariat avec motif"
+                        >
+                          <XCircle className="w-3.5 h-3.5 text-rose-400" />
+                          <span>↩️ Retourner pour correction</span>
+                        </button>
+
+                        {/* 3. Supprimer */}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setDeleteConfirmModal({
+                              title: "Supprimer ce Procès-Verbal",
+                              itemTitle: p.title,
+                              itemId: p.id,
+                              description: `Supprimer définitivement le PV "${p.title}" (${p.id}) ? Cette suppression sera synchronisée avec le Secrétariat.`,
+                              onConfirm: () => {
+                                deleteSecretaryPV(p.id);
+                                setToastMessage(`🗑️ PV "${p.title}" supprimé.`);
+                              },
+                            });
+                          }}
+                          className="bg-rose-950/40 hover:bg-rose-900 text-rose-300 border border-rose-800/60 font-bold px-2.5 py-2 rounded-xl flex items-center gap-1 transition-all text-xs active:scale-95 cursor-pointer"
+                          title="Supprimer définitivement ce PV"
+                        >
+                          <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+                          <span>Supprimer</span>
+                        </button>
+
+                        {/* 4. Valider le PV */}
                         <button
                           type="button"
                           onClick={() => {
                             approvePVPayor(p.id);
-                            alert('PV approuvé par le PAYOR !');
+                            setToastMessage(`✅ PV "${p.title}" approuvé et visé par le PAYOR !`);
                           }}
-                          className="bg-emerald-600 hover:bg-emerald-500 text-white font-black px-4 py-2.5 rounded-xl flex items-center gap-1.5 shadow active:scale-95 transition-all"
+                          className="bg-emerald-600 hover:bg-emerald-500 text-white font-black px-4 py-2 rounded-xl flex items-center gap-1.5 shadow-lg active:scale-95 transition-all text-xs cursor-pointer"
                         >
                           <CheckCircle2 className="w-3.5 h-3.5" />
-                          <span>Valider Le PV</span>
+                          <span>✅ Approuver & Signer</span>
                         </button>
                       </div>
                     </div>
@@ -5517,19 +6130,19 @@ export const AdminPortal: React.FC = () => {
                           {/* 1. Ouvrir le document officiel */}
                           <button
                             type="button"
-                            onClick={() => setPayorViewingProjectDoc(p)}
-                            className="bg-slate-800 hover:bg-slate-700 text-amber-300 border border-slate-700 font-bold px-3.5 py-2 rounded-xl flex items-center gap-1.5 transition-all text-xs active:scale-95"
-                            title="Ouvrir et examiner le dossier officiel du projet"
+                            onClick={() => setPayorViewingOfficialDoc({ type: 'PROJECT', data: p })}
+                            className="bg-slate-800 hover:bg-slate-700 text-amber-300 border border-slate-700 font-bold px-3.5 py-2 rounded-xl flex items-center gap-1.5 transition-all text-xs active:scale-95 cursor-pointer"
+                            title="Ouvrir et examiner l'aperçu officiel grand format du dossier de projet"
                           >
-                            <FileText className="w-3.5 h-3.5 text-amber-400" />
-                            <span>📑 Ouvrir le Dossier Officiel</span>
+                            <Eye className="w-3.5 h-3.5 text-amber-400" />
+                            <span>👁️ Aperçu Document Officiel</span>
                           </button>
 
                           {/* Print PDF directly */}
                           <button
                             type="button"
                             onClick={() => handleGeneratePDFProject(p)}
-                            className="bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 font-bold px-3 py-2 rounded-xl flex items-center gap-1.5 transition-all text-xs active:scale-95"
+                            className="bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 font-bold px-3 py-2 rounded-xl flex items-center gap-1.5 transition-all text-xs active:scale-95 cursor-pointer"
                             title="Imprimer ou enregistrer le PDF officiel"
                           >
                             <Printer className="w-3.5 h-3.5 text-slate-400" />
@@ -5540,24 +6153,47 @@ export const AdminPortal: React.FC = () => {
                           <button
                             type="button"
                             onClick={() => {
-                              setPayorReturnProjectModalProj(p);
-                              setPayorReturnFeedbackText('');
-                              setPayorReturnFeedbackError(null);
+                              setPayorReturnDocModal({ type: 'PROJECT', id: p.id, title: p.title });
+                              setPayorReturnDocFeedback('');
+                              setPayorReturnDocFeedbackError(null);
                             }}
-                            className="bg-rose-950/80 hover:bg-rose-900 text-rose-200 border border-rose-700/60 font-bold px-3.5 py-2 rounded-xl flex items-center gap-1.5 transition-all text-xs active:scale-95"
+                            className="bg-rose-950/80 hover:bg-rose-900 text-rose-200 border border-rose-700/60 font-bold px-3.5 py-2 rounded-xl flex items-center gap-1.5 transition-all text-xs active:scale-95 cursor-pointer"
+                            title="Renvoyer ce projet à la Commission avec un motif"
                           >
                             <XCircle className="w-3.5 h-3.5 text-rose-400" />
                             <span>↩️ Retour pour correction</span>
                           </button>
 
-                          {/* 3. Action Approuver le Projet */}
+                          {/* 3. Action Supprimer le projet */}
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setDeleteConfirmModal({
+                                title: "Supprimer ce Projet AGR",
+                                itemTitle: p.title,
+                                itemId: p.id,
+                                description: `Supprimer définitivement le projet "${p.title}" (${p.id}) ? Cette suppression sera synchronisée avec la Commission Projets.`,
+                                onConfirm: () => {
+                                  deleteProject(p.id);
+                                  setToastMessage(`🗑️ Projet "${p.title}" supprimé.`);
+                                },
+                              });
+                            }}
+                            className="bg-rose-950/40 hover:bg-rose-900 text-rose-300 border border-rose-800/60 font-bold px-2.5 py-2 rounded-xl flex items-center gap-1 transition-all text-xs active:scale-95 cursor-pointer"
+                            title="Supprimer définitivement ce projet"
+                          >
+                            <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+                            <span>Supprimer</span>
+                          </button>
+
+                          {/* 4. Action Approuver le Projet */}
                           <button
                             type="button"
                             onClick={() => {
                               approveProjectPayor(p.id);
                               setToastMessage(`✅ Projet "${p.title}" approuvé par le Payor ! Visa & cachet apposés.`);
                             }}
-                            className="bg-emerald-600 hover:bg-emerald-500 text-white font-black px-4 py-2 rounded-xl flex items-center gap-1.5 shadow-lg active:scale-95 transition-all text-xs"
+                            className="bg-emerald-600 hover:bg-emerald-500 text-white font-black px-4 py-2 rounded-xl flex items-center gap-1.5 shadow-lg active:scale-95 transition-all text-xs cursor-pointer"
                           >
                             <CheckCircle2 className="w-4 h-4" />
                             <span>✅ Approuver le Projet (Apposer Visa)</span>
@@ -5641,70 +6277,153 @@ export const AdminPortal: React.FC = () => {
               ) : (
                 bilans.map(b => {
                   const isApproved = b.status === 'APPROVED_PAYOR';
+                  const isReturned = b.status === 'returned_for_correction';
                   return (
                     <div
                       key={b.id}
-                      className="bg-slate-950 p-4 sm:p-5 rounded-2xl border border-slate-800 flex flex-col md:flex-row items-start md:items-center justify-between gap-4 text-xs"
+                      className={`p-4 sm:p-5 rounded-2xl border flex flex-col space-y-3 text-xs transition-all ${
+                        isReturned
+                          ? 'bg-rose-950/20 border-rose-500/40'
+                          : isApproved
+                          ? 'bg-slate-950 border-emerald-500/30'
+                          : 'bg-slate-950 border-amber-500/30'
+                      }`}
                     >
-                      <div className="space-y-1.5 flex-1">
-                        <div className="flex items-center gap-2">
-                          <p className="font-extrabold text-white text-sm">{b.title}</p>
-                          {isApproved ? (
-                            <span className="bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-2.5 py-0.5 rounded-full text-[10px] font-black">
-                              🟢 Bi-Signé & Validé
+                      <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-3">
+                        <div className="space-y-1.5 flex-1">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <p className="font-extrabold text-white text-sm">{b.title}</p>
+                            <span className="text-[10px] font-mono text-amber-300 font-bold bg-amber-500/10 px-2 py-0.5 rounded-md border border-amber-500/20">
+                              {b.id}
                             </span>
-                          ) : (
-                            <span className="bg-amber-500/20 text-amber-400 border border-amber-500/30 px-2.5 py-0.5 rounded-full text-[10px] font-black animate-pulse">
-                              ⏳ En attente du visa Payor
+                            {isApproved ? (
+                              <span className="bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-2.5 py-0.5 rounded-full text-[10px] font-black">
+                                🟢 Bi-Signé & Validé
+                              </span>
+                            ) : isReturned ? (
+                              <span className="bg-rose-500/20 text-rose-300 border border-rose-500/40 px-2.5 py-0.5 rounded-full text-[10px] font-black">
+                                ⚠️ Retourné pour correction
+                              </span>
+                            ) : (
+                              <span className="bg-amber-500/20 text-amber-400 border border-amber-500/30 px-2.5 py-0.5 rounded-full text-[10px] font-black animate-pulse">
+                                ⏳ En attente du visa Payor
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-slate-300 font-medium">
+                            Période : <strong className="text-amber-400">{b.period}</strong> • Reçus: <strong className="text-emerald-400">{b.totalIn.toLocaleString('fr-FR')} F CFA</strong> • Dépenses: <strong className="text-rose-400">{b.totalOut.toLocaleString('fr-FR')} F CFA</strong>
+                          </p>
+                          <p className="text-[11px] text-slate-400 flex flex-wrap items-center gap-2">
+                            <span>✍️ Signé Trésorier (SIMAHO.png) le : <strong className="text-slate-200">{b.treasurerSignatureDate || b.date}</strong></span>
+                            {b.payorSignatureDate && (
+                              <span>• 🟢 Visé Payor (SIDEPO.png) le : <strong className="text-emerald-300">{b.payorSignatureDate}</strong></span>
+                            )}
+                          </p>
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-2 shrink-0 self-end md:self-center">
+                          {/* 1. Aperçu Document Officiel Pleine Page */}
+                          <button
+                            type="button"
+                            onClick={() => setPayorViewingOfficialDoc({ type: 'BILAN', data: b })}
+                            className="bg-slate-800 hover:bg-slate-700 text-amber-300 border border-slate-700 font-bold px-3.5 py-2 rounded-xl flex items-center gap-1.5 transition-all active:scale-95 text-xs cursor-pointer"
+                            title="Consulter l'aperçu officiel grand format"
+                          >
+                            <Eye className="w-3.5 h-3.5 text-amber-400" />
+                            <span>👁️ Aperçu Document Officiel</span>
+                          </button>
+
+                          {/* PDF */}
+                          <button
+                            type="button"
+                            onClick={() => renderAndPrintBilanPDF(b)}
+                            className="bg-slate-800 hover:bg-slate-700 text-slate-300 font-extrabold px-3 py-2 rounded-xl border border-slate-700 flex items-center gap-1.5 transition-all active:scale-95 text-xs cursor-pointer"
+                            title="Consulter et imprimer le PDF du Bilan"
+                          >
+                            <Printer className="w-3.5 h-3.5" />
+                            <span>PDF</span>
+                          </button>
+
+                          {!isApproved && (
+                            <>
+                              {/* 2. Retour pour correction */}
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setPayorReturnDocModal({ type: 'BILAN', id: b.id, title: b.title });
+                                  setPayorReturnDocFeedback('');
+                                  setPayorReturnDocFeedbackError(null);
+                                }}
+                                className="bg-rose-950/80 hover:bg-rose-900 text-rose-200 border border-rose-700/60 font-bold px-3 py-2 rounded-xl flex items-center gap-1.5 transition-all text-xs active:scale-95 cursor-pointer"
+                                title="Renvoyer ce Bilan au Trésorier avec motif"
+                              >
+                                <XCircle className="w-3.5 h-3.5 text-rose-400" />
+                                <span>↩️ Retourner pour correction</span>
+                              </button>
+
+                              {/* 3. Supprimer */}
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setDeleteConfirmModal({
+                                    title: "Supprimer ce Bilan Financier",
+                                    itemTitle: b.title,
+                                    itemId: b.id,
+                                    description: `Supprimer définitivement le Bilan "${b.title}" (${b.id}) ? Cette suppression sera synchronisée avec le Trésorier.`,
+                                    onConfirm: () => {
+                                      deleteFinancialBilan(b.id);
+                                      setToastMessage(`🗑️ Bilan "${b.title}" supprimé.`);
+                                    },
+                                  });
+                                }}
+                                className="bg-rose-950/40 hover:bg-rose-900 text-rose-300 border border-rose-800/60 font-bold px-2.5 py-2 rounded-xl flex items-center gap-1 transition-all text-xs active:scale-95 cursor-pointer"
+                                title="Supprimer définitivement ce Bilan"
+                              >
+                                <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+                                <span>Supprimer</span>
+                              </button>
+
+                              {/* 4. Approuver */}
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  approveBilanPayor(b.id);
+                                  const nowStr = `${new Date().toLocaleDateString('fr-FR')} à ${new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}`;
+                                  renderAndPrintBilanPDF({
+                                    ...b,
+                                    status: 'APPROVED_PAYOR',
+                                    payorSignatureDate: nowStr,
+                                  });
+                                  setToastMessage("🟢 Bilan Financier approuvé avec succès ! Signature SIDEPO.png apposée. Document bi-signé transmis au Secrétariat et publié à la BIC.");
+                                }}
+                                className="bg-emerald-600 hover:bg-emerald-500 text-white font-black px-4 py-2 rounded-xl flex items-center gap-2 shadow-lg active:scale-95 transition-all text-xs cursor-pointer"
+                              >
+                                <CheckCircle2 className="w-4 h-4 text-emerald-200" />
+                                <span>🟢 Approuver & Signer</span>
+                              </button>
+                            </>
+                          )}
+
+                          {isApproved && (
+                            <span className="bg-emerald-500/10 text-emerald-400 font-bold px-3 py-1.5 rounded-xl border border-emerald-500/20 text-xs">
+                              ✅ Transmis Secrétariat & BIC
                             </span>
                           )}
                         </div>
-                        <p className="text-slate-300 font-medium">
-                          Période : <strong className="text-amber-400">{b.period}</strong> • Reçus: <strong className="text-emerald-400">{b.totalIn.toLocaleString('fr-FR')} F CFA</strong> • Dépenses: <strong className="text-rose-400">{b.totalOut.toLocaleString('fr-FR')} F CFA</strong>
-                        </p>
-                        <p className="text-[11px] text-slate-400 flex flex-wrap items-center gap-2">
-                          <span>✍️ Signé Trésorier (SIMAHO.png) le : <strong className="text-slate-200">{b.treasurerSignatureDate || b.date}</strong></span>
-                          {b.payorSignatureDate && (
-                            <span>• 🟢 Visé Payor (SIDEPO.png) le : <strong className="text-emerald-300">{b.payorSignatureDate}</strong></span>
-                          )}
-                        </p>
                       </div>
 
-                      <div className="flex items-center gap-2 shrink-0 self-end md:self-center">
-                        <button
-                          type="button"
-                          onClick={() => renderAndPrintBilanPDF(b)}
-                          className="bg-slate-800 hover:bg-slate-700 text-amber-400 font-extrabold px-3.5 py-2.5 rounded-xl border border-slate-700 flex items-center gap-1.5 transition-all active:scale-95 text-xs cursor-pointer"
-                          title="Consulter le PDF du Bilan"
-                        >
-                          <Printer className="w-3.5 h-3.5" />
-                          <span>PDF</span>
-                        </button>
-
-                        {!isApproved ? (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              approveBilanPayor(b.id);
-                              const nowStr = `${new Date().toLocaleDateString('fr-FR')} à ${new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}`;
-                              renderAndPrintBilanPDF({
-                                ...b,
-                                status: 'APPROVED_PAYOR',
-                                payorSignatureDate: nowStr,
-                              });
-                              setToastMessage("🟢 Bilan Financier approuvé avec succès ! Signature SIDEPO.png apposée. Document bi-signé transmis au Secrétariat et publié à la BIC.");
-                            }}
-                            className="bg-emerald-600 hover:bg-emerald-500 text-white font-black px-4 py-2.5 rounded-xl flex items-center gap-2 shadow-lg active:scale-95 transition-all text-xs cursor-pointer"
-                          >
-                            <CheckCircle2 className="w-4 h-4 text-emerald-200" />
-                            <span>🟢 APPROUVER ET APPOSER LE VISA PAYOR</span>
-                          </button>
-                        ) : (
-                          <span className="bg-emerald-500/10 text-emerald-400 font-bold px-3 py-1.5 rounded-xl border border-emerald-500/20 text-xs">
-                            ✅ Transmis Secrétariat & BIC
+                      {/* Feedback si retourné */}
+                      {isReturned && b.payorFeedback && (
+                        <div className="p-3 bg-rose-900/30 border border-rose-500/30 rounded-xl space-y-1">
+                          <span className="text-[11px] font-bold text-rose-300 uppercase flex items-center gap-1">
+                            <AlertTriangle className="w-3.5 h-3.5 text-rose-400" />
+                            <span>Motif du retour formulé par le Payor :</span>
                           </span>
-                        )}
-                      </div>
+                          <p className="text-xs text-rose-100 italic bg-slate-950/60 p-2 rounded-lg">
+                            {b.payorFeedback}
+                          </p>
+                        </div>
+                      )}
                     </div>
                   );
                 })
@@ -6901,41 +7620,46 @@ export const AdminPortal: React.FC = () => {
                           <button
                             type="button"
                             disabled={isDeletingActivityId === act.id}
-                            onClick={async () => {
-                              if (!window.confirm(`Confirmez-vous la suppression définitive de l'événement « ${act.title} » ?`)) {
-                                return;
-                              }
-                              setIsDeletingActivityId(act.id);
-                              try {
-                                await deleteActivity(act.id);
-                                if (act.eventType === 'SIMPLE') {
-                                  const relatedFin = financialEvents.find(e => e.fund === 'LOISIRS' && (e.title.toLowerCase().trim() === act.title.toLowerCase().trim() || e.id === act.id));
-                                  if (relatedFin) {
-                                    archiveFinancialEvent(relatedFin.id);
+                            onClick={() => {
+                              setDeleteConfirmModal({
+                                title: "Supprimer cet Événement",
+                                itemTitle: act.title,
+                                itemId: act.id,
+                                description: `Confirmez-vous la suppression définitive de l'événement « ${act.title} » ?`,
+                                onConfirm: async () => {
+                                  setIsDeletingActivityId(act.id);
+                                  try {
+                                    await deleteActivity(act.id);
+                                    if (act.eventType === 'SIMPLE') {
+                                      const relatedFin = financialEvents.find(e => e.fund === 'LOISIRS' && (e.title.toLowerCase().trim() === act.title.toLowerCase().trim() || e.id === act.id));
+                                      if (relatedFin) {
+                                        archiveFinancialEvent(relatedFin.id);
+                                      }
+                                    }
+                                    if (editingActivityId === act.id) {
+                                      setActTitle('');
+                                      setActDate('');
+                                      setActLocation('');
+                                      setActDesc('');
+                                      setActProgram('');
+                                      setActRequiredAmount('10000');
+                                      setPcoRoles([]);
+                                      setPcoAdjRoles([]);
+                                      setRestaurationRoles([]);
+                                      setCambuseRoles([]);
+                                      setLogistiqueRoles([]);
+                                      setTransportRoles([]);
+                                      setEditingActivityId(null);
+                                    }
+                                    setToastMessage("🗑️ Événement supprimé avec succès.");
+                                  } catch (err) {
+                                    console.error(err);
+                                    setToastMessage("❌ Erreur lors de la suppression de l'événement.");
+                                  } finally {
+                                    setIsDeletingActivityId(null);
                                   }
-                                }
-                                if (editingActivityId === act.id) {
-                                  setActTitle('');
-                                  setActDate('');
-                                  setActLocation('');
-                                  setActDesc('');
-                                  setActProgram('');
-                                  setActRequiredAmount('10000');
-                                  setPcoRoles([]);
-                                  setPcoAdjRoles([]);
-                                  setRestaurationRoles([]);
-                                  setCambuseRoles([]);
-                                  setLogistiqueRoles([]);
-                                  setTransportRoles([]);
-                                  setEditingActivityId(null);
-                                }
-                                alert("Événement supprimé avec succès.");
-                              } catch (err) {
-                                console.error(err);
-                                alert("Erreur lors de la suppression de l'événement.");
-                              } finally {
-                                setIsDeletingActivityId(null);
-                              }
+                                },
+                              });
                             }}
                             className="bg-rose-600/20 text-rose-300 hover:bg-rose-600 hover:text-white border border-rose-500/30 px-3.5 py-2 rounded-xl text-xs font-black flex items-center gap-1.5 transition-all cursor-pointer active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
                             title="Supprimer définitivement cet événement"
@@ -7543,10 +8267,17 @@ export const AdminPortal: React.FC = () => {
                         <button
                           type="button"
                           onClick={() => {
-                            if (window.confirm(`Voulez-vous clôturer et archiver le projet "${p.title}" dans le Grenier ? Les cotisations seront gelées.`)) {
-                              archiveProject(p.id);
-                              alert(`Projet "${p.title}" clôturé et archivé au Grenier.`);
-                            }
+                            setDeleteConfirmModal({
+                              title: "Clôturer et Archiver le Projet",
+                              itemTitle: p.title,
+                              itemId: p.id,
+                              description: `Voulez-vous clôturer et archiver le projet "${p.title}" dans le Grenier ? Les cotisations seront gelées.`,
+                              confirmLabel: "Archiver au Grenier",
+                              onConfirm: () => {
+                                archiveProject(p.id);
+                                setToastMessage(`📦 Projet "${p.title}" clôturé et archivé au Grenier.`);
+                              },
+                            });
                           }}
                           className="bg-slate-800 hover:bg-slate-700 text-amber-300 border border-slate-700 font-bold px-3.5 py-2 rounded-xl flex items-center gap-1.5 transition-all text-xs cursor-pointer"
                         >
@@ -7559,11 +8290,33 @@ export const AdminPortal: React.FC = () => {
                       <button
                         type="button"
                         onClick={() => handleGeneratePDFProject(p)}
-                        className="bg-slate-800 hover:bg-slate-700 text-amber-400 font-extrabold px-3.5 py-2 rounded-xl border border-slate-700 flex items-center gap-1.5 transition-all active:scale-95 text-xs"
+                        className="bg-slate-800 hover:bg-slate-700 text-amber-400 font-extrabold px-3.5 py-2 rounded-xl border border-slate-700 flex items-center gap-1.5 transition-all active:scale-95 text-xs cursor-pointer"
                         title="Imprimer ou générer le dossier officiel en PDF"
                       >
                         <Printer className="w-3.5 h-3.5" />
                         <span>📑 Dossier Officiel (PDF)</span>
+                      </button>
+
+                      {/* Action 5 : Supprimer le projet */}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setDeleteConfirmModal({
+                            title: "Supprimer ce Projet AGR",
+                            itemTitle: p.title,
+                            itemId: p.id,
+                            description: `Supprimer définitivement le projet "${p.title}" (${p.id}) ? Cette suppression sera synchronisée avec le Payor.`,
+                            onConfirm: () => {
+                              deleteProject(p.id);
+                              setToastMessage(`🗑️ Projet "${p.title}" supprimé.`);
+                            },
+                          });
+                        }}
+                        className="bg-rose-950/60 hover:bg-rose-900 text-rose-300 border border-rose-800/60 font-bold px-2.5 py-2 rounded-xl flex items-center gap-1 transition-all text-xs cursor-pointer"
+                        title="Supprimer définitivement ce projet"
+                      >
+                        <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+                        <span>Supprimer</span>
                       </button>
                     </div>
                   </div>
@@ -8650,129 +9403,393 @@ export const AdminPortal: React.FC = () => {
         </div>
       )}
 
-      {/* MODAL PAYOR : EXAMEN DU DOSSIER OFFICIEL PROJET AGR */}
-      {payorViewingProjectDoc && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto animate-fadeIn">
-          <div className="bg-slate-900 border-2 border-amber-500/50 rounded-3xl max-w-2xl w-full p-6 sm:p-8 space-y-5 shadow-2xl my-8">
-            <div className="flex items-center justify-between border-b border-slate-800 pb-4">
+      {/* MODAL PAYOR : APERÇU GRAND FORMAT DU DOCUMENT OFFICIEL (PV, PROJET AGR, BILAN FINANCIER) */}
+      {payorViewingOfficialDoc && (
+        <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-3 sm:p-6 overflow-y-auto animate-fadeIn">
+          <div className="bg-slate-900 border-2 border-amber-500/60 rounded-3xl max-w-4xl w-full max-h-[92vh] flex flex-col shadow-2xl my-auto overflow-hidden">
+            {/* Modal Top Bar */}
+            <div className="p-4 sm:p-5 border-b border-slate-800 flex items-center justify-between gap-3 bg-slate-950">
               <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-2xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-400">
-                  <FileText className="w-5 h-5" />
+                <div className="w-10 h-10 rounded-2xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-400 font-bold">
+                  {payorViewingOfficialDoc.type === 'PV' ? '📄' : payorViewingOfficialDoc.type === 'PROJECT' ? '🚀' : '💰'}
                 </div>
                 <div>
-                  <h3 className="text-base font-black text-white">Dossier Officiel Projet AGR</h3>
-                  <p className="text-xs text-slate-400">Examen Direction Payor • Réf : {payorViewingProjectDoc.id}</p>
+                  <h3 className="text-base font-black text-white flex items-center gap-2">
+                    <span>
+                      {payorViewingOfficialDoc.type === 'PV'
+                        ? 'Procès-Verbal Officiel - Secrétariat Général'
+                        : payorViewingOfficialDoc.type === 'PROJECT'
+                        ? 'Dossier Officiel Projet AGR - Commission Projets'
+                        : 'Bilan Financier Officiel - Trésorerie Générale'}
+                    </span>
+                  </h3>
+                  <p className="text-xs text-slate-400 font-mono">
+                    Réf : {payorViewingOfficialDoc.data.id} • Statut :{' '}
+                    <span className="text-amber-400 font-bold uppercase">
+                      {payorViewingOfficialDoc.data.status || 'En attente Payor'}
+                    </span>
+                  </p>
                 </div>
               </div>
-              <button
-                type="button"
-                onClick={() => setPayorViewingProjectDoc(null)}
-                className="text-slate-400 hover:text-white p-1 rounded-xl bg-slate-800"
-              >
-                <XCircle className="w-5 h-5" />
-              </button>
-            </div>
-
-            {/* Content summary */}
-            <div className="bg-slate-950 p-5 rounded-2xl border border-slate-800 space-y-4 text-xs">
-              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 pb-3">
-                <span className="text-base font-black text-white">{payorViewingProjectDoc.title}</span>
-                <span className="bg-amber-500/20 text-amber-300 border border-amber-500/30 px-3 py-1 rounded-full font-bold">
-                  {payorViewingProjectDoc.category}
-                </span>
-              </div>
-
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 bg-slate-900/60 p-3 rounded-xl border border-slate-800">
-                <div>
-                  <span className="text-[10px] uppercase font-bold text-slate-400 block">💰 Budget Total</span>
-                  <span className="font-black text-amber-400 text-sm">{payorViewingProjectDoc.estimatedCost.toLocaleString('fr-FR')} F CFA</span>
-                </div>
-                <div>
-                  <span className="text-[10px] uppercase font-bold text-slate-400 block">💳 / Membre</span>
-                  <span className="font-black text-emerald-400 text-sm">
-                    {payorViewingProjectDoc.requiredAmountPerMember ? `${payorViewingProjectDoc.requiredAmountPerMember.toLocaleString('fr-FR')} F` : 'Libre'}
-                  </span>
-                </div>
-                <div>
-                  <span className="text-[10px] uppercase font-bold text-slate-400 block">📅 Réalisation</span>
-                  <span className="font-bold text-white text-xs">{payorViewingProjectDoc.dateRealisation || payorViewingProjectDoc.eventDate || 'Non spécifiée'}</span>
-                </div>
-                <div>
-                  <span className="text-[10px] uppercase font-bold text-slate-400 block">⏳ Date Limite</span>
-                  <span className="font-bold text-rose-300 text-xs">{payorViewingProjectDoc.paymentDeadline || 'Non spécifiée'}</span>
-                </div>
-              </div>
-
-              {payorViewingProjectDoc.pilotTeam && payorViewingProjectDoc.pilotTeam.length > 0 && (
-                <div>
-                  <span className="font-bold text-slate-400 text-[11px] block mb-1.5">👥 Équipe Pilote Désignée :</span>
-                  <div className="flex flex-wrap gap-1.5">
-                    {payorViewingProjectDoc.pilotTeam.map((m, idx) => (
-                      <span key={idx} className="bg-slate-900 text-amber-300 px-2.5 py-0.5 rounded-lg border border-slate-800 font-bold text-[11px]">
-                        👤 {m}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              <div>
-                <span className="font-bold text-slate-400 text-[11px] block mb-1">📝 Description & Modèle Économique :</span>
-                <div className="p-3.5 bg-slate-900 rounded-xl border border-slate-800 text-slate-300 leading-relaxed whitespace-pre-line max-h-48 overflow-y-auto">
-                  {payorViewingProjectDoc.description}
-                </div>
-              </div>
-            </div>
-
-            {/* Actions for Payor in Modal */}
-            <div className="flex flex-wrap items-center justify-between gap-3 pt-3 border-t border-slate-800">
-              <button
-                type="button"
-                onClick={() => handleGeneratePDFProject(payorViewingProjectDoc)}
-                className="bg-slate-800 hover:bg-slate-700 text-amber-300 border border-slate-700 font-bold px-4 py-2.5 rounded-xl text-xs flex items-center gap-2"
-              >
-                <Printer className="w-4 h-4 text-amber-400" />
-                <span>Imprimer / PDF Officiel</span>
-              </button>
 
               <div className="flex items-center gap-2">
-                {(payorViewingProjectDoc.status === 'pending_payor_approval' || payorViewingProjectDoc.status === 'PENDING_PAYOR') && (
-                  <>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        const p = payorViewingProjectDoc;
-                        setPayorViewingProjectDoc(null);
-                        setPayorReturnProjectModalProj(p);
-                        setPayorReturnFeedbackText('');
-                        setPayorReturnFeedbackError(null);
-                      }}
-                      className="bg-rose-950 hover:bg-rose-900 text-rose-200 border border-rose-700 font-bold px-4 py-2.5 rounded-xl text-xs flex items-center gap-1.5"
-                    >
-                      <XCircle className="w-4 h-4 text-rose-400" />
-                      <span>↩️ Retour pour correction</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        approveProjectPayor(payorViewingProjectDoc.id);
-                        setToastMessage(`✅ Projet "${payorViewingProjectDoc.title}" approuvé ! Visa Payor apposé.`);
-                        setPayorViewingProjectDoc(null);
-                      }}
-                      className="bg-emerald-600 hover:bg-emerald-500 text-white font-black px-4 py-2.5 rounded-xl text-xs flex items-center gap-1.5 shadow-lg"
-                    >
-                      <CheckCircle2 className="w-4 h-4" />
-                      <span>✅ Approuver & Signer (SIDEPO.png)</span>
-                    </button>
-                  </>
-                )}
-                {payorViewingProjectDoc.status !== 'pending_payor_approval' && payorViewingProjectDoc.status !== 'PENDING_PAYOR' && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (payorViewingOfficialDoc.type === 'PV') {
+                      handleGeneratePDFPV(payorViewingOfficialDoc.data as SecretaryPV);
+                    } else if (payorViewingOfficialDoc.type === 'PROJECT') {
+                      handleGeneratePDFProject(payorViewingOfficialDoc.data as AgrProject);
+                    } else {
+                      renderAndPrintBilanPDF(payorViewingOfficialDoc.data as FinancialBilan);
+                    }
+                  }}
+                  className="bg-slate-800 hover:bg-slate-700 text-amber-400 font-bold px-3.5 py-2 rounded-xl text-xs flex items-center gap-1.5 border border-slate-700 transition-all cursor-pointer"
+                  title="Imprimer ou générer le PDF officiel"
+                >
+                  <Printer className="w-3.5 h-3.5" />
+                  <span className="hidden sm:inline">Imprimer / PDF</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setPayorViewingOfficialDoc(null)}
+                  className="text-slate-400 hover:text-white p-2 rounded-xl bg-slate-800 cursor-pointer"
+                >
+                  <XCircle className="w-5 h-5" />
+                </button>
+              </div>
+            </div>
+
+            {/* Modal Body : Feuille blanche officielle format A4 */}
+            <div className="p-4 sm:p-8 overflow-y-auto flex-1 bg-slate-950/60">
+              <div className="bg-white text-slate-900 rounded-2xl shadow-2xl p-6 sm:p-10 max-w-3xl mx-auto space-y-6 border border-slate-200 font-sans">
+                {/* En-tête officiel de la République & E-ROUAMA */}
+                <div className="border-b-2 border-emerald-800 pb-4">
+                  <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 text-xs text-slate-600">
+                    <div>
+                      <p className="font-extrabold text-slate-900 uppercase tracking-wide">RÉPUBLIQUE DE CÔTE D'IVOIRE</p>
+                      <p className="italic text-[11px]">Union - Discipline - Travail</p>
+                    </div>
+                    <div className="text-left sm:text-right">
+                      <p className="font-bold text-slate-800">
+                        Date d'émission : <span className="font-mono">{(payorViewingOfficialDoc.data as any).meetingDate || (payorViewingOfficialDoc.data as any).date || new Date().toLocaleDateString('fr-FR')}</span>
+                      </p>
+                      <p className="font-mono text-emerald-800 font-black">Réf : {payorViewingOfficialDoc.data.id}</p>
+                    </div>
+                  </div>
+
+                  {/* Titre Départemental */}
+                  <div className="text-center mt-5">
+                    <h4 className="text-lg sm:text-xl font-black text-emerald-900 uppercase tracking-tight">
+                      {payorViewingOfficialDoc.type === 'PV'
+                        ? 'SECRÉTARIAT GÉNÉRAL & DIRECTION ADMINISTRATIVE'
+                        : payorViewingOfficialDoc.type === 'PROJECT'
+                        ? 'COMMISSION PROJETS & INVESTISSEMENTS AGR'
+                        : 'DIRECTION DE LA TRÉSORERIE GÉNÉRALE'}
+                    </h4>
+                    <p className="text-xs font-black uppercase text-amber-700 tracking-wider mt-1">
+                      {payorViewingOfficialDoc.type === 'PV'
+                        ? 'Procès-Verbal Officiel de Séance'
+                        : payorViewingOfficialDoc.type === 'PROJECT'
+                        ? 'Dossier de Candidature & Fiche Projet AGR'
+                        : 'Bilan Financier & Rapport de Trésorerie'}
+                    </p>
+                  </div>
+                </div>
+
+                {/* Corps spécifique au type de document */}
+                {payorViewingOfficialDoc.type === 'PV' && (() => {
+                  const pv = payorViewingOfficialDoc.data as SecretaryPV;
+                  return (
+                    <div className="space-y-5 text-xs text-slate-800">
+                      <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 flex flex-wrap justify-between gap-3 font-medium">
+                        <div>
+                          <span className="text-slate-500 font-bold block">Titre de la réunion :</span>
+                          <span className="font-black text-slate-900 text-sm">{pv.title}</span>
+                        </div>
+                        <div>
+                          <span className="text-slate-500 font-bold block">Date de séance :</span>
+                          <span className="font-bold text-slate-900">{pv.meetingDate}</span>
+                        </div>
+                        <div>
+                          <span className="text-slate-500 font-bold block">Horaires :</span>
+                          <span className="font-bold text-slate-900">{pv.startTime || '--:--'} à {pv.endTime || '--:--'}</span>
+                        </div>
+                        <div>
+                          <span className="text-slate-500 font-bold block">Présence :</span>
+                          <span className="font-bold text-emerald-800">{pv.attendeesCount || 0} participants</span>
+                        </div>
+                      </div>
+
+                      <div>
+                        <h5 className="font-black text-slate-900 uppercase tracking-wide border-b border-slate-200 pb-1.5 mb-2">
+                          Contenu & Décisions prises en séance :
+                        </h5>
+                        <div className="whitespace-pre-line text-slate-700 leading-relaxed font-sans text-xs bg-slate-50/50 p-4 rounded-xl border border-slate-100 min-h-[160px]">
+                          {pv.content}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                {payorViewingOfficialDoc.type === 'PROJECT' && (() => {
+                  const p = payorViewingOfficialDoc.data as AgrProject;
+                  return (
+                    <div className="space-y-5 text-xs text-slate-800">
+                      <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 flex flex-wrap items-center justify-between gap-3">
+                        <div>
+                          <span className="text-slate-500 font-bold block">Nom du Projet :</span>
+                          <span className="font-black text-slate-900 text-sm">{p.title}</span>
+                        </div>
+                        <div>
+                          <span className="text-slate-500 font-bold block">Catégorie :</span>
+                          <span className="font-bold bg-amber-100 text-amber-900 px-2.5 py-0.5 rounded-full text-[11px] uppercase">
+                            {p.category}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                        <div className="bg-slate-50 p-3 rounded-xl border border-slate-200">
+                          <span className="text-[10px] uppercase font-bold text-slate-500 block">💰 Budget Total</span>
+                          <span className="font-black text-emerald-800 text-sm">{p.estimatedCost.toLocaleString('fr-FR')} F CFA</span>
+                        </div>
+                        <div className="bg-slate-50 p-3 rounded-xl border border-slate-200">
+                          <span className="text-[10px] uppercase font-bold text-slate-500 block">💳 / Membre</span>
+                          <span className="font-black text-slate-900 text-sm">
+                            {p.requiredAmountPerMember ? `${p.requiredAmountPerMember.toLocaleString('fr-FR')} F` : 'Libre'}
+                          </span>
+                        </div>
+                        <div className="bg-slate-50 p-3 rounded-xl border border-slate-200">
+                          <span className="text-[10px] uppercase font-bold text-slate-500 block">📅 Réalisation</span>
+                          <span className="font-bold text-slate-900 text-xs">{p.dateRealisation || p.eventDate || 'Non spécifiée'}</span>
+                        </div>
+                        <div className="bg-slate-50 p-3 rounded-xl border border-slate-200">
+                          <span className="text-[10px] uppercase font-bold text-slate-500 block">⏳ Date Limite</span>
+                          <span className="font-bold text-rose-700 text-xs">{p.paymentDeadline || 'Non spécifiée'}</span>
+                        </div>
+                      </div>
+
+                      {p.pilotTeam && p.pilotTeam.length > 0 && (
+                        <div>
+                          <span className="font-bold text-slate-600 block mb-1.5">👥 Équipe Pilote Désignée :</span>
+                          <div className="flex flex-wrap gap-1.5">
+                            {p.pilotTeam.map((m, idx) => (
+                              <span key={idx} className="bg-slate-100 text-slate-800 px-2.5 py-0.5 rounded-lg border border-slate-200 font-bold text-[11px]">
+                                👤 {m}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      <div>
+                        <h5 className="font-black text-slate-900 uppercase tracking-wide border-b border-slate-200 pb-1 mb-2">
+                          Description & Modèle Économique :
+                        </h5>
+                        <div className="p-4 bg-slate-50 rounded-xl border border-slate-200 text-slate-700 leading-relaxed whitespace-pre-line text-xs min-h-[140px]">
+                          {p.description}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                {payorViewingOfficialDoc.type === 'BILAN' && (() => {
+                  const b = payorViewingOfficialDoc.data as FinancialBilan;
+                  return (
+                    <div className="space-y-5 text-xs text-slate-800">
+                      <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 flex flex-wrap items-center justify-between gap-3">
+                        <div>
+                          <span className="text-slate-500 font-bold block">Titre du Bilan :</span>
+                          <span className="font-black text-slate-900 text-sm">{b.title}</span>
+                        </div>
+                        <div>
+                          <span className="text-slate-500 font-bold block">Période Couverte :</span>
+                          <span className="font-bold text-emerald-800">{b.period}</span>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                        <div className="bg-emerald-50 p-3.5 rounded-xl border border-emerald-200">
+                          <span className="text-[10px] uppercase font-bold text-emerald-700 block">Total Entrées Validées</span>
+                          <span className="font-black text-emerald-900 text-base">+{b.totalIn.toLocaleString('fr-FR')} F CFA</span>
+                        </div>
+                        <div className="bg-rose-50 p-3.5 rounded-xl border border-rose-200">
+                          <span className="text-[10px] uppercase font-bold text-rose-700 block">Total Dépenses Approuvées</span>
+                          <span className="font-black text-rose-900 text-base">-{b.totalOut.toLocaleString('fr-FR')} F CFA</span>
+                        </div>
+                        <div className="bg-amber-50 p-3.5 rounded-xl border border-amber-200">
+                          <span className="text-[10px] uppercase font-bold text-amber-800 block">Solde Net de l'Exercice</span>
+                          <span className="font-black text-amber-950 text-base">
+                            {(b.totalIn - b.totalOut).toLocaleString('fr-FR')} F CFA
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                {/* Bloc officiel de Signatures en bas de page */}
+                <div className="pt-6 border-t-2 border-slate-200 mt-6 grid grid-cols-2 gap-6 text-xs">
+                  {/* Signataire de Gauche (Émetteur) */}
+                  <div className="text-center p-4 bg-slate-50 rounded-xl border border-slate-200 flex flex-col items-center justify-between min-h-[140px]">
+                    <div>
+                      <p className="font-black text-slate-900 uppercase">
+                        {payorViewingOfficialDoc.type === 'PV'
+                          ? 'Le Secrétaire Général de Séance'
+                          : payorViewingOfficialDoc.type === 'PROJECT'
+                          ? 'Le Responsable Commission Projets'
+                          : 'Le Trésorier Général'}
+                      </p>
+                      <p className="text-[10px] text-slate-500 italic">Signature & Cachet Émetteur</p>
+                    </div>
+
+                    <div className="my-2 h-14 flex items-center justify-center">
+                      <img
+                        src={payorViewingOfficialDoc.type === 'PV' ? '/SIDEMI.png' : '/SIMAHO.png'}
+                        alt="Signature Émetteur"
+                        className="h-12 object-contain max-w-[120px]"
+                        onError={e => {
+                          e.currentTarget.style.display = 'none';
+                        }}
+                      />
+                    </div>
+
+                    <p className="text-[10px] font-bold text-emerald-800">
+                      Signé le : {(payorViewingOfficialDoc.data as any).meetingDate || (payorViewingOfficialDoc.data as any).treasurerSignatureDate || (payorViewingOfficialDoc.data as any).date}
+                    </p>
+                  </div>
+
+                  {/* Signataire de Droite (Le Payor) */}
+                  <div className="text-center p-4 bg-slate-50 rounded-xl border border-slate-200 flex flex-col items-center justify-between min-h-[140px]">
+                    <div>
+                      <p className="font-black text-slate-900 uppercase">Le Payor Général</p>
+                      <p className="text-[10px] text-slate-500 italic">Contre-Signature & Visa d'Audit</p>
+                    </div>
+
+                    <div className="my-2 h-14 flex items-center justify-center">
+                      {payorViewingOfficialDoc.data.status === 'APPROVED_PAYOR' || payorViewingOfficialDoc.data.status === 'approved_by_payor' ? (
+                        <img
+                          src="/SIDEPO.png"
+                          alt="Signature Payor"
+                          className="h-12 object-contain max-w-[120px]"
+                        />
+                      ) : (
+                        <div className="border border-dashed border-amber-500/80 bg-amber-50 text-amber-800 px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wider">
+                          ⏳ En attente du visa Payor
+                        </div>
+                      )}
+                    </div>
+
+                    <p className="text-[10px] font-bold text-slate-600">
+                      {payorViewingOfficialDoc.data.status === 'APPROVED_PAYOR' || payorViewingOfficialDoc.data.status === 'approved_by_payor'
+                        ? `🟢 Visé & Approuvé le : ${(payorViewingOfficialDoc.data as any).payorSignatureDate || (payorViewingOfficialDoc.data as any).date}`
+                        : 'En attente d’apposition de signature'}
+                    </p>
+                  </div>
+                </div>
+
+                {/* Footer stamp */}
+                <div className="text-center pt-2 text-[10px] text-slate-400 font-mono border-t border-slate-100">
+                  DOCUMENT OFFICIEL E-ROUAMA • VALIDATION ADMINISTRATIVE CONJOINTE SÉCURISÉE
+                </div>
+              </div>
+            </div>
+
+            {/* Modal Bottom Actions for Payor */}
+            <div className="p-4 sm:p-5 border-t border-slate-800 bg-slate-950 flex flex-wrap items-center justify-between gap-3">
+              <button
+                type="button"
+                onClick={() => setPayorViewingOfficialDoc(null)}
+                className="bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold px-4 py-2.5 rounded-xl text-xs transition-colors cursor-pointer"
+              >
+                ✕ Fermer l'aperçu
+              </button>
+
+              <div className="flex flex-wrap items-center gap-2">
+                {/* 1. Bouton Retour pour correction */}
+                {payorViewingOfficialDoc.data.status !== 'APPROVED_PAYOR' && payorViewingOfficialDoc.data.status !== 'approved_by_payor' && (
                   <button
                     type="button"
-                    onClick={() => setPayorViewingProjectDoc(null)}
-                    className="bg-slate-800 hover:bg-slate-700 text-white font-bold px-5 py-2.5 rounded-xl text-xs"
+                    onClick={() => {
+                      const doc = payorViewingOfficialDoc;
+                      setPayorReturnDocModal({
+                        type: doc.type,
+                        id: doc.data.id,
+                        title: doc.data.title,
+                      });
+                      setPayorReturnDocFeedback('');
+                      setPayorReturnDocFeedbackError(null);
+                      setPayorViewingOfficialDoc(null);
+                    }}
+                    className="bg-rose-950/80 hover:bg-rose-900 text-rose-200 border border-rose-700/60 font-bold px-4 py-2.5 rounded-xl text-xs flex items-center gap-1.5 transition-all active:scale-95 cursor-pointer"
                   >
-                    Fermer
+                    <XCircle className="w-3.5 h-3.5 text-rose-400" />
+                    <span>↩️ Retourner pour correction</span>
+                  </button>
+                )}
+
+                {/* 2. Bouton Supprimer */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    const doc = payorViewingOfficialDoc;
+                    setDeleteConfirmModal({
+                      title: `Supprimer ce document (${doc.type === 'PV' ? 'Procès-Verbal' : doc.type === 'PROJECT' ? 'Projet AGR' : 'Bilan Financier'})`,
+                      itemTitle: doc.data.title,
+                      itemId: doc.data.id,
+                      description: `Supprimer définitivement ce document "${doc.data.title}" (${doc.data.id}) ? Cette action sera synchronisée avec le pôle émetteur.`,
+                      onConfirm: () => {
+                        if (doc.type === 'PV') {
+                          deleteSecretaryPV(doc.data.id);
+                        } else if (doc.type === 'PROJECT') {
+                          deleteProject(doc.data.id);
+                        } else {
+                          deleteFinancialBilan(doc.data.id);
+                        }
+                        setToastMessage(`🗑️ Document "${doc.data.title}" supprimé.`);
+                        setPayorViewingOfficialDoc(null);
+                      },
+                    });
+                  }}
+                  className="bg-rose-950/40 hover:bg-rose-900 text-rose-300 border border-rose-800/60 font-bold px-3 py-2.5 rounded-xl text-xs flex items-center gap-1 transition-all active:scale-95 cursor-pointer"
+                  title="Supprimer définitivement ce document"
+                >
+                  <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+                  <span>Supprimer</span>
+                </button>
+
+                {/* 3. Bouton Valider / Approuver & Signer */}
+                {payorViewingOfficialDoc.data.status !== 'APPROVED_PAYOR' && payorViewingOfficialDoc.data.status !== 'approved_by_payor' && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const doc = payorViewingOfficialDoc;
+                      if (doc.type === 'PV') {
+                        approvePVPayor(doc.data.id);
+                        setToastMessage(`✅ PV "${doc.data.title}" approuvé et visé par le PAYOR !`);
+                      } else if (doc.type === 'PROJECT') {
+                        approveProjectPayor(doc.data.id);
+                        setToastMessage(`✅ Projet "${doc.data.title}" approuvé par le PAYOR !`);
+                      } else {
+                        approveBilanPayor(doc.data.id);
+                        const nowStr = `${new Date().toLocaleDateString('fr-FR')} à ${new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}`;
+                        renderAndPrintBilanPDF({
+                          ...doc.data,
+                          status: 'APPROVED_PAYOR',
+                          payorSignatureDate: nowStr,
+                        });
+                        setToastMessage(`🟢 Bilan "${doc.data.title}" approuvé avec visa SIDEPO.png !`);
+                      }
+                      setPayorViewingOfficialDoc(null);
+                    }}
+                    className="bg-emerald-600 hover:bg-emerald-500 text-white font-black px-5 py-2.5 rounded-xl text-xs flex items-center gap-1.5 shadow-lg active:scale-95 transition-all cursor-pointer"
+                  >
+                    <CheckCircle2 className="w-4 h-4" />
+                    <span>✅ Approuver & Signer (SIDEPO.png)</span>
                   </button>
                 )}
               </div>
@@ -8781,8 +9798,8 @@ export const AdminPortal: React.FC = () => {
         </div>
       )}
 
-      {/* MODAL PAYOR : RETOUR POUR CORRECTION AVEC MOTIF OBLIGATOIRE */}
-      {payorReturnProjectModalProj && (
+      {/* MODAL PAYOR UNIFIÉ : RETOUR DE DOCUMENT POUR CORRECTION AVEC MOTIF OBLIGATOIRE */}
+      {payorReturnDocModal && (
         <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 animate-fadeIn">
           <div className="bg-slate-900 border-2 border-rose-500/50 rounded-3xl max-w-lg w-full p-6 sm:p-7 space-y-4 shadow-2xl">
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
@@ -8791,38 +9808,40 @@ export const AdminPortal: React.FC = () => {
                   <AlertTriangle className="w-5 h-5" />
                 </div>
                 <div>
-                  <h3 className="text-sm font-black text-white">Retour du Projet pour Correction</h3>
-                  <p className="text-[11px] text-slate-400 font-mono truncate max-w-xs">{payorReturnProjectModalProj.title}</p>
+                  <h3 className="text-sm font-black text-white">
+                    Retour pour Correction ({payorReturnDocModal.type === 'PV' ? 'Procès-Verbal' : payorReturnDocModal.type === 'PROJECT' ? 'Projet AGR' : 'Bilan Financier'})
+                  </h3>
+                  <p className="text-[11px] text-slate-400 font-mono truncate max-w-xs">{payorReturnDocModal.title}</p>
                 </div>
               </div>
               <button
                 type="button"
-                onClick={() => setPayorReturnProjectModalProj(null)}
-                className="text-slate-400 hover:text-white p-1 rounded-xl bg-slate-800"
+                onClick={() => setPayorReturnDocModal(null)}
+                className="text-slate-400 hover:text-white p-1 rounded-xl bg-slate-800 cursor-pointer"
               >
                 <XCircle className="w-5 h-5" />
               </button>
             </div>
 
             <p className="text-xs text-slate-300 leading-relaxed">
-              Veuillez obligatoirement préciser ci-dessous au Responsable Projet les motifs du renvoi et les rectifications attendues sur ce dossier :
+              Veuillez obligatoirement préciser ci-dessous à l'attention de l'émetteur les motifs du renvoi et les rectifications attendues :
             </p>
 
             <div>
               <textarea
-                placeholder="Précisez les corrections ou motifs du retour..."
-                value={payorReturnFeedbackText}
+                placeholder="Précisez les corrections exigées ou motifs du renvoi..."
+                value={payorReturnDocFeedback}
                 onChange={e => {
-                  setPayorReturnFeedbackText(e.target.value);
-                  if (payorReturnFeedbackError) setPayorReturnFeedbackError(null);
+                  setPayorReturnDocFeedback(e.target.value);
+                  if (payorReturnDocFeedbackError) setPayorReturnDocFeedbackError(null);
                 }}
                 rows={4}
                 className="w-full bg-slate-950 border border-slate-800 rounded-2xl p-3.5 text-xs text-white focus:outline-none focus:border-rose-500 font-medium"
               />
-              {payorReturnFeedbackError && (
+              {payorReturnDocFeedbackError && (
                 <p className="text-xs text-rose-400 font-bold mt-1.5 flex items-center gap-1">
                   <AlertTriangle className="w-3.5 h-3.5" />
-                  <span>{payorReturnFeedbackError}</span>
+                  <span>{payorReturnDocFeedbackError}</span>
                 </p>
               )}
             </div>
@@ -8830,27 +9849,120 @@ export const AdminPortal: React.FC = () => {
             <div className="flex items-center justify-end gap-2.5 pt-2 border-t border-slate-800">
               <button
                 type="button"
-                onClick={() => setPayorReturnProjectModalProj(null)}
-                className="bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold px-4 py-2.5 rounded-xl text-xs transition-colors"
+                onClick={() => setPayorReturnDocModal(null)}
+                className="bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold px-4 py-2.5 rounded-xl text-xs transition-colors cursor-pointer"
               >
                 Annuler
               </button>
               <button
                 type="button"
                 onClick={() => {
-                  if (!payorReturnFeedbackText.trim()) {
-                    setPayorReturnFeedbackError('La saisie du motif de retour est obligatoire.');
+                  if (!payorReturnDocFeedback.trim()) {
+                    setPayorReturnDocFeedbackError('La saisie du motif de retour est obligatoire.');
                     return;
                   }
-                  returnProjectForCorrectionPayor(payorReturnProjectModalProj.id, payorReturnFeedbackText.trim());
-                  setToastMessage(`⚠️ Dossier "${payorReturnProjectModalProj.title}" retourné pour correction au Respo Projet.`);
-                  setPayorReturnProjectModalProj(null);
-                  setPayorReturnFeedbackText('');
+                  const feedback = payorReturnDocFeedback.trim();
+                  if (payorReturnDocModal.type === 'PV') {
+                    returnPVForCorrectionPayor(payorReturnDocModal.id, feedback);
+                    setToastMessage(`⚠️ PV "${payorReturnDocModal.title}" retourné pour correction au Secrétariat.`);
+                  } else if (payorReturnDocModal.type === 'PROJECT') {
+                    returnProjectForCorrectionPayor(payorReturnDocModal.id, feedback);
+                    setToastMessage(`⚠️ Projet "${payorReturnDocModal.title}" retourné pour correction à la Commission.`);
+                  } else {
+                    returnBilanForCorrectionPayor(payorReturnDocModal.id, feedback);
+                    setToastMessage(`⚠️ Bilan "${payorReturnDocModal.title}" retourné pour correction au Trésorier.`);
+                  }
+                  setPayorReturnDocModal(null);
+                  setPayorReturnDocFeedback('');
                 }}
-                className="bg-rose-600 hover:bg-rose-500 text-white font-black px-5 py-2.5 rounded-xl text-xs shadow-lg transition-all active:scale-95 flex items-center gap-1.5"
+                className="bg-rose-600 hover:bg-rose-500 text-white font-black px-5 py-2.5 rounded-xl text-xs shadow-lg transition-all active:scale-95 flex items-center gap-1.5 cursor-pointer"
               >
                 <Send className="w-3.5 h-3.5" />
                 <span>Confirmer le Retour</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL UNIFIÉ DE CONFIRMATION D'ACTION ET SUPPRESSION (Garantie de fonctionnement iframe) */}
+      {deleteConfirmModal && (
+        <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-center justify-center p-4 animate-fadeIn">
+          <div className="bg-slate-900 border-2 border-rose-500/60 rounded-3xl max-w-md w-full p-6 sm:p-7 space-y-5 shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3.5">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-rose-500/20 border border-rose-500/40 flex items-center justify-center text-rose-400">
+                  <Trash2 className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-black text-white">{deleteConfirmModal.title}</h3>
+                  <p className="text-[11px] text-slate-400 font-medium">Confirmation d'opération irréversible</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  if (!isConfirmingAction) setDeleteConfirmModal(null);
+                }}
+                className="text-slate-400 hover:text-white p-1 rounded-xl bg-slate-800 cursor-pointer"
+              >
+                <XCircle className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="space-y-3">
+              {deleteConfirmModal.itemTitle && (
+                <div className="p-3 bg-slate-950 rounded-xl border border-slate-800 space-y-1">
+                  <span className="text-[10px] font-bold text-slate-400 uppercase block">Élément concerné :</span>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-sm font-extrabold text-white truncate">{deleteConfirmModal.itemTitle}</span>
+                    {deleteConfirmModal.itemId && (
+                      <span className="text-[10px] font-mono text-amber-300 font-bold bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/20 shrink-0">
+                        {deleteConfirmModal.itemId}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              )}
+              <p className="text-xs text-slate-300 leading-relaxed font-medium">
+                {deleteConfirmModal.description}
+              </p>
+            </div>
+
+            <div className="flex items-center justify-end gap-2.5 pt-2 border-t border-slate-800">
+              <button
+                type="button"
+                disabled={isConfirmingAction}
+                onClick={() => setDeleteConfirmModal(null)}
+                className="bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold px-4 py-2.5 rounded-xl text-xs transition-colors cursor-pointer disabled:opacity-50"
+              >
+                Annuler
+              </button>
+              <button
+                type="button"
+                disabled={isConfirmingAction}
+                onClick={async () => {
+                  try {
+                    setIsConfirmingAction(true);
+                    await deleteConfirmModal.onConfirm();
+                  } finally {
+                    setIsConfirmingAction(false);
+                    setDeleteConfirmModal(null);
+                  }
+                }}
+                className="bg-rose-600 hover:bg-rose-500 text-white font-black px-5 py-2.5 rounded-xl text-xs shadow-lg transition-all active:scale-95 flex items-center gap-2 cursor-pointer disabled:opacity-50"
+              >
+                {isConfirmingAction ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>Traitement en cours...</span>
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>{deleteConfirmModal.confirmLabel || 'Confirmer la Suppression'}</span>
+                  </>
+                )}
               </button>
             </div>
           </div>

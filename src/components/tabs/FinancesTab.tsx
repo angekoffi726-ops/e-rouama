@@ -348,6 +348,25 @@ export const FinancesTab: React.FC = () => {
   // --------------------------------------------------------------------------
   // STATE: 3. HISTORIQUE DE MES VERSEMENTS
   // --------------------------------------------------------------------------
+  const isPaymentValidated = (p: any) => {
+    if (!p) return false;
+    if (p.isHidden || p.status === 'hidden' || p.status === 'deleted' || p.status === 'REJECTED' || p.status === 'rejected') {
+      return false;
+    }
+    const s = String(p.status || '').toLowerCase().trim();
+    return (
+      p.status === 'validated' ||
+      p.status === 'Validé' ||
+      p.status === 'approved' ||
+      p.status === 'APPROVED' ||
+      p.isValidated === true ||
+      s === 'validated' ||
+      s === 'validé' ||
+      s === 'valide' ||
+      s === 'approved'
+    );
+  };
+
   const [historyFilter, setHistoryFilter] = useState<'TOUS' | 'COTISATION' | 'TRANCHES'>('TOUS');
   const [payments, setPayments] = useState<any[]>(() =>
     declarations.filter(p => !p.isHidden && p.status !== 'hidden' && p.status !== 'deleted')
@@ -583,8 +602,8 @@ export const FinancesTab: React.FC = () => {
             <p className="text-[10px] font-extrabold uppercase text-slate-500">Total Validé (Toutes Caisses)</p>
             <p className="text-lg font-black text-emerald-600 mt-0.5 font-mono">
               {declarations
-                .filter(d => d.memberId === currentMemberId && d.status === 'APPROVED')
-                .reduce((s, d) => s + d.amount, 0)
+                .filter(d => d.memberId === currentMemberId && isPaymentValidated(d))
+                .reduce((s, d) => s + (Number(d.amount) || Number((d as any).montant) || 0), 0)
                 .toLocaleString('fr-FR')}{' '}
               F CFA
             </p>
@@ -1803,7 +1822,7 @@ export const FinancesTab: React.FC = () => {
                         </span>
                       </td>
                       <td className="py-3 px-4 font-black text-gray-900 font-mono text-sm">
-                        {payment.amount.toLocaleString('fr-FR')} F CFA
+                        {(Number(payment.amount) || Number((payment as any).montant) || 0).toLocaleString('fr-FR')} F CFA
                       </td>
                       <td className="py-3 px-4 font-mono text-xs text-gray-600">
                         {payment.reference.startsWith('data:image')
@@ -1816,26 +1835,26 @@ export const FinancesTab: React.FC = () => {
                         <div className="inline-flex items-center justify-end gap-2">
                           <span
                             className={`inline-flex items-center gap-1 px-3 py-1 rounded-full text-[10px] font-black ${
-                              payment.status === 'APPROVED'
+                              isPaymentValidated(payment)
                                 ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
-                                : payment.status === 'REJECTED'
+                                : payment.status === 'REJECTED' || payment.status === 'rejected'
                                 ? 'bg-rose-100 text-rose-800 border border-rose-300'
                                 : 'bg-amber-100 text-amber-800 border border-amber-300'
                             }`}
                           >
-                            {payment.status === 'APPROVED' && <CheckCircle2 className="w-3 h-3 text-emerald-600" />}
-                            {payment.status === 'REJECTED' && <XCircle className="w-3 h-3 text-rose-600" />}
-                            {payment.status === 'PENDING' && <Clock className="w-3 h-3 text-amber-600 animate-spin" />}
+                            {isPaymentValidated(payment) && <CheckCircle2 className="w-3 h-3 text-emerald-600" />}
+                            {(payment.status === 'REJECTED' || payment.status === 'rejected') && <XCircle className="w-3 h-3 text-rose-600" />}
+                            {!isPaymentValidated(payment) && payment.status !== 'REJECTED' && payment.status !== 'rejected' && <Clock className="w-3 h-3 text-amber-600 animate-spin" />}
                             <span>
-                              {payment.status === 'APPROVED'
+                              {isPaymentValidated(payment)
                                 ? 'VALIDÉ PAR TRÉSORIER'
-                                : payment.status === 'REJECTED'
+                                : (payment.status === 'REJECTED' || payment.status === 'rejected')
                                 ? `REJETÉ (${payment.rejectionReason || 'Non conforme'})`
                                 : 'EN ATTENTE VALIDATION'}
                             </span>
                           </span>
 
-                          {(payment.status === 'REJECTED' || payment.status === 'PENDING') && (
+                          {(!isPaymentValidated(payment)) && (
                             <button
                               type="button"
                               onClick={() => handleHidePayment(payment)}

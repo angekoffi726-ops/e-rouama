@@ -115,6 +115,10 @@
       "schema": "PaymentDeclaration",
       "description": "Reçus et déclarations de versement"
     },
+    "/payments/{paymentId}": {
+      "schema": "PaymentDeclaration",
+      "description": "Paiements et versements enregistrés dans la caisse"
+    },
     "/treasury/{treasuryDoc}": {
       "schema": "TreasuryState",
       "description": "Soldes des caisses de la trésorerie"

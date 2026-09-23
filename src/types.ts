@@ -99,10 +99,15 @@ export interface PaymentDeclaration {
   memberNickname: string;
   fund: FundType;
   amount: number;
+  montant?: number;
+  type?: string;
+  caisse?: string;
   reference: string;
   month: string; // YYYY-MM
   date: string;
-  status: 'PENDING' | 'APPROVED' | 'REJECTED' | 'deleted' | 'hidden';
+  status: 'PENDING' | 'APPROVED' | 'REJECTED' | 'validated' | 'Validé' | 'approved' | 'rejected' | 'deleted' | 'hidden' | string;
+  isValidated?: boolean;
+  validatedAt?: any;
   isHidden?: boolean;
   rejectionReason?: string;
   paymentType?: 'TOTAL' | 'TRANCHE';
