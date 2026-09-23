@@ -377,8 +377,8 @@ function MainLayout() {
       </header>
 
       {/* Main Horizontal Navigation Bar */}
-      <nav className="bg-[#E67E22]/95 border-b border-[#D35400] px-4 sm:px-8 py-3 shadow-inner">
-        <div className="max-w-7xl mx-auto flex items-center gap-2 overflow-x-auto no-scrollbar py-1">
+      <nav className="notranslate bg-[#E67E22]/95 border-b border-[#D35400] px-4 sm:px-8 py-3 shadow-inner" translate="no">
+        <div className="max-w-7xl mx-auto flex items-center gap-2 overflow-x-auto no-scrollbar py-1 notranslate" translate="no">
           {navItems.map(item => {
             const Icon = item.icon;
             const isActive = activeTab === item.id;
@@ -386,16 +386,17 @@ function MainLayout() {
               <button
                 key={item.id}
                 onClick={() => setActiveTab(item.id)}
-                className={`flex items-center gap-2 px-5 py-3 rounded-full font-black text-xs sm:text-sm transition-all whitespace-nowrap active:scale-95 shadow-sm ${
+                translate="no"
+                className={`notranslate flex items-center gap-2 px-5 py-3 rounded-full font-black text-xs sm:text-sm transition-all whitespace-nowrap active:scale-95 shadow-sm ${
                   isActive
                     ? 'bg-[#355E3B] text-white border-2 border-emerald-300/50 shadow-lg scale-105'
                     : 'bg-white/10 text-white hover:bg-white/20 border border-white/10'
                 }`}
               >
                 <Icon className="w-4 h-4 shrink-0" />
-                <span>{item.label}</span>
+                <span className="notranslate" translate="no">{item.label}</span>
                 {item.badge !== null && item.badge > 0 && (
-                  <span className="badge-notification bg-rose-500 text-white text-[10px] px-2 py-0.5 rounded-full font-black animate-pulse border border-white/30">
+                  <span className="notranslate badge-notification bg-rose-500 text-white text-[10px] px-2 py-0.5 rounded-full font-black animate-pulse border border-white/30" translate="no">
                     {item.badge}
                   </span>
                 )}

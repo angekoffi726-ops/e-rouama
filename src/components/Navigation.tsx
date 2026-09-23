@@ -131,9 +131,9 @@ export const Navigation: React.FC<NavigationProps> = ({ activeTab, setActiveTab 
   ];
 
   return (
-    <nav className="sticky top-[73px] z-30 bg-soft-wood/95 backdrop-blur-md pt-3 pb-2 px-4 border-b border-emerald-900/10">
-      <div className="max-w-7xl mx-auto flex items-center justify-between gap-2 overflow-x-auto no-scrollbar py-1">
-        <div className="flex items-center gap-2 sm:gap-3 min-w-max mx-auto sm:mx-0">
+    <nav className="notranslate sticky top-[73px] z-30 bg-soft-wood/95 backdrop-blur-md pt-3 pb-2 px-4 border-b border-emerald-900/10" translate="no">
+      <div className="max-w-7xl mx-auto flex items-center justify-between gap-2 overflow-x-auto no-scrollbar py-1 notranslate" translate="no">
+        <div className="flex items-center gap-2 sm:gap-3 min-w-max mx-auto sm:mx-0 notranslate" translate="no">
           {navItems.map(item => {
             const Icon = item.icon;
             const isActive = activeTab === item.id;
@@ -142,17 +142,18 @@ export const Navigation: React.FC<NavigationProps> = ({ activeTab, setActiveTab 
               <button
                 key={item.id}
                 onClick={() => setActiveTab(item.id)}
-                className={`relative px-4 sm:px-5 py-2.5 rounded-2xl font-bold text-xs sm:text-sm flex items-center gap-2 transition-all active:scale-95 ${
+                translate="no"
+                className={`notranslate relative px-4 sm:px-5 py-2.5 rounded-2xl font-bold text-xs sm:text-sm flex items-center gap-2 transition-all active:scale-95 ${
                   isActive
                     ? 'bg-forest-moss text-amber-300 shadow-md border border-emerald-700'
                     : 'bg-white/80 hover:bg-white text-forest-moss border border-emerald-800/10 hover:border-emerald-800/30'
                 }`}
               >
                 <Icon className={`w-4 h-4 ${isActive ? 'text-amber-300' : 'text-forest-moss'}`} />
-                <span>{item.label}</span>
+                <span className="notranslate" translate="no">{item.label}</span>
 
                 {item.badge !== null && item.badge > 0 && (
-                  <span className="badge-notification w-5 h-5 rounded-full bg-warm-sunset text-white text-[10px] font-black flex items-center justify-center animate-pulse shadow">
+                  <span className="notranslate badge-notification w-5 h-5 rounded-full bg-warm-sunset text-white text-[10px] font-black flex items-center justify-center animate-pulse shadow" translate="no">
                     {item.badge}
                   </span>
                 )}
@@ -165,14 +166,15 @@ export const Navigation: React.FC<NavigationProps> = ({ activeTab, setActiveTab 
         {isAdmin && (
           <button
             onClick={() => setActiveTab('ADMIN_CONSOLE')}
-            className={`shrink-0 px-4 py-2.5 rounded-2xl font-black text-xs sm:text-sm flex items-center gap-2 transition-all active:scale-95 ${
+            translate="no"
+            className={`notranslate shrink-0 px-4 py-2.5 rounded-2xl font-black text-xs sm:text-sm flex items-center gap-2 transition-all active:scale-95 ${
               activeTab === 'ADMIN_CONSOLE'
                 ? 'bg-amber-600 text-white shadow-lg border border-amber-500'
                 : 'bg-amber-100/90 hover:bg-amber-200 text-amber-900 border border-amber-300'
             }`}
           >
             <Shield className="w-4 h-4" />
-            <span>Console Admin ({currentUser.adminRole})</span>
+            <span className="notranslate" translate="no">Console Admin ({currentUser.adminRole})</span>
           </button>
         )}
       </div>

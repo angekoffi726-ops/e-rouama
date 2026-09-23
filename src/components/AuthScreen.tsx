@@ -313,44 +313,47 @@ export const AuthScreen: React.FC = () => {
         </div>
 
         {/* Barre d'onglets compacte & responsive (3 colonnes strictes : [ 👤 INSCRIPTION ] [ 🔑 CONNEXION ] [ 🛡️ ADMIN ]) */}
-        <div className="grid grid-cols-3 gap-1 bg-[#F5EEDC]/80 p-1.5 rounded-2xl mb-8 border border-[#E67E22]/10">
+        <div className="notranslate grid grid-cols-3 gap-1 bg-[#F5EEDC]/80 p-1.5 rounded-2xl mb-8 border border-[#E67E22]/10" translate="no">
           <button
             type="button"
             onClick={() => handleTabSwitch('REGISTER_MEMBER')}
-            className={`py-2.5 px-1 sm:px-2 rounded-xl transition-all flex items-center justify-center gap-1.5 font-extrabold text-[10px] sm:text-xs ${
+            translate="no"
+            className={`notranslate py-2.5 px-1 sm:px-2 rounded-xl transition-all flex items-center justify-center gap-1.5 font-extrabold text-[10px] sm:text-xs ${
               mode === 'REGISTER_MEMBER'
                 ? 'bg-[#E67E22] text-white shadow-md'
                 : 'text-slate-700 hover:bg-black/5'
             }`}
           >
             <UserCheck className="w-3.5 h-3.5 shrink-0" />
-            <span className="truncate">👤 INSCRIPTION</span>
+            <span className="notranslate truncate" translate="no">👤 INSCRIPTION</span>
           </button>
 
           <button
             type="button"
             onClick={() => handleTabSwitch('LOGIN_MEMBER')}
-            className={`py-2.5 px-1 sm:px-2 rounded-xl transition-all flex items-center justify-center gap-1.5 font-extrabold text-[10px] sm:text-xs ${
+            translate="no"
+            className={`notranslate py-2.5 px-1 sm:px-2 rounded-xl transition-all flex items-center justify-center gap-1.5 font-extrabold text-[10px] sm:text-xs ${
               mode === 'LOGIN_MEMBER'
                 ? 'bg-[#E67E22] text-white shadow-md'
                 : 'text-slate-700 hover:bg-black/5'
             }`}
           >
             <KeyRound className="w-3.5 h-3.5 shrink-0" />
-            <span className="truncate">🔑 CONNEXION</span>
+            <span className="notranslate truncate" translate="no">🔑 CONNEXION</span>
           </button>
 
           <button
             type="button"
             onClick={() => handleTabSwitch('LOGIN_ADMIN')}
-            className={`py-2.5 px-1 sm:px-2 rounded-xl transition-all flex items-center justify-center gap-1.5 font-extrabold text-[10px] sm:text-xs ${
+            translate="no"
+            className={`notranslate py-2.5 px-1 sm:px-2 rounded-xl transition-all flex items-center justify-center gap-1.5 font-extrabold text-[10px] sm:text-xs ${
               mode === 'LOGIN_ADMIN'
                 ? 'bg-[#355E3B] text-white shadow-md'
                 : 'text-slate-700 hover:bg-black/5'
             }`}
           >
             <Shield className="w-3.5 h-3.5 shrink-0" />
-            <span className="truncate">🛡️ ADMIN</span>
+            <span className="notranslate truncate" translate="no">🛡️ ADMIN</span>
           </button>
         </div>
 
