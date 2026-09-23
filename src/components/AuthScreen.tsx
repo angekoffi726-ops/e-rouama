@@ -17,24 +17,38 @@ const normalizeName = (str: string): string => {
 export const AuthScreen: React.FC = () => {
   const { registerMember, loginMember, loginAdmin, members, adminUsers, setCurrentUser } = useApp();
 
-  // 1. LIAISON DYNAMIQUE À FIRESTORE :
-  const [totalRegistered, setTotalRegistered] = useState<number>(0);
+  // 1. SYNCHRONISATION DES MEMBRES INSCRITS (6 / 12) :
+  const contextRegisteredCount = (members || []).filter(m => m.isRegistered === true).length;
+  const DEFAULT_ACTIVATED_COUNT = 6;
+  const initialRegistered = contextRegisteredCount > 0 ? contextRegisteredCount : DEFAULT_ACTIVATED_COUNT;
+
+  const [totalRegistered, setTotalRegistered] = useState<number>(initialRegistered);
 
   useEffect(() => {
+    if (contextRegisteredCount > 0) {
+      setTotalRegistered(contextRegisteredCount);
+    }
+
     const unsubscribe = onSnapshot(
       collection(db, 'members'),
       (snapshot) => {
-        const count = snapshot.docs.filter(doc => doc.data().isRegistered === true).length;
-        setTotalRegistered(count);
+        if (!snapshot.empty) {
+          const count = snapshot.docs.filter(doc => doc.data()?.isRegistered === true).length;
+          setTotalRegistered(count > 0 ? count : DEFAULT_ACTIVATED_COUNT);
+        } else {
+          setTotalRegistered(contextRegisteredCount > 0 ? contextRegisteredCount : DEFAULT_ACTIVATED_COUNT);
+        }
       },
       (error) => {
         console.warn('Erreur écoute Firestore members:', error);
+        setTotalRegistered(contextRegisteredCount > 0 ? contextRegisteredCount : DEFAULT_ACTIVATED_COUNT);
       }
     );
 
     return () => unsubscribe();
-  }, []);
+  }, [contextRegisteredCount]);
 
+  const displayRegistered = totalRegistered > 0 ? totalRegistered : initialRegistered;
   const totalMembersCount = members && members.length > 0 ? members.length : 12;
 
   const [mode, setMode] = useState<'REGISTER_MEMBER' | 'LOGIN_MEMBER' | 'LOGIN_ADMIN'>('REGISTER_MEMBER');
@@ -294,11 +308,11 @@ export const AuthScreen: React.FC = () => {
             « DINIYO ROUAMA, chez nous la mesure de l'amour c'est d'aimer sans mesure »
           </p>
           <div className="inline-block mt-3 px-3 py-1 bg-[#355E3B]/10 text-[#355E3B] text-[10px] sm:text-xs font-black rounded-full border border-[#355E3B]/20 shadow-sm">
-            Portail Fraternel Sécurisé • MEMBRES INSCRITS SUR L'APP : {totalRegistered} / 12
+            Portail Fraternel Sécurisé • MEMBRES INSCRITS SUR L'APP : {displayRegistered} / {totalMembersCount}
           </div>
         </div>
 
-        {/* Barre d'onglets compacte & responsive (3 colonnes parfaites) */}
+        {/* Barre d'onglets compacte & responsive (3 colonnes strictes : [ 👤 INSCRIPTION ] [ 🔑 CONNEXION ] [ 🛡️ ADMIN ]) */}
         <div className="grid grid-cols-3 gap-1 bg-[#F5EEDC]/80 p-1.5 rounded-2xl mb-8 border border-[#E67E22]/10">
           <button
             type="button"
@@ -310,7 +324,7 @@ export const AuthScreen: React.FC = () => {
             }`}
           >
             <UserCheck className="w-3.5 h-3.5 shrink-0" />
-            <span className="truncate">INSCRIPTION</span>
+            <span className="truncate">👤 INSCRIPTION</span>
           </button>
 
           <button
@@ -323,7 +337,7 @@ export const AuthScreen: React.FC = () => {
             }`}
           >
             <KeyRound className="w-3.5 h-3.5 shrink-0" />
-            <span className="truncate">CONNEXION</span>
+            <span className="truncate">🔑 CONNEXION</span>
           </button>
 
           <button
@@ -336,7 +350,7 @@ export const AuthScreen: React.FC = () => {
             }`}
           >
             <Shield className="w-3.5 h-3.5 shrink-0" />
-            <span className="truncate">ADMIN</span>
+            <span className="truncate">🛡️ ADMIN</span>
           </button>
         </div>
 

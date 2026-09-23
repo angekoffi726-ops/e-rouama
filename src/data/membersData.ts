@@ -8,7 +8,7 @@ export const INITIAL_ROUAMA_MEMBERS: RouamaMember[] = [
     nickname: 'CAPELO',
     phone: '2250501948962',
     email: 'angekoffi726@gmail.com',
-    isRegistered: false,
+    isRegistered: true,
     avatar: '/PP-CAPELO.jpeg',
   },
   {
@@ -18,7 +18,7 @@ export const INITIAL_ROUAMA_MEMBERS: RouamaMember[] = [
     nickname: 'KILO CARTUS',
     phone: '2250503643626',
     email: 'ortiniel.anane05@gmail.com',
-    isRegistered: false,
+    isRegistered: true,
   },
   {
     id: '3',
@@ -27,7 +27,7 @@ export const INITIAL_ROUAMA_MEMBERS: RouamaMember[] = [
     nickname: 'LA MADRE',
     phone: '2250757537785',
     email: 'josianekambou46@gmail.com',
-    isRegistered: false,
+    isRegistered: true,
   },
   {
     id: '4',
@@ -36,7 +36,7 @@ export const INITIAL_ROUAMA_MEMBERS: RouamaMember[] = [
     nickname: 'SOUKA',
     phone: '2250747195076',
     email: 'marieroxanekouadio263@gmail.com',
-    isRegistered: false,
+    isRegistered: true,
   },
   {
     id: '5',
@@ -45,7 +45,7 @@ export const INITIAL_ROUAMA_MEMBERS: RouamaMember[] = [
     nickname: 'SYLAS',
     phone: '2250564281013',
     email: 'sylastouali156@gmail.com',
-    isRegistered: false,
+    isRegistered: true,
   },
   {
     id: '6',
@@ -54,7 +54,7 @@ export const INITIAL_ROUAMA_MEMBERS: RouamaMember[] = [
     nickname: 'TYPO',
     phone: '2250584346071',
     email: 'desiresc04@outlook.com',
-    isRegistered: false,
+    isRegistered: true,
   },
   {
     id: '7',

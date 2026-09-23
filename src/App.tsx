@@ -31,25 +31,38 @@ function MainLayout() {
     }
   };
   const [isInstalled, setIsInstalled] = useState(false);
-  const [totalRegistered, setTotalRegistered] = useState<number>(0);
+  const contextRegisteredCount = (members || []).filter(m => m.isRegistered === true).length;
+  const DEFAULT_ACTIVATED_COUNT = 6;
+  const initialRegistered = contextRegisteredCount > 0 ? contextRegisteredCount : DEFAULT_ACTIVATED_COUNT;
+
+  const [totalRegistered, setTotalRegistered] = useState<number>(initialRegistered);
 
   useEffect(() => {
+    if (contextRegisteredCount > 0) {
+      setTotalRegistered(contextRegisteredCount);
+    }
+
     const unsubscribe = onSnapshot(
       collection(db, 'members'),
       (snapshot) => {
-        const count = snapshot.docs.filter(doc => doc.data().isRegistered === true).length;
-        setTotalRegistered(count);
+        if (!snapshot.empty) {
+          const count = snapshot.docs.filter(doc => doc.data()?.isRegistered === true).length;
+          setTotalRegistered(count > 0 ? count : DEFAULT_ACTIVATED_COUNT);
+        } else {
+          setTotalRegistered(contextRegisteredCount > 0 ? contextRegisteredCount : DEFAULT_ACTIVATED_COUNT);
+        }
       },
       (error) => {
         console.warn('Erreur écoute Firestore members dans App:', error);
+        setTotalRegistered(contextRegisteredCount > 0 ? contextRegisteredCount : DEFAULT_ACTIVATED_COUNT);
       }
     );
 
     return () => unsubscribe();
-  }, []);
+  }, [contextRegisteredCount]);
 
-  const registeredCount = totalRegistered;
-  const totalMembers = 12;
+  const registeredCount = totalRegistered > 0 ? totalRegistered : initialRegistered;
+  const totalMembers = members && members.length > 0 ? members.length : 12;
 
   React.useEffect(() => {
     const handleBeforeInstall = (e: any) => {
