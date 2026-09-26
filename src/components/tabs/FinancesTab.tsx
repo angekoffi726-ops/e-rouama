@@ -27,9 +27,6 @@ import {
   Sprout,
   Info,
   Trash2,
-  Copy,
-  Check,
-  Phone,
 } from 'lucide-react';
 import { compressReceiptImage } from '../../utils/imageCompressor';
 
@@ -72,37 +69,11 @@ export const FinancesTab: React.FC = () => {
   const publishedActivities = activities.filter(a => a.status === 'PUBLISHED');
   const publishedProjects = projects.filter(p => p.status === 'PUBLISHED');
 
-  // Wave Payment URL & Numéro Wave du Trésorier Général (dynamique & robuste)
-  const tresorierMember = members.find(m => m.assignedRole === 'TRESORIER')
-    || members.find(m => m.nickname?.toUpperCase().includes('CAPELO') || m.firstName?.toUpperCase().includes('WILFRIED') || m.id === '1');
-  const rawTresorierPhone = tresorierMember?.phone || '2250501948962';
-  const wavePhoneNumber = rawTresorierPhone.replace(/\D/g, '') || '2250501948962';
-
-  const tresorierDisplayName = tresorierMember
-    ? (tresorierMember.fullRosterName || `${tresorierMember.firstName} (${tresorierMember.nickname || 'Capelo'})`)
-    : 'WILFRIED (CAPELO) - Trésorier Général';
-
-  // Formatage propre du numéro pour l'affichage visuel (ex: +225 05 01 94 89 62)
-  const formattedTresorierPhone = (() => {
-    const p = wavePhoneNumber;
-    if (p.startsWith('225') && p.length === 13) {
-      return `+225 ${p.slice(3, 5)} ${p.slice(5, 7)} ${p.slice(7, 9)} ${p.slice(9, 11)} ${p.slice(11, 13)}`;
-    }
-    if (p.startsWith('225') && p.length >= 10) {
-      return `+225 ${p.slice(3)}`;
-    }
-    if (p.length === 10) {
-      return `+225 ${p.slice(0, 2)} ${p.slice(2, 4)} ${p.slice(4, 6)} ${p.slice(6, 8)} ${p.slice(8, 10)}`;
-    }
-    return `+${p}`;
-  })();
-
   // URL Marchand Wave Officiel E-ROUAMA (Djaï)
   const WAVE_OFFICIAL_MERCHANT_URL = 'https://pay.wave.com/m/M_ci_GgJcnMC4q7hK/c/ci/';
 
-  // Format officiel Wave marchand (élimine définitivement les erreurs XML NoSuchKey et URLs obsolètes)
+  // Format officiel Wave marchand (ouvre directement l'interface de paiement officielle)
   const getWavePaymentLink = (_amount?: number) => {
-    // 1. Priorité au lien marchand officiel configuré dans l'environnement ou par défaut
     const metaEnv = (import.meta as any)?.env || {};
     const customMerchant = (
       metaEnv.VITE_WAVE_MERCHANT_URL ||
@@ -114,7 +85,6 @@ export const FinancesTab: React.FC = () => {
       return customMerchant;
     }
 
-    // 2. URL Marchand Wave Officiel officiel E-ROUAMA
     return WAVE_OFFICIAL_MERCHANT_URL;
   };
   const getWaveLink = getWavePaymentLink;
@@ -130,27 +100,6 @@ export const FinancesTab: React.FC = () => {
       }
     } catch {
       window.location.href = url;
-    }
-  };
-
-  // État et gestionnaire de copie du numéro Wave du Trésorier
-  const [copiedWavePhone, setCopiedWavePhone] = useState(false);
-  const handleCopyWavePhone = async () => {
-    try {
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        await navigator.clipboard.writeText(wavePhoneNumber);
-      } else {
-        const textArea = document.createElement('textarea');
-        textArea.value = wavePhoneNumber;
-        document.body.appendChild(textArea);
-        textArea.select();
-        document.execCommand('copy');
-        document.body.removeChild(textArea);
-      }
-      setCopiedWavePhone(true);
-      setTimeout(() => setCopiedWavePhone(false), 3000);
-    } catch (err) {
-      console.warn('Erreur lors de la copie du numéro Wave:', err);
     }
   };
 
@@ -814,105 +763,46 @@ export const FinancesTab: React.FC = () => {
             </div>
           </div>
 
-          {/* Wave Payment Link for Monthly avec montant dynamique & sécurisation */}
-          <div className="bg-gradient-to-br from-cyan-600 via-sky-600 to-blue-700 text-white rounded-3xl p-6 sm:p-7 shadow-xl border border-sky-400/40 space-y-5">
-            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-5">
-              <div className="space-y-1.5 text-center lg:text-left">
-                <div className="inline-flex items-center gap-2 bg-white/20 px-3 py-1 rounded-full text-xs font-black tracking-wide">
-                  <Smartphone className="w-4 h-4 text-cyan-200" />
-                  <span>WAVE MARCHAND OFFICIEL (DJAÏ) • COTISATIONS STATUTAIRES (500 F/MOIS)</span>
-                </div>
-                <h3 className="text-xl sm:text-2xl font-black text-white">
-                  Payer {monthlyAmount > 0 ? `${monthlyAmount.toLocaleString('fr-FR')} F CFA` : '0 F CFA'} ({monthlyMonthsCountDisplay}) via Wave
-                </h3>
-                <p className="text-xs sm:text-sm text-cyan-100 max-w-xl leading-relaxed">
-                  Lien marchand officiel Wave sécurisé. Cliquez sur <strong>Payer via Wave</strong> pour régler directement en ligne, ou utilisez le numéro de secours ci-dessous si votre appareil n'a pas l'application Wave.
-                </p>
+          {/* Wave Payment Link for Monthly avec montant dynamique */}
+          <div className="bg-gradient-to-r from-cyan-600 via-sky-600 to-blue-700 text-white rounded-3xl p-5 sm:p-6 shadow-xl border border-sky-400/40 flex flex-col md:flex-row items-center justify-between gap-5">
+            <div className="space-y-1.5 text-center md:text-left">
+              <div className="inline-flex items-center gap-2 bg-white/20 px-3 py-1 rounded-full text-xs font-black tracking-wide">
+                <Smartphone className="w-4 h-4 text-cyan-200" />
+                <span>WAVE MARCHAND OFFICIEL (DJAÏ) • COTISATIONS STATUTAIRES (500 F/MOIS)</span>
               </div>
-
-              {/* Bouton Principal de Paiement Wave */}
-              <div className="shrink-0 flex items-center justify-center">
-                {isMonthlyWaveActive ? (
-                  <a
-                    href={getWaveLink(monthlyAmount)}
-                    onClick={(e) => openWaveApp(e, monthlyAmount)}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="w-full sm:w-auto bg-white hover:bg-cyan-50 text-sky-950 font-black py-3.5 px-6 rounded-2xl shadow-xl transition-all flex items-center justify-center gap-2.5 text-sm sm:text-base hover:scale-105 active:scale-95 cursor-pointer border border-white"
-                  >
-                    <span className="text-xl">🌊</span>
-                    <span>PAYER VIA WAVE ({monthlyAmount.toLocaleString('fr-FR')} F)</span>
-                    <ExternalLink className="w-4 h-4 text-sky-700" />
-                  </a>
-                ) : (
-                  <button
-                    type="button"
-                    disabled
-                    className="w-full sm:w-auto bg-white/30 text-white/60 cursor-not-allowed font-black py-3.5 px-6 rounded-2xl text-sm sm:text-base flex items-center justify-center gap-2 opacity-70"
-                  >
-                    <span className="text-lg opacity-50">🌊</span>
-                    <span>PAYER VIA WAVE</span>
-                    <ExternalLink className="w-4 h-4 text-white/40" />
-                  </button>
-                )}
-              </div>
+              <h3 className="text-xl sm:text-2xl font-black text-white">
+                Payer {monthlyAmount > 0 ? `${monthlyAmount.toLocaleString('fr-FR')} F CFA` : '0 F CFA'} ({monthlyMonthsCountDisplay}) via Wave
+              </h3>
+              <p className="text-xs sm:text-sm text-cyan-100 max-w-xl">
+                Montant injecté automatiquement dans Wave. Cliquez sur <strong>Payer via Wave</strong> pour régler directement vos cotisations.
+              </p>
             </div>
 
-            {/* Numéro de secours du Trésorier & Option Copie / Transfert Manuel */}
-            <div className="bg-sky-950/45 backdrop-blur-md rounded-2xl p-4 sm:p-5 border border-white/20 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-              <div className="flex items-center gap-3">
-                <div className="w-11 h-11 rounded-xl bg-cyan-400/25 border border-cyan-300/40 flex items-center justify-center text-cyan-200 shrink-0 text-xl font-bold shadow-inner">
-                  🌊
-                </div>
-                <div>
-                  <div className="text-[11px] font-black text-cyan-200 uppercase tracking-wider flex items-center gap-1.5 flex-wrap">
-                    <span>Numéro Wave de secours du Trésorier Général</span>
-                    <span className="bg-cyan-500/30 text-cyan-100 text-[10px] px-2 py-0.5 rounded-full font-bold">
-                      {tresorierDisplayName}
-                    </span>
-                  </div>
-                  <div className="text-xl sm:text-2xl font-black font-mono tracking-wider text-white select-all">
-                    {formattedTresorierPhone}
-                  </div>
-                  <div className="text-[11px] text-cyan-100/80">
-                    Pour transfert manuel direct si vous êtes sur un appareil sans l'application Wave ou en cas de problème réseau.
-                  </div>
-                </div>
-              </div>
-
-              <div className="flex items-center gap-2 shrink-0">
+            {/* Bouton Principal de Paiement Wave */}
+            <div className="shrink-0 flex items-center justify-center">
+              {isMonthlyWaveActive ? (
+                <a
+                  href={getWaveLink(monthlyAmount)}
+                  onClick={(e) => openWaveApp(e, monthlyAmount)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="w-full sm:w-auto bg-white hover:bg-cyan-50 text-sky-950 font-black py-3.5 px-6 rounded-2xl shadow-xl transition-all flex items-center justify-center gap-2.5 text-sm sm:text-base hover:scale-105 active:scale-95 cursor-pointer border border-white"
+                >
+                  <span className="text-xl">🌊</span>
+                  <span>PAYER VIA WAVE ({monthlyAmount.toLocaleString('fr-FR')} F)</span>
+                  <ExternalLink className="w-4 h-4 text-sky-700" />
+                </a>
+              ) : (
                 <button
                   type="button"
-                  onClick={handleCopyWavePhone}
-                  className={`w-full sm:w-auto px-4 py-2.5 rounded-xl font-bold text-xs sm:text-sm flex items-center justify-center gap-2 transition-all shadow-md ${
-                    copiedWavePhone
-                      ? 'bg-emerald-500 text-white shadow-emerald-500/50 scale-105'
-                      : 'bg-white/20 hover:bg-white/30 text-white border border-white/25 active:scale-95'
-                  }`}
-                  title="Copier le numéro du Trésorier pour le coller dans Wave"
+                  disabled
+                  className="w-full sm:w-auto bg-white/30 text-white/60 cursor-not-allowed font-black py-3.5 px-6 rounded-2xl text-sm sm:text-base flex items-center justify-center gap-2 opacity-70"
                 >
-                  {copiedWavePhone ? (
-                    <>
-                      <Check className="w-4 h-4 text-white" />
-                      <span>✓ Numéro copié !</span>
-                    </>
-                  ) : (
-                    <>
-                      <Copy className="w-4 h-4 text-cyan-200" />
-                      <span>📋 Copier le numéro</span>
-                    </>
-                  )}
+                  <span className="text-lg opacity-50">🌊</span>
+                  <span>PAYER VIA WAVE</span>
+                  <ExternalLink className="w-4 h-4 text-white/40" />
                 </button>
-
-                <a
-                  href={`tel:${wavePhoneNumber}`}
-                  className="px-3.5 py-2.5 rounded-xl font-bold text-xs sm:text-sm bg-white/10 hover:bg-white/20 text-white border border-white/20 flex items-center justify-center gap-1.5 transition-all active:scale-95"
-                  title="Composer le numéro Wave du Trésorier"
-                >
-                  <Phone className="w-3.5 h-3.5 text-cyan-200" />
-                  <span className="hidden xs:inline">Appel</span>
-                </a>
-              </div>
+              )}
             </div>
           </div>
 
@@ -1448,105 +1338,46 @@ export const FinancesTab: React.FC = () => {
             </div>
           </div>
 
-          {/* Wave Payment Link for Tranches avec montant dynamique & sécurisation */}
-          <div className="bg-gradient-to-br from-cyan-600 via-sky-600 to-blue-700 text-white rounded-3xl p-6 sm:p-7 shadow-xl border border-sky-400/40 space-y-5">
-            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-5">
-              <div className="space-y-1.5 text-center lg:text-left">
-                <div className="inline-flex items-center gap-2 bg-white/20 px-3 py-1 rounded-full text-xs font-black tracking-wide">
-                  <Smartphone className="w-4 h-4 text-cyan-200" />
-                  <span>WAVE MARCHAND OFFICIEL (DJAÏ) • VERSEMENT PAR TRANCHE (ACOMPTE)</span>
-                </div>
-                <h3 className="text-xl sm:text-2xl font-black text-white">
-                  Réglez votre acompte ({numericTrancheAmount.toLocaleString('fr-FR')} F CFA) via Wave
-                </h3>
-                <p className="text-xs sm:text-sm text-cyan-100 max-w-xl leading-relaxed">
-                  Lien marchand officiel Wave sécurisé. Cliquez sur <strong>Effectuer mon dépôt Wave</strong> pour régler directement en ligne, ou utilisez le numéro de secours ci-dessous si votre appareil n'a pas l'application Wave.
-                </p>
+          {/* Wave Payment Link for Tranches avec montant dynamique */}
+          <div className="bg-gradient-to-r from-cyan-600 via-sky-600 to-blue-700 text-white rounded-3xl p-5 sm:p-6 shadow-xl border border-sky-400/40 flex flex-col md:flex-row items-center justify-between gap-5">
+            <div className="space-y-1.5 text-center md:text-left">
+              <div className="inline-flex items-center gap-2 bg-white/20 px-3 py-1 rounded-full text-xs font-black tracking-wide">
+                <Smartphone className="w-4 h-4 text-cyan-200" />
+                <span>WAVE MARCHAND OFFICIEL (DJAÏ) • VERSEMENT PAR TRANCHE (ACOMPTE)</span>
               </div>
-
-              {/* Bouton Principal de Paiement Wave */}
-              <div className="shrink-0 flex items-center justify-center">
-                {isTrancheWaveActive ? (
-                  <a
-                    href={getWaveLink(numericTrancheAmount)}
-                    onClick={(e) => openWaveApp(e, numericTrancheAmount)}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="w-full sm:w-auto bg-white hover:bg-cyan-50 text-sky-950 font-black py-3.5 px-6 rounded-2xl shadow-xl transition-all flex items-center justify-center gap-2.5 text-sm sm:text-base hover:scale-105 active:scale-95 cursor-pointer border border-white"
-                  >
-                    <span className="text-xl">🌊</span>
-                    <span>EFFECTUER MON DÉPÔT WAVE ({numericTrancheAmount.toLocaleString('fr-FR')} F)</span>
-                    <ExternalLink className="w-4 h-4 text-sky-700" />
-                  </a>
-                ) : (
-                  <button
-                    type="button"
-                    disabled
-                    className="w-full sm:w-auto bg-white/30 text-white/60 cursor-not-allowed font-black py-3.5 px-6 rounded-2xl text-sm sm:text-base flex items-center justify-center gap-2 opacity-70"
-                  >
-                    <span className="text-lg opacity-50">🌊</span>
-                    <span>EFFECTUER MON DÉPÔT WAVE</span>
-                    <ExternalLink className="w-4 h-4 text-white/40" />
-                  </button>
-                )}
-              </div>
+              <h3 className="text-xl sm:text-2xl font-black text-white">
+                Réglez votre acompte ({numericTrancheAmount.toLocaleString('fr-FR')} F CFA) via Wave
+              </h3>
+              <p className="text-xs sm:text-sm text-cyan-100 max-w-xl">
+                Le bouton Wave s'active dès la saisie d'un versement conforme (minimum {minTrancheAllowed.toLocaleString('fr-FR')} F CFA). Cliquez pour ouvrir le paiement officiel.
+              </p>
             </div>
 
-            {/* Numéro de secours du Trésorier & Option Copie / Transfert Manuel */}
-            <div className="bg-sky-950/45 backdrop-blur-md rounded-2xl p-4 sm:p-5 border border-white/20 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-              <div className="flex items-center gap-3">
-                <div className="w-11 h-11 rounded-xl bg-cyan-400/25 border border-cyan-300/40 flex items-center justify-center text-cyan-200 shrink-0 text-xl font-bold shadow-inner">
-                  🌊
-                </div>
-                <div>
-                  <div className="text-[11px] font-black text-cyan-200 uppercase tracking-wider flex items-center gap-1.5 flex-wrap">
-                    <span>Numéro Wave de secours du Trésorier Général</span>
-                    <span className="bg-cyan-500/30 text-cyan-100 text-[10px] px-2 py-0.5 rounded-full font-bold">
-                      {tresorierDisplayName}
-                    </span>
-                  </div>
-                  <div className="text-xl sm:text-2xl font-black font-mono tracking-wider text-white select-all">
-                    {formattedTresorierPhone}
-                  </div>
-                  <div className="text-[11px] text-cyan-100/80">
-                    Pour transfert manuel direct si vous êtes sur un appareil sans l'application Wave ou en cas de problème réseau.
-                  </div>
-                </div>
-              </div>
-
-              <div className="flex items-center gap-2 shrink-0">
+            {/* Bouton Principal de Paiement Wave */}
+            <div className="shrink-0 flex items-center justify-center">
+              {isTrancheWaveActive ? (
+                <a
+                  href={getWaveLink(numericTrancheAmount)}
+                  onClick={(e) => openWaveApp(e, numericTrancheAmount)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="w-full sm:w-auto bg-white hover:bg-cyan-50 text-sky-950 font-black py-3.5 px-6 rounded-2xl shadow-xl transition-all flex items-center justify-center gap-2.5 text-sm sm:text-base hover:scale-105 active:scale-95 cursor-pointer border border-white"
+                >
+                  <span className="text-xl">🌊</span>
+                  <span>EFFECTUER MON DÉPÔT WAVE ({numericTrancheAmount.toLocaleString('fr-FR')} F)</span>
+                  <ExternalLink className="w-4 h-4 text-sky-700" />
+                </a>
+              ) : (
                 <button
                   type="button"
-                  onClick={handleCopyWavePhone}
-                  className={`w-full sm:w-auto px-4 py-2.5 rounded-xl font-bold text-xs sm:text-sm flex items-center justify-center gap-2 transition-all shadow-md ${
-                    copiedWavePhone
-                      ? 'bg-emerald-500 text-white shadow-emerald-500/50 scale-105'
-                      : 'bg-white/20 hover:bg-white/30 text-white border border-white/25 active:scale-95'
-                  }`}
-                  title="Copier le numéro du Trésorier pour le coller dans Wave"
+                  disabled
+                  className="w-full sm:w-auto bg-white/30 text-white/60 cursor-not-allowed font-black py-3.5 px-6 rounded-2xl text-sm sm:text-base flex items-center justify-center gap-2 opacity-70"
                 >
-                  {copiedWavePhone ? (
-                    <>
-                      <Check className="w-4 h-4 text-white" />
-                      <span>✓ Numéro copié !</span>
-                    </>
-                  ) : (
-                    <>
-                      <Copy className="w-4 h-4 text-cyan-200" />
-                      <span>📋 Copier le numéro</span>
-                    </>
-                  )}
+                  <span className="text-lg opacity-50">🌊</span>
+                  <span>EFFECTUER MON DÉPÔT WAVE</span>
+                  <ExternalLink className="w-4 h-4 text-white/40" />
                 </button>
-
-                <a
-                  href={`tel:${wavePhoneNumber}`}
-                  className="px-3.5 py-2.5 rounded-xl font-bold text-xs sm:text-sm bg-white/10 hover:bg-white/20 text-white border border-white/20 flex items-center justify-center gap-1.5 transition-all active:scale-95"
-                  title="Composer le numéro Wave du Trésorier"
-                >
-                  <Phone className="w-3.5 h-3.5 text-cyan-200" />
-                  <span className="hidden xs:inline">Appel</span>
-                </a>
-              </div>
+              )}
             </div>
           </div>
 
