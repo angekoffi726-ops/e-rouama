@@ -136,6 +136,7 @@ export const AuthScreen: React.FC = () => {
           isRegistered: true,
           pin: String(codePin).trim(),
           avatar: member.avatar || member.photoUrl || "",
+          photoUrl: member.photoUrl || member.avatar || "",
           updatedAt: new Date().toISOString()
         }, { merge: true });
       }
@@ -209,11 +210,13 @@ export const AuthScreen: React.FC = () => {
       }
 
       if (!member.isRegistered || !expectedPin || expectedPin === 'Non défini') {
+        const resolvedAvatar = avatarUrl || member.avatar || member.photoUrl || "";
         try {
           await updateDoc(doc(db, "members", member.id), {
             isRegistered: true,
             pin: String(pinCodeSaisi).trim(),
-            avatar: avatarUrl || "",
+            avatar: resolvedAvatar,
+            photoUrl: resolvedAvatar,
             lastLogin: new Date().toISOString(),
             updatedAt: new Date().toISOString()
           });
@@ -225,7 +228,8 @@ export const AuthScreen: React.FC = () => {
             fullRosterName: member.fullRosterName,
             isRegistered: true,
             pin: String(pinCodeSaisi).trim(),
-            avatar: avatarUrl || "",
+            avatar: resolvedAvatar,
+            photoUrl: resolvedAvatar,
             lastLogin: new Date().toISOString(),
             updatedAt: new Date().toISOString(),
           }, { merge: true });

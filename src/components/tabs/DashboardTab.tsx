@@ -4,6 +4,7 @@ import { TabType } from '../Navigation';
 import { doc, setDoc, getDoc } from 'firebase/firestore';
 import { db } from '../../firebase';
 import { compressProfileImage } from '../../utils/imageCompressor';
+import { EditMemberModal } from '../common/EditMemberModal';
 import {
   Camera,
   Upload,
@@ -20,7 +21,8 @@ import {
   Loader2,
   KeyRound,
   X,
-  Lock
+  Lock,
+  Edit3
 } from 'lucide-react';
 
 interface DashboardTabProps {
@@ -35,6 +37,7 @@ export const DashboardTab: React.FC<DashboardTabProps> = ({ onNavigateTab }) => 
 
   // État pour la modification du code PIN par le membre
   const [isPinModalOpen, setIsPinModalOpen] = useState(false);
+  const [isEditProfileModalOpen, setIsEditProfileModalOpen] = useState(false);
   const [newPin, setNewPin] = useState('');
   const [isSavingPin, setIsSavingPin] = useState(false);
   const [pinSuccess, setPinSuccess] = useState(false);
@@ -216,9 +219,9 @@ export const DashboardTab: React.FC<DashboardTabProps> = ({ onNavigateTab }) => 
               {/* Upload Overlay Button */}
               {isMember && !isUploading && (
                 <button
-                  onClick={() => fileInputRef.current?.click()}
+                  onClick={() => setIsEditProfileModalOpen(true)}
                   className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center text-white text-xs font-bold gap-1 cursor-pointer"
-                  title="Changer ma photo de profil"
+                  title="Modifier mon profil et ma photo"
                 >
                   <Camera className="w-6 h-6 text-amber-200" />
                   <span>Modifier</span>
@@ -291,19 +294,30 @@ export const DashboardTab: React.FC<DashboardTabProps> = ({ onNavigateTab }) => 
               )}
 
               {isMember && (
-                <button
-                  onClick={() => {
-                    setIsPinModalOpen(true);
-                    setNewPin('');
-                    setPinError(null);
-                    setPinSuccess(false);
-                  }}
-                  className="bg-amber-950/70 hover:bg-amber-900 text-amber-200 border border-amber-400/40 px-3 py-1 rounded-xl flex items-center gap-1.5 transition-all cursor-pointer shadow-sm active:scale-95"
-                  title="Modifier mon code PIN de connexion"
-                >
-                  <KeyRound className="w-3.5 h-3.5 text-amber-300" />
-                  <span>Changer mon PIN</span>
-                </button>
+                <>
+                  <button
+                    onClick={() => setIsEditProfileModalOpen(true)}
+                    className="bg-emerald-950/70 hover:bg-emerald-900 text-emerald-200 border border-emerald-400/40 px-3 py-1 rounded-xl flex items-center gap-1.5 transition-all cursor-pointer shadow-sm active:scale-95"
+                    title="Modifier mes informations et ma photo de profil"
+                  >
+                    <Edit3 className="w-3.5 h-3.5 text-emerald-300" />
+                    <span>Modifier mon Profil</span>
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      setIsPinModalOpen(true);
+                      setNewPin('');
+                      setPinError(null);
+                      setPinSuccess(false);
+                    }}
+                    className="bg-amber-950/70 hover:bg-amber-900 text-amber-200 border border-amber-400/40 px-3 py-1 rounded-xl flex items-center gap-1.5 transition-all cursor-pointer shadow-sm active:scale-95"
+                    title="Modifier mon code PIN de connexion"
+                  >
+                    <KeyRound className="w-3.5 h-3.5 text-amber-300" />
+                    <span>Changer mon PIN</span>
+                  </button>
+                </>
               )}
             </div>
           </div>
@@ -604,6 +618,13 @@ export const DashboardTab: React.FC<DashboardTabProps> = ({ onNavigateTab }) => 
           </div>
         </div>
       )}
+      {/* MODAL MODIFIER LE MEMBRE / MON PROFIL AVEC FEEDBACK VISUEL DE LA PHOTO */}
+      <EditMemberModal
+        isOpen={isEditProfileModalOpen}
+        onClose={() => setIsEditProfileModalOpen(false)}
+        member={currentMember || null}
+        isAdminMode={false}
+      />
     </div>
   );
 };

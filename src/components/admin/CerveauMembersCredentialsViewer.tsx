@@ -3,7 +3,8 @@ import { collection, onSnapshot, doc, setDoc } from 'firebase/firestore';
 import { db } from '../../firebase';
 import { useApp } from '../../context/AppContext';
 import { INITIAL_ROUAMA_MEMBERS } from '../../data/membersData';
-import { AdminRole } from '../../types';
+import { AdminRole, RouamaMember } from '../../types';
+import { EditMemberModal } from '../common/EditMemberModal';
 import {
   KeyRound,
   Eye,
@@ -186,6 +187,25 @@ export const CerveauMembersCredentialsViewer: React.FC<CerveauMembersCredentials
       setCopiedMemberId(member.loginId);
       setTimeout(() => setCopiedMemberId(null), 3000);
     }).catch(() => {});
+  };
+
+  // Modal de modification complète du membre (informations & photo avec préservation stricte)
+  const [memberToEdit, setMemberToEdit] = useState<RouamaMember | null>(null);
+
+  const openEditMemberModal = (m: any) => {
+    setMemberToEdit({
+      id: m.id,
+      firstName: m.firstName,
+      nickname: m.nickname,
+      fullRosterName: m.fullRosterName || m.firstName,
+      phone: m.phone || '',
+      email: m.email || '',
+      pin: m.pin && m.pin !== 'Non défini' ? m.pin : '',
+      avatar: m.avatar || m.photoUrl || '',
+      photoUrl: m.photoUrl || m.avatar || '',
+      isRegistered: m.isRegistered,
+      assignedRole: m.assignedRole,
+    });
   };
 
   // Ouverture de la modal pour définir / changer le PIN d'un membre
@@ -443,14 +463,14 @@ export const CerveauMembersCredentialsViewer: React.FC<CerveauMembersCredentials
                         )}
                       </td>
 
-                      {/* Actions : Copier et Définir / Modifier le PIN */}
+                      {/* Actions : Copier et Définir / Modifier le membre */}
                       <td className="py-3.5 px-4 text-right">
                         <div className="inline-flex items-center gap-2">
                           <button
                             type="button"
-                            onClick={() => openEditPinModal(member)}
+                            onClick={() => openEditMemberModal(member)}
                             className="px-2.5 py-1.5 rounded-xl text-xs font-bold inline-flex items-center gap-1.5 transition-all bg-slate-800 hover:bg-amber-600 hover:text-white text-slate-300 shadow-sm cursor-pointer"
-                            title={isActivated ? "Modifier le code PIN" : "Définir un code PIN pour ce membre"}
+                            title={isActivated ? "Modifier les informations et la photo du membre" : "Définir le profil et le PIN de ce membre"}
                           >
                             <Edit3 className="w-3.5 h-3.5 text-amber-400" />
                             <span>{isActivated ? 'Modifier' : 'Définir PIN'}</span>
@@ -534,9 +554,9 @@ export const CerveauMembersCredentialsViewer: React.FC<CerveauMembersCredentials
                     <div className="flex items-center gap-1.5">
                       <button
                         type="button"
-                        onClick={() => openEditPinModal(member)}
+                        onClick={() => openEditMemberModal(member)}
                         className="p-2 rounded-xl text-xs font-bold transition-all bg-slate-800 text-slate-300 hover:text-white"
-                        title="Modifier le code PIN"
+                        title="Modifier le membre et sa photo"
                       >
                         <Edit3 className="w-4 h-4 text-amber-400" />
                       </button>
@@ -679,6 +699,14 @@ export const CerveauMembersCredentialsViewer: React.FC<CerveauMembersCredentials
           </div>
         </div>
       )}
+
+      {/* MODAL PRINCIPALE : MODIFIER LE MEMBRE AVEC FEEDBACK VISUEL DE LA PHOTO */}
+      <EditMemberModal
+        isOpen={Boolean(memberToEdit)}
+        onClose={() => setMemberToEdit(null)}
+        member={memberToEdit}
+        isAdminMode={true}
+      />
 
       {/* Note d'éthique et de sécurité fraternelle */}
       <div className="p-3.5 bg-slate-950 rounded-2xl border border-slate-800/80 flex items-start gap-2.5 text-[11px] text-slate-400">

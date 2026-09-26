@@ -212,9 +212,21 @@ interface AppContextType {
   assignMemberRole: (memberId: string, role?: AdminRole) => void;
   resetMemberPin: (memberId: string) => void;
   updateMemberAvatar: (memberId: string, avatarDataUrl: string) => Promise<boolean>;
+  updateMember: (
+    memberId: string,
+    formFields: Partial<RouamaMember> & { newPhotoBase64?: string; [key: string]: any }
+  ) => Promise<boolean>;
+  saveProfile: (
+    memberId: string,
+    formFields: Partial<RouamaMember> & { newPhotoBase64?: string; [key: string]: any }
+  ) => Promise<boolean>;
+  editUser: (
+    memberId: string,
+    formFields: Partial<RouamaMember> & { newPhotoBase64?: string; [key: string]: any }
+  ) => Promise<boolean>;
   updateMemberProfile: (
     memberId: string,
-    updates: { firstName?: string; nickname?: string; fullRosterName?: string; phone?: string; email?: string; pin?: string; isRegistered?: boolean }
+    updates: Partial<RouamaMember> & { newPhotoBase64?: string; [key: string]: any }
   ) => Promise<boolean>;
   resetAllData: () => void;
 }
@@ -785,7 +797,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           return orderA - orderB;
         });
 
-        setMembers(reconciledList);
+        // SYNCHRONISATION DU DÉFAUT :
+        // Conserver rigoureusement la photo chargée dans le state global (members) sans la réinitialiser au redémarrage ou après un rafraîchissement
+        setMembers((prevMembers) => {
+          const prevMap = new Map(prevMembers.map(m => [m.id, m]));
+          return reconciledList.map(item => {
+            const prevM = prevMap.get(item.id);
+            const preservedPhoto = item.photoUrl || item.avatar || prevM?.photoUrl || prevM?.avatar || undefined;
+            return {
+              ...item,
+              photoUrl: preservedPhoto,
+              avatar: preservedPhoto,
+            };
+          });
+        });
 
         // Mettre à jour l'utilisateur actif si c'est un membre et rafraîchir sa photo de profil
         setCurrentUser((prev) => {
@@ -817,6 +842,79 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
     );
     unsubscribes.push(unsubMembers);
+
+    // 2.bis COLLECTION 'users' (Synchronisation de la photo de profil chargée depuis la collection Firestore users)
+    const unsubUsers = onSnapshot(
+      collection(db, 'users'),
+      (snapshot) => {
+        if (snapshot.empty) return;
+        const usersPhotosMap = new Map<string, string>();
+        snapshot.docs.forEach((docSnap) => {
+          const d = docSnap.data() as any;
+          const p =
+            d.photoUrl ||
+            d.avatar ||
+            d.photoURL ||
+            d.profilePicture ||
+            d.avatarUrl ||
+            d.profileImage ||
+            d.image;
+          if (p && typeof p === 'string' && p.trim()) {
+            const clean = p.trim();
+            usersPhotosMap.set(docSnap.id, clean);
+            if (d.firstName) usersPhotosMap.set(normalizeRosterString(d.firstName), clean);
+            if (d.nickname) usersPhotosMap.set(normalizeRosterString(d.nickname), clean);
+          }
+        });
+
+        if (usersPhotosMap.size > 0) {
+          setMembers((prev) =>
+            prev.map((m) => {
+              const photoFromUsers =
+                usersPhotosMap.get(m.id) ||
+                usersPhotosMap.get(normalizeRosterString(m.firstName)) ||
+                usersPhotosMap.get(normalizeRosterString(m.nickname));
+              if (photoFromUsers && (!m.photoUrl || !m.avatar)) {
+                return {
+                  ...m,
+                  photoUrl: m.photoUrl || photoFromUsers,
+                  avatar: m.avatar || photoFromUsers,
+                };
+              }
+              return m;
+            })
+          );
+
+          setCurrentUser((prev) => {
+            if (prev && prev.type === 'MEMBER' && prev.member) {
+              const photoFromUsers =
+                usersPhotosMap.get(prev.member.id) ||
+                usersPhotosMap.get(normalizeRosterString(prev.member.firstName)) ||
+                usersPhotosMap.get(normalizeRosterString(prev.member.nickname));
+              if (photoFromUsers && (!prev.member.photoUrl || !prev.member.avatar)) {
+                const updated = {
+                  ...prev.member,
+                  photoUrl: prev.member.photoUrl || photoFromUsers,
+                  avatar: prev.member.avatar || photoFromUsers,
+                };
+                try {
+                  localStorage.setItem(
+                    EROUAMA_ACTIVE_SESSION_KEY,
+                    JSON.stringify({ ...prev, member: updated })
+                  );
+                } catch (e) {}
+                return { ...prev, member: updated };
+              }
+            }
+            return prev;
+          });
+        }
+      },
+      (err) => {
+        console.warn('Firestore users listener notification:', err);
+      }
+    );
+    unsubscribes.push(unsubUsers);
 
     // 3. CAISSES & TRÉSORERIE
     const unsubTreasury = onSnapshot(
@@ -3036,28 +3134,63 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
-  const updateMemberProfile = async (
+  // 1. PRESERVATION DE LA PHOTO DANS LES MISES À JOUR (UPDATE) :
+  // Dans les fonctions de mise à jour d'un membre (updateMember, saveProfile, editUser, updateMemberProfile) :
+  // Assure-toi de fusionner la nouvelle photo avec l'ancienne valeur si aucune nouvelle image n'est choisie lors de l'édition :
+  const updateMember = async (
     memberId: string,
-    updates: { firstName?: string; nickname?: string; fullRosterName?: string; phone?: string; email?: string; pin?: string; isRegistered?: boolean }
+    formFields: Partial<RouamaMember> & { newPhotoBase64?: string; [key: string]: any }
   ): Promise<boolean> => {
     try {
-      const memberRef = doc(db, 'members', memberId);
-      const cleaned = sanitizeFirestore(updates);
-      await setDoc(memberRef, cleaned, { merge: true });
+      const existingMemberData = (members.find(m => m.id === memberId) ||
+        (currentUser?.type === 'MEMBER' && (currentUser.member?.id === memberId || currentUser.id === memberId) ? currentUser.member : {}) ||
+        {}) as RouamaMember;
 
+      const newPhotoBase64 = formFields.newPhotoBase64 || formFields.photoUrl || formFields.avatar;
+      const preservedPhoto = newPhotoBase64 || existingMemberData.photoUrl || existingMemberData.avatar || '';
+
+      const updatedData: any = {
+        ...existingMemberData,
+        ...formFields,
+        photoUrl: preservedPhoto,
+        avatar: preservedPhoto,
+        updatedAt: new Date().toISOString(),
+      };
+      delete updatedData.newPhotoBase64;
+
+      // 2. SAUVEGARDE PROPRE DANS FIRESTORE :
+      // Utilise updateDoc ou setDoc(docRef, updatedData, { merge: true }) pour préserver tous les champs non modifiés (notamment photoUrl / avatar)
+      const memberRef = doc(db, 'members', memberId);
+      const cleaned = sanitizeFirestore(updatedData);
+
+      try {
+        await updateDoc(memberRef, cleaned);
+      } catch {
+        await setDoc(memberRef, cleaned, { merge: true });
+      }
+
+      // Synchronisation miroir propre dans 'users'
+      try {
+        await setDoc(doc(db, 'users', memberId), cleaned, { merge: true });
+      } catch (e) {
+        console.warn('Sync users doc:', e);
+      }
+
+      // Mise à jour synchrone du state global members
       setMembers(prev =>
-        prev.map(m => (m.id === memberId ? { ...m, ...updates } : m))
+        prev.map(m => (m.id === memberId ? { ...m, ...updatedData } : m))
       );
 
       // Si l'utilisateur connecté est ce membre, mettre à jour la session active
       setCurrentUser(prev => {
-        if (prev?.type === 'MEMBER' && prev.member?.id === memberId) {
-          const updatedMember = { ...prev.member, ...updates };
+        if (prev?.type === 'MEMBER' && (prev.member?.id === memberId || prev.id === memberId)) {
+          const updatedMember = { ...(prev.member || {}), ...updatedData };
           try {
             localStorage.setItem(
               EROUAMA_ACTIVE_SESSION_KEY,
               JSON.stringify({ ...prev, member: updatedMember })
             );
+            localStorage.setItem('rouama_user', JSON.stringify(updatedMember));
           } catch (e) {}
           return { ...prev, member: updatedMember };
         }
@@ -3066,10 +3199,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       return true;
     } catch (err) {
-      console.error('Erreur updateMemberProfile dans Firestore:', err);
+      console.error('Erreur updateMember dans Firestore:', err);
       return false;
     }
   };
+
+  const saveProfile = updateMember;
+  const editUser = updateMember;
+  const updateMemberProfile = updateMember;
 
   const assignMemberRole = (memberId: string, role?: AdminRole) => {
     setDoc(doc(db, 'members', memberId), { assignedRole: role || null }, { merge: true }).catch(console.warn);
@@ -3222,6 +3359,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         assignMemberRole,
         resetMemberPin,
         updateMemberAvatar,
+        updateMember,
+        saveProfile,
+        editUser,
         updateMemberProfile,
         resetAllData,
       }}
