@@ -97,9 +97,12 @@ export const FinancesTab: React.FC = () => {
     return `+${p}`;
   })();
 
-  // Format universel Wave (élimine définitivement l'erreur XML NoSuchKey)
-  const getWavePaymentLink = (amount?: number) => {
-    // 1. Vérifier si un lien marchand officiel (ex: https://pay.wave.com/m/M_XXXXXX) est fourni
+  // URL Marchand Wave Officiel E-ROUAMA (Djaï)
+  const WAVE_OFFICIAL_MERCHANT_URL = 'https://pay.wave.com/m/M_ci_GgJcnMC4q7hK/c/ci/';
+
+  // Format officiel Wave marchand (élimine définitivement les erreurs XML NoSuchKey et URLs obsolètes)
+  const getWavePaymentLink = (_amount?: number) => {
+    // 1. Priorité au lien marchand officiel configuré dans l'environnement ou par défaut
     const metaEnv = (import.meta as any)?.env || {};
     const customMerchant = (
       metaEnv.VITE_WAVE_MERCHANT_URL ||
@@ -111,15 +114,15 @@ export const FinancesTab: React.FC = () => {
       return customMerchant;
     }
 
-    // 2. Format direct officiel universel vers le compte Wave du Trésorier
-    return `https://wave.com/pay/${wavePhoneNumber}`;
+    // 2. URL Marchand Wave Officiel officiel E-ROUAMA
+    return WAVE_OFFICIAL_MERCHANT_URL;
   };
   const getWaveLink = getWavePaymentLink;
 
-  // Ouvrir l'application ou le lien marchand Wave avec gestion d'erreur
-  const openWaveApp = (e?: React.MouseEvent, amount?: number) => {
+  // Ouvrir directement le lien marchand officiel Wave dans un nouvel onglet
+  const openWaveApp = (e?: React.MouseEvent, _amount?: number) => {
     if (e) e.preventDefault();
-    const url = getWavePaymentLink(amount);
+    const url = getWavePaymentLink();
     try {
       const opened = window.open(url, '_blank', 'noopener,noreferrer');
       if (!opened || opened.closed || typeof opened.closed === 'undefined') {
@@ -817,13 +820,13 @@ export const FinancesTab: React.FC = () => {
               <div className="space-y-1.5 text-center lg:text-left">
                 <div className="inline-flex items-center gap-2 bg-white/20 px-3 py-1 rounded-full text-xs font-black tracking-wide">
                   <Smartphone className="w-4 h-4 text-cyan-200" />
-                  <span>WAVE MOBILE MONEY (DJAÏ) • COTISATIONS STATUTAIRES (500 F/MOIS)</span>
+                  <span>WAVE MARCHAND OFFICIEL (DJAÏ) • COTISATIONS STATUTAIRES (500 F/MOIS)</span>
                 </div>
                 <h3 className="text-xl sm:text-2xl font-black text-white">
                   Payer {monthlyAmount > 0 ? `${monthlyAmount.toLocaleString('fr-FR')} F CFA` : '0 F CFA'} ({monthlyMonthsCountDisplay}) via Wave
                 </h3>
                 <p className="text-xs sm:text-sm text-cyan-100 max-w-xl leading-relaxed">
-                  Paiement sécurisé et instantané. Cliquez pour ouvrir directement Wave, ou transférez manuellement vers le numéro officiel du Trésorier ci-dessous.
+                  Lien marchand officiel Wave sécurisé. Cliquez sur <strong>Payer via Wave</strong> pour régler directement en ligne, ou utilisez le numéro de secours ci-dessous si votre appareil n'a pas l'application Wave.
                 </p>
               </div>
 
@@ -855,7 +858,7 @@ export const FinancesTab: React.FC = () => {
               </div>
             </div>
 
-            {/* Numéro Officiel du Trésorier & Option Copie / Transfert Manuel en cas de bug réseau */}
+            {/* Numéro de secours du Trésorier & Option Copie / Transfert Manuel */}
             <div className="bg-sky-950/45 backdrop-blur-md rounded-2xl p-4 sm:p-5 border border-white/20 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
               <div className="flex items-center gap-3">
                 <div className="w-11 h-11 rounded-xl bg-cyan-400/25 border border-cyan-300/40 flex items-center justify-center text-cyan-200 shrink-0 text-xl font-bold shadow-inner">
@@ -863,7 +866,7 @@ export const FinancesTab: React.FC = () => {
                 </div>
                 <div>
                   <div className="text-[11px] font-black text-cyan-200 uppercase tracking-wider flex items-center gap-1.5 flex-wrap">
-                    <span>Compte Wave du Trésorier Général</span>
+                    <span>Numéro Wave de secours du Trésorier Général</span>
                     <span className="bg-cyan-500/30 text-cyan-100 text-[10px] px-2 py-0.5 rounded-full font-bold">
                       {tresorierDisplayName}
                     </span>
@@ -872,7 +875,7 @@ export const FinancesTab: React.FC = () => {
                     {formattedTresorierPhone}
                   </div>
                   <div className="text-[11px] text-cyan-100/80">
-                    Idéal en cas de bug réseau ou pour coller directement dans votre application Wave.
+                    Pour transfert manuel direct si vous êtes sur un appareil sans l'application Wave ou en cas de problème réseau.
                   </div>
                 </div>
               </div>
@@ -1451,13 +1454,13 @@ export const FinancesTab: React.FC = () => {
               <div className="space-y-1.5 text-center lg:text-left">
                 <div className="inline-flex items-center gap-2 bg-white/20 px-3 py-1 rounded-full text-xs font-black tracking-wide">
                   <Smartphone className="w-4 h-4 text-cyan-200" />
-                  <span>WAVE MOBILE MONEY (DJAÏ) • VERSEMENT PAR TRANCHE (ACOMPTE)</span>
+                  <span>WAVE MARCHAND OFFICIEL (DJAÏ) • VERSEMENT PAR TRANCHE (ACOMPTE)</span>
                 </div>
                 <h3 className="text-xl sm:text-2xl font-black text-white">
                   Réglez votre acompte ({numericTrancheAmount.toLocaleString('fr-FR')} F CFA) via Wave
                 </h3>
                 <p className="text-xs sm:text-sm text-cyan-100 max-w-xl leading-relaxed">
-                  Le bouton Wave s'active dès la saisie d'un versement conforme (minimum {minTrancheAllowed.toLocaleString('fr-FR')} F CFA). Cliquez pour ouvrir Wave ou copiez le numéro du Trésorier ci-dessous.
+                  Lien marchand officiel Wave sécurisé. Cliquez sur <strong>Effectuer mon dépôt Wave</strong> pour régler directement en ligne, ou utilisez le numéro de secours ci-dessous si votre appareil n'a pas l'application Wave.
                 </p>
               </div>
 
@@ -1489,7 +1492,7 @@ export const FinancesTab: React.FC = () => {
               </div>
             </div>
 
-            {/* Numéro Officiel du Trésorier & Option Copie / Transfert Manuel en cas de bug réseau */}
+            {/* Numéro de secours du Trésorier & Option Copie / Transfert Manuel */}
             <div className="bg-sky-950/45 backdrop-blur-md rounded-2xl p-4 sm:p-5 border border-white/20 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
               <div className="flex items-center gap-3">
                 <div className="w-11 h-11 rounded-xl bg-cyan-400/25 border border-cyan-300/40 flex items-center justify-center text-cyan-200 shrink-0 text-xl font-bold shadow-inner">
@@ -1497,7 +1500,7 @@ export const FinancesTab: React.FC = () => {
                 </div>
                 <div>
                   <div className="text-[11px] font-black text-cyan-200 uppercase tracking-wider flex items-center gap-1.5 flex-wrap">
-                    <span>Compte Wave du Trésorier Général</span>
+                    <span>Numéro Wave de secours du Trésorier Général</span>
                     <span className="bg-cyan-500/30 text-cyan-100 text-[10px] px-2 py-0.5 rounded-full font-bold">
                       {tresorierDisplayName}
                     </span>
@@ -1506,7 +1509,7 @@ export const FinancesTab: React.FC = () => {
                     {formattedTresorierPhone}
                   </div>
                   <div className="text-[11px] text-cyan-100/80">
-                    Idéal en cas de bug réseau ou pour coller directement dans votre application Wave.
+                    Pour transfert manuel direct si vous êtes sur un appareil sans l'application Wave ou en cas de problème réseau.
                   </div>
                 </div>
               </div>
