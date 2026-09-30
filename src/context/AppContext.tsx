@@ -1513,13 +1513,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return defaultAdmin;
     });
 
-    const cleanInput = inputRoleOrLogin.trim().toUpperCase();
+    const cleanInput = inputRoleOrLogin.trim().toUpperCase().replace(/[\s-]/g, '_');
     const adminDef = effectiveAdmins.find(
       a =>
         a.id.toUpperCase() === cleanInput ||
         (a.loginId && a.loginId.toUpperCase() === cleanInput) ||
         a.roleName.toUpperCase() === cleanInput ||
-        a.roleName.toUpperCase().includes(cleanInput)
+        a.roleName.toUpperCase().includes(cleanInput) ||
+        ((cleanInput === 'RESP_PROGRAMME' || cleanInput === 'SUIVI_PROGRAMME' || cleanInput.includes('PROGRAMME')) && a.id === 'SDP') ||
+        ((cleanInput === 'ORGANISATEUR' || cleanInput.includes('ORGANI')) && a.id === 'ORGANISATION') ||
+        ((cleanInput === 'RESP_PROJET' || cleanInput === 'RESPO_PROJET' || cleanInput.includes('PROJET')) && a.id === 'PROJET') ||
+        ((cleanInput === 'SUPER_ADMIN' || cleanInput === 'SUPERADMIN' || cleanInput === 'ADMIN_GENERAL') && a.id === 'SUPER_ADMIN')
     );
     if (!adminDef) {
       return { success: false, message: 'Identifiant Administrateur invalide.' };

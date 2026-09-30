@@ -62,6 +62,124 @@ import {
   Megaphone,
 } from 'lucide-react';
 
+// Configuration des métadonnées de consoles RBAC
+const CONSOLE_CONFIG: Record<AdminRole, { label: string; icon: string; shortName: string; description: string }> = {
+  CERVEAU: {
+    label: 'Le Cerveau (Présidence)',
+    icon: '👑',
+    shortName: 'Présidence',
+    description: 'Verrouillage des décaissements, validation des retraits et diffusion des alertes financières publiques',
+  },
+  TRESORIER: {
+    label: 'Trésorerie Générale',
+    icon: '💰',
+    shortName: 'Trésorerie',
+    description: 'Gestion des caisses, validation des dépôts, demandes de décaissement, relances WhatsApp et bilans',
+  },
+  PAYOR: {
+    label: 'Espace Payor',
+    icon: '⚖️',
+    shortName: 'Payor',
+    description: 'Validation administrative des PV, Règlements, Programmes et Projets avant transmission à la BIC',
+  },
+  SECRETARIAT: {
+    label: 'Secrétariat Général',
+    icon: '📝',
+    shortName: 'Secrétariat',
+    description: 'Rédaction des PV, présences, réception des bilans financiers et suivi du système d’accusé de réception (ACK)',
+  },
+  COM: {
+    label: "Base d'Information et de Communication (BIC)",
+    icon: '📢',
+    shortName: 'BIC / Com',
+    description: "Base d'information et de communication pour la diffusion aux membres, validation avec accusé de réception (ACK) et ciblage",
+  },
+  ORGANISATION: {
+    label: 'Commission Organisation',
+    icon: '🎪',
+    shortName: 'Organisation',
+    description: 'Création d’événements, attribution des comités ad-hoc, dossier unifié programme & budget prévisionnel',
+  },
+  PROJET: {
+    label: 'Commission Projets (AGR)',
+    icon: '🚀',
+    shortName: 'Projets AGR',
+    description: 'Montage des projets d’investissement rentables (AGR) et suivi des études de faisabilité',
+  },
+  SPIRITUALITE: {
+    label: 'Département Spiritualité',
+    icon: '🕊️',
+    shortName: 'Spiritualité',
+    description: 'Diffusion de la Prière ROUAMA, liturgie AELF, événements religieux et verset du jour',
+  },
+  SDP: {
+    label: 'Chargé du Suivi du Programme',
+    icon: '🕵️',
+    shortName: 'Suivi Programme',
+    description: 'Auditeur & Contrôleur interne : supervision des tâches, respect des résolutions et du calendrier annuel par tous les départements',
+  },
+  RESP_PROGRAMME: {
+    label: 'Chargé du Suivi du Programme',
+    icon: '🕵️',
+    shortName: 'Suivi Programme',
+    description: 'Auditeur & Contrôleur interne : supervision des tâches, respect des résolutions et du calendrier annuel par tous les départements',
+  },
+  SUPER_ADMIN: {
+    label: 'Super Administrateur',
+    icon: '🛡️',
+    shortName: 'Super Admin',
+    description: 'Présidence & Supervision Générale : accès souverain à l’ensemble des consoles décisionnelles',
+  },
+};
+
+// Normalisation infaillible du rôle utilisateur (insensible à la casse, espaces, tirets et alias)
+const normalizeAdminRole = (raw?: string): AdminRole => {
+  if (!raw) return 'TRESORIER';
+  const clean = raw.trim().toUpperCase().replace(/[\s-]/g, '_');
+  if (clean === 'SUPER_ADMIN' || clean === 'SUPERADMIN' || clean === 'ADMIN_GENERAL' || clean === 'ADMIN') return 'SUPER_ADMIN';
+  if (clean === 'SDP' || clean === 'RESP_PROGRAMME' || clean === 'SUIVI_PROGRAMME' || clean.includes('PROGRAMME') || clean.includes('SUIVI')) return 'SDP';
+  if (clean === 'ORGANISATION' || clean === 'ORGANISATEUR' || clean.includes('ORGANI')) return 'ORGANISATION';
+  if (clean === 'PROJET' || clean === 'RESP_PROJET' || clean === 'RESPO_PROJET' || clean.includes('PROJET')) return 'PROJET';
+  if (clean === 'CERVEAU' || clean.includes('CERVEAU') || clean.includes('PRESIDENT')) return 'CERVEAU';
+  if (clean === 'PAYOR') return 'PAYOR';
+  if (clean === 'SECRETARIAT' || clean.includes('SECRETA')) return 'SECRETARIAT';
+  if (clean === 'COM' || clean.includes('COMMUN') || clean === 'BIC') return 'COM';
+  if (clean === 'SPIRITUALITE' || clean.includes('SPIRIT')) return 'SPIRITUALITE';
+  if (clean === 'TRESORIER' || clean.includes('TRESO')) return 'TRESORIER';
+  return 'TRESORIER';
+};
+
+// Matrice RBAC stricte des consoles autorisées par rôle
+const getAllowedConsolesForRole = (userRole: AdminRole): AdminRole[] => {
+  if (userRole === 'SUPER_ADMIN') {
+    return ['CERVEAU', 'TRESORIER', 'PAYOR', 'SECRETARIAT', 'COM', 'ORGANISATION', 'PROJET', 'SPIRITUALITE', 'SDP'];
+  }
+  // Sectorisation stricte : chaque rôle simple n'a accès qu'à sa propre console
+  switch (userRole) {
+    case 'CERVEAU':
+      return ['CERVEAU'];
+    case 'PAYOR':
+      return ['PAYOR'];
+    case 'TRESORIER':
+      return ['TRESORIER'];
+    case 'ORGANISATION':
+      return ['ORGANISATION'];
+    case 'PROJET':
+      return ['PROJET'];
+    case 'SECRETARIAT':
+      return ['SECRETARIAT'];
+    case 'COM':
+      return ['COM'];
+    case 'SPIRITUALITE':
+      return ['SPIRITUALITE'];
+    case 'SDP':
+    case 'RESP_PROGRAMME':
+      return ['SDP'];
+    default:
+      return ['TRESORIER'];
+  }
+};
+
 // Helper pour normaliser les rôles Ad-Hoc en tableau de chaînes
 const normalizeRoleArray = (val?: string[] | string): string[] => {
   if (!val) return [];
@@ -302,9 +420,32 @@ export const AdminPortal: React.FC = () => {
     programmeAlerts,
   } = useApp();
 
-  // User's native admin role
-  const userAdminRole = currentUser?.adminRole || 'TRESORIER';
-  const activeRole: AdminRole = userAdminRole;
+  // Détermination du rôle natif normalisé de l'utilisateur connecté
+  const userNativeRole: AdminRole = useMemo(() => {
+    return normalizeAdminRole(currentUser?.adminRole);
+  }, [currentUser?.adminRole]);
+
+  // Consoles autorisées selon le RBAC strict
+  const allowedConsoles: AdminRole[] = useMemo(() => {
+    return getAllowedConsolesForRole(userNativeRole);
+  }, [userNativeRole]);
+
+  // Console active sélectionnée (par défaut la 1ère console autorisée)
+  const [selectedRole, setSelectedRole] = useState<AdminRole>(() => {
+    return allowedConsoles[0] || 'TRESORIER';
+  });
+
+  // Synchronisation en cas de changement de session ou rôle
+  useEffect(() => {
+    if (!allowedConsoles.includes(selectedRole)) {
+      setSelectedRole(allowedConsoles[0] || 'TRESORIER');
+    }
+  }, [allowedConsoles, selectedRole]);
+
+  // Console active effective (garantie absolue anti-écran vide)
+  const activeRole: AdminRole = allowedConsoles.includes(selectedRole)
+    ? selectedRole
+    : (allowedConsoles[0] || 'TRESORIER');
 
   // 1. RECALCUL AUTOMATIQUE ET DYNAMIQUE DES SOLDES (FIRESTORE) :
   const calculateBalances = (paymentsList: any[]) => {
@@ -2657,7 +2798,12 @@ export const AdminPortal: React.FC = () => {
         <div className="relative z-10 flex flex-col md:flex-row items-start md:items-center justify-between gap-6">
           <div className="space-y-2">
             <div className="inline-flex items-center gap-2 bg-[#E67E22] text-white px-3.5 py-1 rounded-full text-xs font-black tracking-wide shadow-md">
-              {activeRole === 'SDP' ? (
+              {userNativeRole === 'SUPER_ADMIN' ? (
+                <>
+                  <span className="text-sm">👑</span>
+                  <span>SUPER ADMINISTRATEUR • SUPERVISION GÉNÉRALE MULTI-CONSOLES</span>
+                </>
+              ) : activeRole === 'SDP' ? (
                 <>
                   <span className="text-sm">🕵️</span>
                   <span>SUIVI PROGRAMME • AUDITEUR & CONTRÔLEUR INTERNE</span>
@@ -2665,22 +2811,18 @@ export const AdminPortal: React.FC = () => {
               ) : (
                 <>
                   <Shield className="w-4 h-4" />
-                  <span>CONSOLE MULTI-RÔLES ADMIN • COCKPIT DÉCISIONNEL</span>
+                  <span>CONSOLE SECTORISÉE • {CONSOLE_CONFIG[activeRole]?.label?.toUpperCase()}</span>
                 </>
               )}
             </div>
 
             <h1 className="text-2xl sm:text-4xl font-black text-white tracking-tight flex items-center gap-3 flex-wrap">
               <span>
-                {activeRole === 'TRESORIER' && 'TRÉSORERIE GÉNÉRALE'}
-                {activeRole === 'CERVEAU' && 'LE CERVEAU (PRÉSIDENCE)'}
-                {activeRole === 'PAYOR' && 'ESPACE PAYOR'}
-                {activeRole === 'SECRETARIAT' && 'SECRÉTARIAT GÉNÉRAL'}
-                {activeRole === 'COM' && "BASE D'INFORMATION ET DE COMMUNICATION (BIC)"}
-                {activeRole === 'ORGANISATION' && 'COMMISSION ORGANISATION'}
-                {activeRole === 'PROJET' && 'COMMISSION PROJETS (AGR)'}
-                {activeRole === 'SPIRITUALITE' && 'DÉPARTEMENT SPIRITUALITÉ'}
-                {activeRole === 'SDP' && 'CHARGÉ DU SUIVI DU PROGRAMME'}
+                {userNativeRole === 'SUPER_ADMIN' ? (
+                  <>SUPERVISION : {CONSOLE_CONFIG[activeRole]?.label?.toUpperCase()}</>
+                ) : (
+                  <>{CONSOLE_CONFIG[activeRole]?.label?.toUpperCase()}</>
+                )}
               </span>
               {activeRole === 'SDP' && (
                 <span className="text-xs bg-amber-500 text-slate-950 px-3 py-1 rounded-full font-black uppercase tracking-wider shadow-md">
@@ -2690,9 +2832,36 @@ export const AdminPortal: React.FC = () => {
             </h1>
 
             <p className="text-xs sm:text-sm text-slate-400 font-medium max-w-2xl">
-              {ADMIN_USERS.find(a => a.id === activeRole)?.description}
+              {CONSOLE_CONFIG[activeRole]?.description}
             </p>
           </div>
+
+          {/* SÉLECTEUR DE CONSOLE MULTI-RÔLES : AFFICHÉ UNIQUEMENT POUR SUPER_ADMIN */}
+          {userNativeRole === 'SUPER_ADMIN' && allowedConsoles.length > 1 && (
+            <div className="flex flex-col gap-2 shrink-0 bg-slate-950/90 p-3 rounded-2xl border border-amber-500/40 shadow-inner max-w-full">
+              <span className="text-[10px] font-black uppercase text-amber-300 tracking-wider flex items-center gap-1.5">
+                <span>👑</span>
+                <span>Navigation Inter-Consoles (Super Admin) :</span>
+              </span>
+              <div className="flex flex-wrap items-center gap-1.5">
+                {allowedConsoles.map(r => (
+                  <button
+                    key={r}
+                    type="button"
+                    onClick={() => setSelectedRole(r)}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
+                      activeRole === r
+                        ? 'bg-amber-500 text-slate-950 shadow-md font-black scale-102 border border-amber-300'
+                        : 'text-slate-300 hover:text-white hover:bg-slate-800'
+                    }`}
+                  >
+                    <span>{CONSOLE_CONFIG[r]?.icon}</span>
+                    <span>{CONSOLE_CONFIG[r]?.shortName}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       </div>
 

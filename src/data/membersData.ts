@@ -176,4 +176,12 @@ export const ADMIN_USERS: AdminUser[] = [
     password: '2626',
     description: 'Auditeur & Contrôleur interne : supervision des tâches, respect des résolutions et du calendrier annuel par tous les départements',
   },
+  {
+    id: 'SUPER_ADMIN',
+    loginId: 'SUPER_ADMIN',
+    roleName: 'Super Administrateur',
+    pin: '7777',
+    password: '7777',
+    description: 'Présidence & Supervision Générale : accès souverain à l’ensemble des consoles décisionnelles',
+  },
 ];
