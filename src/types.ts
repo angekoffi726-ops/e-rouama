@@ -1,4 +1,44 @@
-export type AdminRole = 'TRESORIER' | 'CERVEAU' | 'PAYOR' | 'SECRETARIAT' | 'COM' | 'ORGANISATION' | 'PROJET' | 'SPIRITUALITE';
+export type AdminRole = 'TRESORIER' | 'CERVEAU' | 'PAYOR' | 'SECRETARIAT' | 'COM' | 'ORGANISATION' | 'PROJET' | 'SPIRITUALITE' | 'SDP';
+
+export type DepartmentRole = 'SECRETARIAT' | 'TRESORIER' | 'PROJET' | 'ORGANISATION' | 'SPIRITUALITE' | 'COM' | 'CERVEAU';
+
+export type TaskStatus = 'IN_PROGRESS' | 'WARNING' | 'OVERDUE' | 'COMPLETED';
+
+export interface ProgrammeTask {
+  id: string;
+  department: DepartmentRole;
+  departmentName: string;
+  source: 'PV' | 'PROJET' | 'ACTIVITE' | 'CALENDRIER' | 'MANUAL';
+  sourceTitle?: string;
+  sourceId?: string;
+  title: string;
+  description: string;
+  assignedTo?: string; // Responsable / membre
+  deadline: string; // YYYY-MM-DD
+  status: TaskStatus;
+  lastReminderSentAt?: string;
+  remindersCount?: number;
+  notes?: string;
+  createdAt: string;
+  completedAt?: string;
+}
+
+export interface ProgrammeAlert {
+  id: string;
+  taskId?: string;
+  taskTitle?: string;
+  targetDepartment: DepartmentRole;
+  targetDepartmentName: string;
+  title: string;
+  message: string;
+  severity: 'INFO' | 'WARNING' | 'CRITICAL';
+  status: 'PENDING' | 'RESOLVED';
+  sentAt: string;
+  sentBy?: string; // "Chargé du Suivi du Programme (SDP)"
+  targetPhone?: string;
+  acknowledgedAt?: string;
+  resolvedAt?: string;
+}
 
 export type TabType = 'DASHBOARD' | 'PRIERE_ROUAMA' | 'FINANCES' | 'NOUVELLES' | 'ACTIVITES' | 'PROJETS' | 'ARCHIVES';
 

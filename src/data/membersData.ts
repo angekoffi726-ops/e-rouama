@@ -168,4 +168,12 @@ export const ADMIN_USERS: AdminUser[] = [
     pin: '5050',
     description: 'Diffusion de la Prière ROUAMA, liturgie AELF, événements religieux et verset du jour',
   },
+  {
+    id: 'SDP',
+    loginId: 'SDP',
+    roleName: 'Chargé du Suivi du Programme',
+    pin: '2626',
+    password: '2626',
+    description: 'Auditeur & Contrôleur interne : supervision des tâches, respect des résolutions et du calendrier annuel par tous les départements',
+  },
 ];

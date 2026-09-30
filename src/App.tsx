@@ -123,7 +123,7 @@ function MainLayout() {
               </div>
               <h1 className="text-2xl sm:text-3xl font-black tracking-tight text-white">E-ROUAMA</h1>
               <span className="bg-slate-900 text-amber-300 px-3 py-1 rounded-full text-xs font-black uppercase tracking-wider border border-amber-300/30">
-                🛡️ CONSOLE ADMIN : {adminRoleDef?.roleName || currentUser?.adminRole}
+                {currentUser?.adminRole === 'SDP' ? '🕵️ SUIVI PROGRAMME' : `🛡️ CONSOLE ADMIN : ${adminRoleDef?.roleName || currentUser?.adminRole}`}
               </span>
             </div>
             <p className="text-[11px] sm:text-xs text-amber-100 italic mt-0.5">

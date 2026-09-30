@@ -51,7 +51,9 @@ export const Header: React.FC<{ onOpenAdminModal?: () => void }> = ({ onOpenAdmi
   const nicknameDisplay = isMember
     ? currentUser?.member?.nickname || ''
     : isAdmin
-    ? ADMIN_USERS.find(a => a.id === currentUser?.adminRole)?.roleName || currentUser?.adminRole || ''
+    ? currentUser?.adminRole === 'SDP'
+      ? '🕵️ SUIVI PROGRAMME'
+      : (ADMIN_USERS.find(a => a.id === currentUser?.adminRole)?.roleName || currentUser?.adminRole || '')
     : '';
 
   const fullNameDisplay = isMember

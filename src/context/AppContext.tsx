@@ -15,6 +15,8 @@ import {
   ArchiveDoc,
   SecretaryPV,
   FinancialBilan,
+  ProgrammeTask,
+  ProgrammeAlert,
   TargetAudience,
   DuesStatus,
   MemberDuesDetail,
@@ -59,6 +61,15 @@ interface AppContextType {
   pvs: SecretaryPV[];
   bilans: FinancialBilan[];
   isFirebaseConnected: boolean;
+
+  // Suivi du Programme & Alertes Auditeur (SDP)
+  programmeTasks: ProgrammeTask[];
+  programmeAlerts: ProgrammeAlert[];
+  addProgrammeTask: (task: Omit<ProgrammeTask, 'id' | 'createdAt'>) => Promise<{ success: boolean; id: string }>;
+  updateProgrammeTask: (taskId: string, updates: Partial<ProgrammeTask>) => Promise<{ success: boolean }>;
+  deleteProgrammeTask: (taskId: string) => Promise<{ success: boolean }>;
+  createProgrammeAlert: (alert: Omit<ProgrammeAlert, 'id' | 'sentAt' | 'status'>) => Promise<{ success: boolean; id: string }>;
+  resolveProgrammeAlert: (alertId: string) => Promise<{ success: boolean }>;
 
   // Spiritualité
   verseOfTheDay: VerseOfTheDay | null;
@@ -322,7 +333,8 @@ export function getStoredAdminCredentials(): AdminUser[] {
             return {
               ...defaultAdmin,
               loginId: found.loginId || defaultAdmin.loginId,
-              pin: found.pin || defaultAdmin.pin,
+              pin: found.pin || found.password || defaultAdmin.pin,
+              password: found.password || found.pin || defaultAdmin.password || defaultAdmin.pin,
             };
           }
           return defaultAdmin;
@@ -415,6 +427,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   });
   const [prayerIntentions, setPrayerIntentions] = useState<PrayerIntention[]>([]);
   const [religiousEvents, setReligiousEvents] = useState<ReligiousEvent[]>([]);
+  const [programmeTasks, setProgrammeTasks] = useState<ProgrammeTask[]>([]);
+  const [programmeAlerts, setProgrammeAlerts] = useState<ProgrammeAlert[]>([]);
 
   // Sauvegarder la session active locale
   useEffect(() => {
@@ -1119,14 +1133,42 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (docSnap.exists()) {
         const data = docSnap.data();
         if (data && Array.isArray(data.list) && data.list.length > 0) {
-          setAdminUsers(prev => {
-            return data.list.map((item: any) => ({
-              ...item,
-              pin: item.password || item.pin,
-              password: item.password || item.pin,
-            }));
+          const firestoreList = data.list.map((item: any) => ({
+            ...item,
+            pin: item.password || item.pin,
+            password: item.password || item.pin,
+          }));
+
+          const merged = ADMIN_USERS.map(defaultAdmin => {
+            const found = firestoreList.find((p: any) => p.id === defaultAdmin.id);
+            if (found) {
+              return {
+                ...defaultAdmin,
+                loginId: found.loginId || defaultAdmin.loginId,
+                pin: found.pin || found.password || defaultAdmin.pin,
+                password: found.password || found.pin || defaultAdmin.password || defaultAdmin.pin,
+              };
+            }
+            return defaultAdmin;
           });
+
+          // Si un rôle système comme SDP n'est pas encore présent dans Firestore credentials, on l'y enregistre
+          const missingRoles = ADMIN_USERS.filter(def => !firestoreList.some((p: any) => p.id === def.id));
+          if (missingRoles.length > 0) {
+            setDoc(doc(db, 'admin', 'credentials'), { list: sanitizeFirestore(merged) }, { merge: true }).catch(console.warn);
+            missingRoles.forEach(m => {
+              setDoc(doc(db, 'admins', m.id), sanitizeFirestore(m), { merge: true }).catch(console.warn);
+            });
+          }
+
+          setAdminUsers(merged);
         }
+      } else {
+        // Document inexistant : initialisation immédiate avec tous les rôles par défaut
+        setDoc(doc(db, 'admin', 'credentials'), { list: sanitizeFirestore(ADMIN_USERS) }, { merge: true }).catch(console.warn);
+        ADMIN_USERS.forEach(a => {
+          setDoc(doc(db, 'admins', a.id), sanitizeFirestore(a), { merge: true }).catch(console.warn);
+        });
       }
     });
     unsubscribes.push(unsubAdmins);
@@ -1135,6 +1177,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (!snapshot.empty) {
         setAdminUsers(prev => {
           const map = new Map<string, AdminUser>();
+          // Toujours initialiser avec les rôles par défaut de ADMIN_USERS
+          ADMIN_USERS.forEach(a => map.set(a.id, a));
           prev.forEach(a => map.set(a.id, a));
           snapshot.forEach(d => {
             const data = d.data() as any;
@@ -1147,6 +1191,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                 pin: pwd,
                 password: pwd,
               });
+            } else {
+              map.set(d.id as any, {
+                id: d.id as any,
+                loginId: data.loginId || d.id,
+                roleName: data.roleName || d.id,
+                pin: pwd,
+                password: pwd,
+                description: data.description || '',
+              });
             }
           });
           return Array.from(map.values());
@@ -1154,6 +1207,23 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
     });
     unsubscribes.push(unsubAdminsColl);
+
+    // 13. SUIVI DU PROGRAMME & ALERTES (SDP)
+    const unsubProgTasks = onSnapshot(collection(db, 'programme_tasks'), (snapshot) => {
+      const loaded: ProgrammeTask[] = [];
+      snapshot.forEach(d => loaded.push({ id: d.id, ...(d.data() as any) }));
+      loaded.sort((a, b) => (a.deadline || '').localeCompare(b.deadline || ''));
+      setProgrammeTasks(loaded);
+    });
+    unsubscribes.push(unsubProgTasks);
+
+    const unsubProgAlerts = onSnapshot(collection(db, 'programme_alerts'), (snapshot) => {
+      const loaded: ProgrammeAlert[] = [];
+      snapshot.forEach(d => loaded.push({ id: d.id, ...(d.data() as any) }));
+      loaded.sort((a, b) => (b.sentAt || '').localeCompare(a.sentAt || ''));
+      setProgrammeAlerts(loaded);
+    });
+    unsubscribes.push(unsubProgAlerts);
 
     return () => {
       unsubscribes.forEach(u => u());
@@ -1428,11 +1498,27 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const storedAdmins = getStoredAdminCredentials();
     const currentAdmins = adminUsers && adminUsers.length > 0 ? adminUsers : storedAdmins;
 
+    // Garantir que tous les rôles par défaut de ADMIN_USERS (dont SDP) sont toujours présents et reconnus
+    const effectiveAdmins = ADMIN_USERS.map(defaultAdmin => {
+      const live = (currentAdmins || []).find(a => a.id === defaultAdmin.id);
+      if (live) {
+        return {
+          ...defaultAdmin,
+          ...live,
+          loginId: live.loginId || defaultAdmin.loginId,
+          pin: live.pin || live.password || defaultAdmin.pin,
+          password: live.password || live.pin || defaultAdmin.password || defaultAdmin.pin,
+        };
+      }
+      return defaultAdmin;
+    });
+
     const cleanInput = inputRoleOrLogin.trim().toUpperCase();
-    const adminDef = currentAdmins.find(
+    const adminDef = effectiveAdmins.find(
       a =>
         a.id.toUpperCase() === cleanInput ||
         (a.loginId && a.loginId.toUpperCase() === cleanInput) ||
+        a.roleName.toUpperCase() === cleanInput ||
         a.roleName.toUpperCase().includes(cleanInput)
     );
     if (!adminDef) {
@@ -1440,7 +1526,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
 
     const expectedPassword = adminDef.password || adminDef.pin;
-    if (!pin || (expectedPassword !== pin && adminDef.pin !== pin)) {
+    const cleanPin = (pin || '').trim();
+    if (!cleanPin || (expectedPassword !== cleanPin && adminDef.pin !== cleanPin && adminDef.password !== cleanPin)) {
       return { success: false, message: 'Mot de passe Administrateur incorrect.' };
     }
 
@@ -3229,6 +3316,105 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
+  // =========================================================
+  // GESTION DU SUIVI DU PROGRAMME & ALERTES (SDP)
+  // =========================================================
+  const addProgrammeTask = async (taskData: Omit<ProgrammeTask, 'id' | 'createdAt'>): Promise<{ success: boolean; id: string }> => {
+    const id = `TASK-${Date.now()}`;
+    const newTask: ProgrammeTask = {
+      ...taskData,
+      id,
+      createdAt: new Date().toISOString(),
+    };
+    try {
+      await setDoc(doc(db, 'programme_tasks', id), sanitizeFirestore(newTask), { merge: true });
+      setProgrammeTasks(prev => {
+        const next = [...prev.filter(t => t.id !== id), newTask];
+        return next.sort((a, b) => (a.deadline || '').localeCompare(b.deadline || ''));
+      });
+      return { success: true, id };
+    } catch (err) {
+      console.warn('Erreur addProgrammeTask:', err);
+      return { success: false, id: '' };
+    }
+  };
+
+  const updateProgrammeTask = async (taskId: string, updates: Partial<ProgrammeTask>): Promise<{ success: boolean }> => {
+    try {
+      await updateDoc(doc(db, 'programme_tasks', taskId), sanitizeFirestore(updates));
+      setProgrammeTasks(prev =>
+        prev.map(t => (t.id === taskId ? { ...t, ...updates } : t))
+      );
+      return { success: true };
+    } catch (err) {
+      console.warn('Erreur updateProgrammeTask:', err);
+      return { success: false };
+    }
+  };
+
+  const deleteProgrammeTask = async (taskId: string): Promise<{ success: boolean }> => {
+    try {
+      await deleteDoc(doc(db, 'programme_tasks', taskId));
+      setProgrammeTasks(prev => prev.filter(t => t.id !== taskId));
+      return { success: true };
+    } catch (err) {
+      console.warn('Erreur deleteProgrammeTask:', err);
+      return { success: false };
+    }
+  };
+
+  const createProgrammeAlert = async (alertData: Omit<ProgrammeAlert, 'id' | 'sentAt' | 'status'>): Promise<{ success: boolean; id: string }> => {
+    const id = `ALERT-${Date.now()}`;
+    const newAlert: ProgrammeAlert = {
+      ...alertData,
+      id,
+      status: 'PENDING',
+      sentAt: new Date().toISOString(),
+      sentBy: 'Chargé du Suivi du Programme (SDP)',
+    };
+    try {
+      await setDoc(doc(db, 'programme_alerts', id), sanitizeFirestore(newAlert), { merge: true });
+      setProgrammeAlerts(prev => [newAlert, ...prev.filter(a => a.id !== id)]);
+
+      if (alertData.taskId) {
+        const existingTask = programmeTasks.find(t => t.id === alertData.taskId);
+        if (existingTask) {
+          const remCount = (existingTask.remindersCount || 0) + 1;
+          const taskUpdates: Partial<ProgrammeTask> = {
+            remindersCount: remCount,
+            lastReminderSentAt: new Date().toISOString(),
+          };
+          if (existingTask.status !== 'COMPLETED') {
+            taskUpdates.status = 'WARNING';
+          }
+          await updateDoc(doc(db, 'programme_tasks', alertData.taskId), sanitizeFirestore(taskUpdates));
+          setProgrammeTasks(prev => prev.map(t => (t.id === alertData.taskId ? { ...t, ...taskUpdates } : t)));
+        }
+      }
+      return { success: true, id };
+    } catch (err) {
+      console.warn('Erreur createProgrammeAlert:', err);
+      return { success: false, id: '' };
+    }
+  };
+
+  const resolveProgrammeAlert = async (alertId: string): Promise<{ success: boolean }> => {
+    try {
+      const nowIso = new Date().toISOString();
+      await updateDoc(doc(db, 'programme_alerts', alertId), {
+        status: 'RESOLVED',
+        resolvedAt: nowIso,
+      });
+      setProgrammeAlerts(prev =>
+        prev.map(a => (a.id === alertId ? { ...a, status: 'RESOLVED', resolvedAt: nowIso } : a))
+      );
+      return { success: true };
+    } catch (err) {
+      console.warn('Erreur resolveProgrammeAlert:', err);
+      return { success: false };
+    }
+  };
+
   const updateVerseOfTheDay = (verse: string, reference?: string) => {
     const updated: VerseOfTheDay = {
       verse,
@@ -3288,6 +3474,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         pvs,
         bilans,
         isFirebaseConnected,
+        programmeTasks,
+        programmeAlerts,
+        addProgrammeTask,
+        updateProgrammeTask,
+        deleteProgrammeTask,
+        createProgrammeAlert,
+        resolveProgrammeAlert,
         verseOfTheDay,
         prayerIntentions,
         religiousEvents,

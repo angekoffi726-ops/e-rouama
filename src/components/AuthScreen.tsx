@@ -465,24 +465,24 @@ export const AuthScreen: React.FC = () => {
           <form onSubmit={handleAdminLogin} className="space-y-5">
             <div>
               <label className="block text-xs font-bold text-slate-800 uppercase tracking-wider mb-2">
-                ID
+                ID (Rôle ou Identifiant)
               </label>
               <input
                 type="text"
-                placeholder=""
+                placeholder="ex: SDP, TRESORIER, CERVEAU..."
                 value={adminRoleInput}
                 onChange={e => setAdminRoleInput(e.target.value)}
-                className="w-full bg-[#F5EEDC]/50 border-2 border-[#E67E22]/40 rounded-2xl px-4 py-3 text-sm font-bold text-slate-900 focus:outline-none focus:border-[#E67E22] transition-all"
+                className="w-full bg-[#F5EEDC]/50 border-2 border-[#E67E22]/40 rounded-2xl px-4 py-3 text-sm font-bold text-slate-900 focus:outline-none focus:border-[#E67E22] transition-all uppercase"
               />
             </div>
 
             <div>
               <label className="block text-xs font-bold text-slate-800 uppercase tracking-wider mb-2">
-                MDP
+                MDP (Mot de Passe / PIN)
               </label>
               <input
                 type="password"
-                placeholder=""
+                placeholder="••••"
                 value={adminPinInput}
                 onChange={e => setAdminPinInput(e.target.value)}
                 className="w-full bg-[#F5EEDC]/50 border-2 border-[#E67E22]/40 rounded-2xl px-4 py-3 text-center text-xl font-bold tracking-widest text-slate-900 focus:outline-none focus:border-[#E67E22] transition-all"

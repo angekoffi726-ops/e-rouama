@@ -101,6 +101,14 @@ service cloud.firestore {
       allow read, write: if true;
     }
 
+    // 18. Suivi du Programme & Alertes Auditeur (SDP)
+    match /programme_tasks/{taskId} {
+      allow read, write: if true;
+    }
+    match /programme_alerts/{alertId} {
+      allow read, write: if true;
+    }
+
     // Refus par défaut pour toute autre collection non répertoriée
     match /{document=**} {
       allow read, write: if false;

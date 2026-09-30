@@ -10,6 +10,7 @@ import { fetchAELFDailyReadings, AELFDayData } from '../../utils/aelfService';
 import { getDailyVerseForDate, PRAYER_ROUAMA } from '../../utils/versesData';
 import { RbacWarningBanner } from './RbacWarningBanner';
 import { CerveauMembersCredentialsViewer } from './CerveauMembersCredentialsViewer';
+import { SuiviProgrammeConsole } from './SuiviProgrammeConsole';
 import { EmailRecipientSelector } from '../common/EmailRecipientSelector';
 import {
   Shield,
@@ -298,6 +299,7 @@ export const AdminPortal: React.FC = () => {
     addPrayerIntention,
     religiousEvents,
     createReligiousEvent,
+    programmeAlerts,
   } = useApp();
 
   // User's native admin role
@@ -2655,11 +2657,20 @@ export const AdminPortal: React.FC = () => {
         <div className="relative z-10 flex flex-col md:flex-row items-start md:items-center justify-between gap-6">
           <div className="space-y-2">
             <div className="inline-flex items-center gap-2 bg-[#E67E22] text-white px-3.5 py-1 rounded-full text-xs font-black tracking-wide shadow-md">
-              <Shield className="w-4 h-4" />
-              <span>CONSOLE MULTI-RÔLES ADMIN • COCKPIT DÉCISIONNEL</span>
+              {activeRole === 'SDP' ? (
+                <>
+                  <span className="text-sm">🕵️</span>
+                  <span>SUIVI PROGRAMME • AUDITEUR & CONTRÔLEUR INTERNE</span>
+                </>
+              ) : (
+                <>
+                  <Shield className="w-4 h-4" />
+                  <span>CONSOLE MULTI-RÔLES ADMIN • COCKPIT DÉCISIONNEL</span>
+                </>
+              )}
             </div>
 
-            <h1 className="text-2xl sm:text-4xl font-black text-white tracking-tight flex items-center gap-3">
+            <h1 className="text-2xl sm:text-4xl font-black text-white tracking-tight flex items-center gap-3 flex-wrap">
               <span>
                 {activeRole === 'TRESORIER' && 'TRÉSORERIE GÉNÉRALE'}
                 {activeRole === 'CERVEAU' && 'LE CERVEAU (PRÉSIDENCE)'}
@@ -2669,7 +2680,13 @@ export const AdminPortal: React.FC = () => {
                 {activeRole === 'ORGANISATION' && 'COMMISSION ORGANISATION'}
                 {activeRole === 'PROJET' && 'COMMISSION PROJETS (AGR)'}
                 {activeRole === 'SPIRITUALITE' && 'DÉPARTEMENT SPIRITUALITÉ'}
+                {activeRole === 'SDP' && 'CHARGÉ DU SUIVI DU PROGRAMME'}
               </span>
+              {activeRole === 'SDP' && (
+                <span className="text-xs bg-amber-500 text-slate-950 px-3 py-1 rounded-full font-black uppercase tracking-wider shadow-md">
+                  🕵️ SUIVI PROGRAMME
+                </span>
+              )}
             </h1>
 
             <p className="text-xs sm:text-sm text-slate-400 font-medium max-w-2xl">
@@ -8892,6 +8909,19 @@ export const AdminPortal: React.FC = () => {
               </div>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* ========================================================= */}
+      {/* 9. ESPACE EXCLUSIF CHARGÉ DU SUIVI DU PROGRAMME (SDP) */}
+      {/* ========================================================= */}
+      {activeRole === 'SDP' && (
+        <div className="space-y-8">
+          <RbacWarningBanner
+            roleName="CHARGÉ DU SUIVI DU PROGRAMME (SDP)"
+            allowedActionsText="Supervision des tâches des départements, respect des résolutions des PVs et du calendrier annuel, rappels WhatsApp et audit lecture seule."
+          />
+          <SuiviProgrammeConsole activeRole={activeRole} />
         </div>
       )}
 
