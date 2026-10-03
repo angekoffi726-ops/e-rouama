@@ -9,6 +9,9 @@ export const INITIAL_ROUAMA_MEMBERS: RouamaMember[] = [
     phone: '2250501948962',
     email: 'angekoffi726@gmail.com',
     isRegistered: true,
+    statut: 'Activé',
+    pin: '2609',
+    pinCode: '2609',
     avatar: '/PP-CAPELO.jpeg',
   },
   {
@@ -19,6 +22,9 @@ export const INITIAL_ROUAMA_MEMBERS: RouamaMember[] = [
     phone: '2250503643626',
     email: 'ortiniel.anane05@gmail.com',
     isRegistered: true,
+    statut: 'Activé',
+    pin: '2016',
+    pinCode: '2016',
   },
   {
     id: '3',
@@ -28,6 +34,9 @@ export const INITIAL_ROUAMA_MEMBERS: RouamaMember[] = [
     phone: '2250757537785',
     email: 'josianekambou46@gmail.com',
     isRegistered: true,
+    statut: 'Activé',
+    pin: '7618',
+    pinCode: '7618',
   },
   {
     id: '4',
@@ -37,6 +46,9 @@ export const INITIAL_ROUAMA_MEMBERS: RouamaMember[] = [
     phone: '2250747195076',
     email: 'marieroxanekouadio263@gmail.com',
     isRegistered: true,
+    statut: 'Activé',
+    pin: '0611',
+    pinCode: '0611',
   },
   {
     id: '5',
@@ -45,7 +57,8 @@ export const INITIAL_ROUAMA_MEMBERS: RouamaMember[] = [
     nickname: 'SYLAS',
     phone: '2250564281013',
     email: 'sylastouali156@gmail.com',
-    isRegistered: true,
+    isRegistered: false,
+    statut: 'En attente',
   },
   {
     id: '6',
@@ -54,7 +67,8 @@ export const INITIAL_ROUAMA_MEMBERS: RouamaMember[] = [
     nickname: 'TYPO',
     phone: '2250584346071',
     email: 'desiresc04@outlook.com',
-    isRegistered: true,
+    isRegistered: false,
+    statut: 'En attente',
   },
   {
     id: '7',
@@ -63,7 +77,10 @@ export const INITIAL_ROUAMA_MEMBERS: RouamaMember[] = [
     nickname: 'LE SURL',
     phone: '2250701137891',
     email: 'desonangeulrich@gmail.com',
-    isRegistered: false,
+    isRegistered: true,
+    statut: 'Activé',
+    pin: '0000',
+    pinCode: '0000',
   },
   {
     id: '8',
@@ -72,7 +89,10 @@ export const INITIAL_ROUAMA_MEMBERS: RouamaMember[] = [
     nickname: 'DOJON',
     phone: '2250544996236',
     email: 'Sekandepo18@gmail.com',
-    isRegistered: false,
+    isRegistered: true,
+    statut: 'Activé',
+    pin: '4444',
+    pinCode: '4444',
   },
   {
     id: '9',
@@ -82,6 +102,7 @@ export const INITIAL_ROUAMA_MEMBERS: RouamaMember[] = [
     phone: '2250172528869',
     email: 'Koffiyaocyprien620@gmail.com',
     isRegistered: false,
+    statut: 'En attente',
   },
   {
     id: '10',
@@ -90,6 +111,7 @@ export const INITIAL_ROUAMA_MEMBERS: RouamaMember[] = [
     nickname: 'DOYEN',
     phone: '2250703567992',
     isRegistered: false,
+    statut: 'En attente',
   },
   {
     id: '11',
@@ -98,7 +120,10 @@ export const INITIAL_ROUAMA_MEMBERS: RouamaMember[] = [
     nickname: "L'ÉLU DE DIEU",
     phone: '2250787154627',
     email: 'stanisleger@gmail.com',
-    isRegistered: false,
+    isRegistered: true,
+    statut: 'Activé',
+    pin: '8717',
+    pinCode: '8717',
   },
   {
     id: '12',
@@ -107,7 +132,10 @@ export const INITIAL_ROUAMA_MEMBERS: RouamaMember[] = [
     nickname: 'NOUNOURS',
     phone: '2250704718939',
     email: 'reinetuo709@gmail.com',
-    isRegistered: false,
+    isRegistered: true,
+    statut: 'Activé',
+    pin: '1999',
+    pinCode: '1999',
   },
 ];
 
@@ -185,3 +213,34 @@ export const ADMIN_USERS: AdminUser[] = [
     description: 'Présidence & Supervision Générale : accès souverain à l’ensemble des consoles décisionnelles',
   },
 ];
+
+/**
+ * DÉFINITION UNIQUE ET CLAIRE D'UN MEMBRE "INSCRIT / ACTIVÉ" :
+ * Un membre est considéré comme "INSCRIT ET ACTIVÉ" dans TOUTE l'application si ET SEULEMENT SI :
+ * - Son document Firestore possède un code PIN valide (non vide) : m.pinCode && String(m.pinCode).trim() !== ""
+ * OU
+ * - Son champ d'activation est vrai : m.isRegistered === true OU m.statut === "Activé".
+ */
+export const isMemberActive = (m: any): boolean => {
+  if (!m) return false;
+  const pin = m.pinCode !== undefined && m.pinCode !== null
+    ? String(m.pinCode).trim()
+    : (m.pin !== undefined && m.pin !== null ? String(m.pin).trim() : '');
+  const hasValidPin = pin !== '' && pin !== 'Non défini';
+  return Boolean(hasValidPin || m.isRegistered === true || m.statut === 'Activé');
+};
+
+/**
+ * Calcul unifié et centralisé des membres inscrits / activés
+ */
+export const getRegisteredMembersCount = (membersList: any[]): number => {
+  if (!Array.isArray(membersList)) return 0;
+  const activeMembers = membersList.filter(
+    (m) =>
+      (m?.pinCode && String(m.pinCode).trim() !== '' && String(m.pinCode).trim() !== 'Non défini') ||
+      (m?.pin && String(m.pin).trim() !== '' && String(m.pin).trim() !== 'Non défini') ||
+      m?.isRegistered === true ||
+      m?.statut === 'Activé'
+  );
+  return activeMembers.length;
+};

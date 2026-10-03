@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { collection, onSnapshot, doc, setDoc } from 'firebase/firestore';
+import { collection, onSnapshot, doc, updateDoc, setDoc } from 'firebase/firestore';
 import { db } from '../../firebase';
 import { useApp } from '../../context/AppContext';
-import { INITIAL_ROUAMA_MEMBERS } from '../../data/membersData';
+import { INITIAL_ROUAMA_MEMBERS, getRegisteredMembersCount, isMemberActive } from '../../data/membersData';
 import { AdminRole, RouamaMember } from '../../types';
 import { EditMemberModal } from '../common/EditMemberModal';
 import {
@@ -21,7 +21,8 @@ import {
   Edit3,
   X,
   Loader2,
-  CheckCircle2
+  CheckCircle2,
+  RotateCcw
 } from 'lucide-react';
 
 interface CerveauMembersCredentialsViewerProps {
@@ -45,8 +46,28 @@ export const CerveauMembersCredentialsViewer: React.FC<CerveauMembersCredentials
 
   const { members } = useApp();
 
-  // Écoute directe en temps réel de tous les documents de la collection 'members' dans Firestore
-  const [rawFirestoreDocs, setRawFirestoreDocs] = useState<any[]>([]);
+  // Écoute directe en temps réel de tous les documents de la collection 'users' dans Firestore
+  const [firestoreUsers, setFirestoreUsers] = useState<any[]>([]);
+
+  useEffect(() => {
+    const unsub = onSnapshot(
+      collection(db, 'users'),
+      (snapshot) => {
+        const list = snapshot.docs.map((d) => ({
+          _docId: d.id,
+          id: d.id,
+          ...d.data(),
+        }));
+        setFirestoreUsers(list);
+      },
+      (error) => {
+        console.warn('Erreur écoute collection users dans CERVEAU:', error);
+      }
+    );
+
+    return () => unsub();
+  }, []);
+
   const [searchQuery, setSearchQuery] = useState('');
   const [showAllPins, setShowAllPins] = useState(false);
   const [revealedPins, setRevealedPins] = useState<Record<string, boolean>>({});
@@ -65,98 +86,60 @@ export const CerveauMembersCredentialsViewer: React.FC<CerveauMembersCredentials
   const [pinActionSuccess, setPinActionSuccess] = useState<string | null>(null);
   const [pinActionError, setPinActionError] = useState<string | null>(null);
 
-  // Abonnement temps réel strict à la collection Firestore 'members'
-  useEffect(() => {
-    const unsub = onSnapshot(
-      collection(db, 'members'),
-      (snapshot) => {
-        const docsList = snapshot.docs.map((docSnap) => ({
-          _docId: docSnap.id,
-          ...docSnap.data(),
-        }));
-        setRawFirestoreDocs(docsList);
-      },
-      (error) => {
-        console.warn('Erreur écoute credentials Firestore:', error);
-      }
-    );
-
-    return () => unsub();
-  }, []);
-
-  // 2. HARMONISATION STRICTE ET CALCUL DE LA LISTE DES MEMBRES SANS AUCUN FALLBACK "1234"
+  // 2. SYNCHRONISATION EN TEMPS RÉEL DEPUIS FIRESTORE ('users')
+  // RÈGLE : Un membre est considéré comme ACTIF si et seulement si :
+  // m.isRegistered === true OU m.statut === 'Activé' OU (m.pinCode !== null && m.pinCode !== '')
   const registeredMembers = useMemo(() => {
-    const baseMembers = INITIAL_ROUAMA_MEMBERS;
-
-    return baseMembers.map((m) => {
-      // Croisement insensible à la casse et aux accents avec le document Firestore réel
-      const fsDoc = (rawFirestoreDocs.find((d) => {
-        if (d._docId === m.id || d.id === m.id) return true;
-        const dFirst = normalizeRoster(d.firstName);
-        const mFirst = normalizeRoster(m.firstName);
-        if (dFirst && mFirst && dFirst === mFirst) return true;
-        const dNick = normalizeRoster(d.nickname);
-        const mNick = normalizeRoster(m.nickname);
-        if (dNick && mNick && dNick === mNick) return true;
-        if (m.id === '2' && (dFirst === 'ORTINIEL' || dNick === 'ESPRIT')) return true;
-        if (m.id === '11' && (dFirst === 'LEGER' || dNick === 'CLEMSO' || dNick === "L'ELU DE DIEU" || dNick === "ELU DE DIEU")) return true;
-        if (d.email && m.email && d.email.toLowerCase().trim() === m.email.toLowerCase().trim()) return true;
-        if (d.phone && m.phone && d.phone.replace(/\D/g, '') === m.phone.replace(/\D/g, '')) return true;
+    return INITIAL_ROUAMA_MEMBERS.map((official) => {
+      // Priorité au document en temps réel dans firestoreUsers
+      const uDoc = (firestoreUsers || []).find((u) => {
+        if (u.id === official.id || u._docId === official.id) return true;
+        const uFirst = normalizeRoster(u.firstName);
+        const oFirst = normalizeRoster(official.firstName);
+        if (uFirst && oFirst && uFirst === oFirst) return true;
+        const uNick = normalizeRoster(u.nickname);
+        const oNick = normalizeRoster(official.nickname);
+        if (uNick && oNick && uNick === oNick) return true;
         return false;
-      }) || {}) as any;
+      }) || (members || []).find((m) => m.id === official.id) || {};
 
-      // 1. LECTURE DE TOUTES LES VARIANTES DE CHAMPS POUR LA PHOTO DE PROFIL
-      const userAvatar =
-        (typeof fsDoc.photoUrl === 'string' && fsDoc.photoUrl.trim() ? fsDoc.photoUrl.trim() : '') ||
-        (typeof fsDoc.avatar === 'string' && fsDoc.avatar.trim() ? fsDoc.avatar.trim() : '') ||
-        (typeof fsDoc.photoURL === 'string' && fsDoc.photoURL.trim() ? fsDoc.photoURL.trim() : '') ||
-        (typeof fsDoc.profilePicture === 'string' && fsDoc.profilePicture.trim() ? fsDoc.profilePicture.trim() : '') ||
-        (typeof fsDoc.profileImage === 'string' && fsDoc.profileImage.trim() ? fsDoc.profileImage.trim() : '') ||
-        (typeof fsDoc.avatarUrl === 'string' && fsDoc.avatarUrl.trim() ? fsDoc.avatarUrl.trim() : '') ||
-        (typeof fsDoc.image === 'string' && fsDoc.image.trim() ? fsDoc.image.trim() : '') ||
-        (m.avatar && m.avatar.trim() ? m.avatar.trim() : '') ||
-        (m.photoUrl && m.photoUrl.trim() ? m.photoUrl.trim() : '');
+      const rawPin = uDoc.pinCode !== undefined ? uDoc.pinCode : (uDoc.pin !== undefined ? uDoc.pin : '');
+      const cleanPin = rawPin && String(rawPin).trim() !== '' && String(rawPin).trim() !== 'Non défini' ? String(rawPin).trim() : '';
 
-      // 2. LECTURE DU VRAI CODE PIN PERSONNEL SANS AUCUN FALLBACK "1234"
-      const candidatePin =
-        fsDoc.pin ||
-        fsDoc.password ||
-        fsDoc.code ||
-        fsDoc.userPin ||
-        fsDoc.accessCode ||
-        fsDoc.activationCode;
-
-      // Le code PIN est considéré valide uniquement s'il a été expressément configuré par le membre ou le CERVEAU
-      const hasPin = Boolean(
-        candidatePin !== undefined &&
-        candidatePin !== null &&
-        String(candidatePin).trim() !== '' &&
-        String(candidatePin).trim() !== 'Non défini'
+      const isActif = Boolean(
+        (cleanPin !== '') ||
+        uDoc.isRegistered === true ||
+        uDoc.statut === 'Activé'
       );
+      const realPin = isActif && cleanPin ? cleanPin : '';
 
-      // Règle CERVEAU :
-      // - Si 'isRegistered' est false (ou absent et sans PIN), affiche "En attente d'activation" sans PIN fictif.
-      // - Dès que le membre s'active (isRegistered: true avec son PIN), ses informations (PIN + photo) s'affichent instantanément.
-      const isRegistered = Boolean(fsDoc.isRegistered === true && hasPin);
-      const realPin = isRegistered ? String(candidatePin).trim() : '';
+      const userAvatar =
+        (typeof uDoc.photoUrl === 'string' && uDoc.photoUrl.trim() ? uDoc.photoUrl.trim() : '') ||
+        (typeof uDoc.avatar === 'string' && uDoc.avatar.trim() ? uDoc.avatar.trim() : '') ||
+        (typeof uDoc.photoURL === 'string' && uDoc.photoURL.trim() ? uDoc.photoURL.trim() : '') ||
+        official.avatar ||
+        official.photoUrl ||
+        '';
 
       return {
-        id: m.id,
-        docId: fsDoc._docId || fsDoc.id || m.id,
-        firstName: fsDoc.firstName || m.firstName,
-        nickname: fsDoc.nickname || m.nickname,
-        fullRosterName: fsDoc.fullRosterName || m.fullRosterName,
-        loginId: fsDoc.firstName || m.firstName,
+        id: official.id,
+        docId: official.id,
+        firstName: official.firstName,
+        nickname: official.nickname,
+        fullRosterName: official.fullRosterName || official.firstName,
+        loginId: official.firstName,
         pin: realPin,
-        phone: fsDoc.phone || m.phone || '',
-        email: fsDoc.email || m.email || '',
+        pinCode: realPin,
+        phone: uDoc.phone || official.phone || '',
+        email: uDoc.email || official.email || '',
         avatar: userAvatar,
         photoUrl: userAvatar,
-        assignedRole: fsDoc.assignedRole || m.assignedRole,
-        isRegistered,
+        assignedRole: uDoc.assignedRole || official.assignedRole,
+        isRegistered: isActif,
+        statut: isActif ? 'Activé' : "En attente d'activation",
       };
     });
-  }, [rawFirestoreDocs]);
+  }, [firestoreUsers, members]);
 
   // Filtrage par recherche
   const filteredMembers = useMemo(() => {
@@ -222,44 +205,117 @@ export const CerveauMembersCredentialsViewer: React.FC<CerveauMembersCredentials
     setPinActionSuccess(null);
   };
 
-  // Sauvegarde directe du nouveau PIN dans Firestore
-  const handleSaveMemberPin = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!editingMember) return;
-
-    const trimmedPin = newPinInput.trim();
-    if (!trimmedPin || trimmedPin.length !== 4 || !/^\d{4}$/.test(trimmedPin)) {
+  // 1. CORRECTION DE LA FONCTION DE MODIFICATION DU PIN (updateMemberPin)
+  // Exécute immédiatement updateDoc dans 'users' et affiche l'alerte de confirmation
+  const updateMemberPin = async (memberId: string, newPin: string): Promise<boolean> => {
+    const pinStr = String(newPin).trim();
+    if (!pinStr || pinStr.length !== 4 || !/^\d{4}$/.test(pinStr)) {
       setPinActionError('Le code PIN doit comporter exactement 4 chiffres.');
-      return;
+      return false;
     }
 
     setIsSavingPin(true);
     setPinActionError(null);
 
     try {
-      const memberDocRef = doc(db, 'members', editingMember.docId);
-      await setDoc(memberDocRef, {
-        pin: trimmedPin,
-        isRegistered: true,
-        updatedAt: new Date().toISOString(),
-      }, { merge: true });
+      // 1. Exécute immédiatement la requête d'écriture Firestore sur la collection 'users'
+      try {
+        await updateDoc(doc(db, "users", memberId), {
+          pinCode: pinStr,
+          pin: pinStr,
+          isRegistered: true,
+          statut: "Activé",
+          updatedAt: new Date().toISOString()
+        });
+      } catch {
+        await setDoc(doc(db, "users", memberId), {
+          id: memberId,
+          pinCode: pinStr,
+          pin: pinStr,
+          isRegistered: true,
+          statut: "Activé",
+          updatedAt: new Date().toISOString()
+        }, { merge: true });
+      }
 
-      setPinActionSuccess(`Code PIN de ${editingMember.firstName} mis à jour avec succès : ${trimmedPin}`);
+      // Synchronisation miroir dans 'members'
+      try {
+        await setDoc(doc(db, "members", memberId), {
+          pinCode: pinStr,
+          pin: pinStr,
+          isRegistered: true,
+          statut: "Activé",
+          updatedAt: new Date().toISOString()
+        }, { merge: true });
+      } catch (e) {
+        console.warn('Miroir members:', e);
+      }
+
+      // 2. Notification de succès (Alert + Toast)
+      alert("Code PIN mis à jour avec succès dans la base de données");
+      setPinActionSuccess("Code PIN mis à jour avec succès dans la base de données");
+
       setTimeout(() => {
         setEditingMember(null);
         setPinActionSuccess(null);
-      }, 1800);
+      }, 1500);
+
+      return true;
     } catch (err) {
       console.error('Erreur sauvegarde PIN membre dans Firestore:', err);
       setPinActionError("Une erreur est survenue lors de l'enregistrement dans Firestore.");
+      alert("Erreur lors de la mise à jour du code PIN dans Firestore.");
+      return false;
     } finally {
       setIsSavingPin(false);
     }
   };
 
-  // Statistiques d'activation
-  const totalMembersCount = registeredMembers.length;
-  const activatedMembersCount = registeredMembers.filter((m) => m.isRegistered && Boolean(m.pin)).length;
+  const handleSaveMemberPin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingMember) return;
+    await updateMemberPin(editingMember.id, newPinInput);
+  };
+
+  // 2. ACTION RÉINITIALISER LE COMPTE
+  // Met à jour Firestore avec { pinCode: "", isRegistered: false, statut: "En attente d'activation" }
+  const handleResetMemberAccount = async (member: { id: string; firstName: string; nickname: string }) => {
+    const confirmReset = window.confirm(
+      `Voulez-vous vraiment réinitialiser le compte de ${member.firstName} (« ${member.nickname} ») ?\n\nSon code PIN sera effacé et son statut passera à "En attente d'activation".\nLe membre pourra recréer lui-même son code PIN sur la page d'accueil via l'onglet "INSCRIPTION / ACTIVATION".`
+    );
+    if (!confirmReset) return;
+
+    try {
+      const resetPayload = {
+        pinCode: "",
+        pin: "",
+        isRegistered: false,
+        statut: "En attente d'activation",
+        updatedAt: new Date().toISOString()
+      };
+
+      try {
+        await updateDoc(doc(db, "users", member.id), resetPayload);
+      } catch {
+        await setDoc(doc(db, "users", member.id), { id: member.id, ...resetPayload }, { merge: true });
+      }
+
+      try {
+        await setDoc(doc(db, "members", member.id), resetPayload, { merge: true });
+      } catch (e) {
+        console.warn('Miroir members reset:', e);
+      }
+
+      alert(`Le compte de ${member.firstName} a été réinitialisé avec succès dans la base de données.`);
+    } catch (err) {
+      console.error("Erreur réinitialisation compte membre:", err);
+      alert("Erreur lors de la réinitialisation du compte.");
+    }
+  };
+
+  // Statistiques d'activation unifiées avec l'accueil via getRegisteredMembersCount
+  const totalMembersCount = registeredMembers.length || 12;
+  const activatedMembersCount = getRegisteredMembersCount(registeredMembers);
   const pendingMembersCount = totalMembersCount - activatedMembersCount;
 
   return (
@@ -360,7 +416,7 @@ export const CerveauMembersCredentialsViewer: React.FC<CerveauMembersCredentials
                   <th className="py-3 px-4">Code PIN (MDP)</th>
                   <th className="py-3 px-4">Statut Compte</th>
                   <th className="py-3 px-4">Contact</th>
-                  <th className="py-3 px-4 text-right">Actions</th>
+                  <th className="py-3 px-4 text-right">Actions (PIN & Compte)</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800/60 text-xs">
@@ -463,26 +519,45 @@ export const CerveauMembersCredentialsViewer: React.FC<CerveauMembersCredentials
                         )}
                       </td>
 
-                      {/* Actions : Copier et Définir / Modifier le membre */}
+                      {/* Actions : Modifier PIN, Réinitialiser, Modifier Profil, Copier */}
                       <td className="py-3.5 px-4 text-right">
-                        <div className="inline-flex items-center gap-2">
+                        <div className="inline-flex items-center gap-1.5 flex-wrap justify-end">
+                          <button
+                            type="button"
+                            onClick={() => openEditPinModal(member)}
+                            className="px-2.5 py-1.5 rounded-xl text-xs font-bold inline-flex items-center gap-1 transition-all bg-amber-500/10 hover:bg-amber-500 text-amber-300 hover:text-slate-950 border border-amber-500/30 cursor-pointer shadow-sm"
+                            title="Modifier le code PIN dans Firestore"
+                          >
+                            <KeyRound className="w-3.5 h-3.5" />
+                            <span>Modifier</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => handleResetMemberAccount(member)}
+                            className="px-2.5 py-1.5 rounded-xl text-xs font-bold inline-flex items-center gap-1 transition-all bg-rose-500/10 hover:bg-rose-600 text-rose-300 hover:text-white border border-rose-500/30 cursor-pointer shadow-sm"
+                            title="Réinitialiser le compte (effacer PIN pour nouvelle inscription)"
+                          >
+                            <RotateCcw className="w-3.5 h-3.5" />
+                            <span>Réinitialiser</span>
+                          </button>
+
                           <button
                             type="button"
                             onClick={() => openEditMemberModal(member)}
-                            className="px-2.5 py-1.5 rounded-xl text-xs font-bold inline-flex items-center gap-1.5 transition-all bg-slate-800 hover:bg-amber-600 hover:text-white text-slate-300 shadow-sm cursor-pointer"
-                            title={isActivated ? "Modifier les informations et la photo du membre" : "Définir le profil et le PIN de ce membre"}
+                            className="p-1.5 rounded-xl text-xs font-bold inline-flex items-center transition-all bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700 cursor-pointer shadow-sm"
+                            title="Modifier les informations et la photo"
                           >
                             <Edit3 className="w-3.5 h-3.5 text-amber-400" />
-                            <span>{isActivated ? 'Modifier' : 'Définir PIN'}</span>
                           </button>
 
                           <button
                             type="button"
                             onClick={() => handleCopyCredentials(member)}
-                            className={`px-3 py-1.5 rounded-xl text-xs font-bold inline-flex items-center gap-1.5 transition-all shadow-sm cursor-pointer ${
+                            className={`px-2.5 py-1.5 rounded-xl text-xs font-bold inline-flex items-center gap-1 transition-all shadow-sm cursor-pointer ${
                               isCopied
                                 ? 'bg-emerald-600 text-white'
-                                : 'bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white'
+                                : 'bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white border border-slate-700'
                             }`}
                             title="Copier les identifiants pour transmettre au membre"
                           >
@@ -551,25 +626,45 @@ export const CerveauMembersCredentialsViewer: React.FC<CerveauMembersCredentials
                       </div>
                     </div>
 
-                    <div className="flex items-center gap-1.5">
+                    <div className="flex items-center gap-1.5 flex-wrap justify-end">
+                      <button
+                        type="button"
+                        onClick={() => openEditPinModal(member)}
+                        className="px-2 py-1 rounded-lg text-[11px] font-bold transition-all bg-amber-500/10 hover:bg-amber-500 text-amber-300 hover:text-slate-950 border border-amber-500/30 flex items-center gap-1 cursor-pointer"
+                        title="Modifier le PIN"
+                      >
+                        <KeyRound className="w-3 h-3" />
+                        <span>Modifier</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => handleResetMemberAccount(member)}
+                        className="px-2 py-1 rounded-lg text-[11px] font-bold transition-all bg-rose-500/10 hover:bg-rose-600 text-rose-300 hover:text-white border border-rose-500/30 flex items-center gap-1 cursor-pointer"
+                        title="Réinitialiser"
+                      >
+                        <RotateCcw className="w-3 h-3" />
+                        <span>Reset</span>
+                      </button>
+
                       <button
                         type="button"
                         onClick={() => openEditMemberModal(member)}
-                        className="p-2 rounded-xl text-xs font-bold transition-all bg-slate-800 text-slate-300 hover:text-white"
+                        className="p-1.5 rounded-lg text-xs font-bold transition-all bg-slate-800 text-slate-300 hover:text-white border border-slate-700 cursor-pointer"
                         title="Modifier le membre et sa photo"
                       >
-                        <Edit3 className="w-4 h-4 text-amber-400" />
+                        <Edit3 className="w-3.5 h-3.5 text-amber-400" />
                       </button>
 
                       <button
                         type="button"
                         onClick={() => handleCopyCredentials(member)}
-                        className={`p-2 rounded-xl text-xs font-bold transition-all shadow-sm ${
-                          isCopied ? 'bg-emerald-600 text-white' : 'bg-slate-800 text-slate-300 hover:text-white'
+                        className={`p-1.5 rounded-lg text-xs font-bold transition-all shadow-sm cursor-pointer ${
+                          isCopied ? 'bg-emerald-600 text-white' : 'bg-slate-800 text-slate-300 hover:text-white border border-slate-700'
                         }`}
                         title="Copier les identifiants"
                       >
-                        {isCopied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4 text-amber-400" />}
+                        {isCopied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5 text-amber-400" />}
                       </button>
                     </div>
                   </div>

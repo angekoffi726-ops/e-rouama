@@ -77,12 +77,15 @@ export interface RouamaMember {
   phone: string;
   email?: string;
   pin?: string;
+  pinCode?: string;
+  statut?: string;
   isRegistered: boolean;
   avatar?: string;
   photoUrl?: string;
   assignedRole?: AdminRole;
   resteADevoir?: number;
   updatedAt?: string;
+  lastLogin?: string;
 }
 
 export interface AdminUser {

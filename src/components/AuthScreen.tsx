@@ -1,8 +1,8 @@
-import React, { useState, useEffect } from 'react';
-import { collection, onSnapshot, doc, updateDoc, getDoc, setDoc } from 'firebase/firestore';
+import React, { useState, useEffect, useMemo } from 'react';
+import { collection, onSnapshot, doc, updateDoc, setDoc } from 'firebase/firestore';
 import { db } from '../firebase';
 import { useApp } from '../context/AppContext';
-import { ADMIN_USERS } from '../data/membersData';
+import { ADMIN_USERS, INITIAL_ROUAMA_MEMBERS, getRegisteredMembersCount, isMemberActive } from '../data/membersData';
 import { AdminRole } from '../types';
 import { Shield, KeyRound, UserCheck, AlertCircle, Lock, ArrowRight, CheckCircle2 } from 'lucide-react';
 
@@ -17,39 +17,70 @@ const normalizeName = (str: string): string => {
 export const AuthScreen: React.FC = () => {
   const { registerMember, loginMember, loginAdmin, members, adminUsers, setCurrentUser } = useApp();
 
-  // 1. SYNCHRONISATION DES MEMBRES INSCRITS (6 / 12) :
-  const contextRegisteredCount = (members || []).filter(m => m.isRegistered === true).length;
-  const DEFAULT_ACTIVATED_COUNT = 6;
-  const initialRegistered = contextRegisteredCount > 0 ? contextRegisteredCount : DEFAULT_ACTIVATED_COUNT;
-
-  const [totalRegistered, setTotalRegistered] = useState<number>(initialRegistered);
+  // Écoute directe en temps réel de tous les documents de la collection 'users' dans Firestore
+  const [firestoreUsers, setFirestoreUsers] = useState<any[]>([]);
 
   useEffect(() => {
-    if (contextRegisteredCount > 0) {
-      setTotalRegistered(contextRegisteredCount);
-    }
-
-    const unsubscribe = onSnapshot(
-      collection(db, 'members'),
+    const unsub = onSnapshot(
+      collection(db, 'users'),
       (snapshot) => {
-        if (!snapshot.empty) {
-          const count = snapshot.docs.filter(doc => doc.data()?.isRegistered === true).length;
-          setTotalRegistered(count > 0 ? count : DEFAULT_ACTIVATED_COUNT);
-        } else {
-          setTotalRegistered(contextRegisteredCount > 0 ? contextRegisteredCount : DEFAULT_ACTIVATED_COUNT);
-        }
+        const list = snapshot.docs.map((d) => ({
+          _docId: d.id,
+          id: d.id,
+          ...d.data(),
+        }));
+        setFirestoreUsers(list);
       },
       (error) => {
-        console.warn('Erreur écoute Firestore members:', error);
-        setTotalRegistered(contextRegisteredCount > 0 ? contextRegisteredCount : DEFAULT_ACTIVATED_COUNT);
+        console.warn('Erreur écoute collection users dans AuthScreen:', error);
       }
     );
 
-    return () => unsubscribe();
-  }, [contextRegisteredCount]);
+    return () => unsub();
+  }, []);
 
-  const displayRegistered = totalRegistered > 0 ? totalRegistered : initialRegistered;
-  const totalMembersCount = members && members.length > 0 ? members.length : 12;
+  // 1. DÉFINITION UNIQUE ET SYNCHRONISATION EN TEMPS RÉEL DU COMPTEUR DE MEMBRES
+  // Réconciliation directe avec les 12 membres officiels pour un affichage instantané et 100% fiable
+  const liveMembersList = useMemo(() => {
+    return INITIAL_ROUAMA_MEMBERS.map((official) => {
+      const uDoc = (firestoreUsers || []).find((u) => {
+        if (u.id === official.id || u._docId === official.id) return true;
+        const uFirst = normalizeName(u.firstName);
+        const oFirst = normalizeName(official.firstName);
+        if (uFirst && oFirst && uFirst === oFirst) return true;
+        const uNick = normalizeName(u.nickname);
+        const oNick = normalizeName(official.nickname);
+        if (uNick && oNick && uNick === oNick) return true;
+        return false;
+      }) || (members || []).find((m) => m.id === official.id) || {};
+
+      const rawPin = uDoc.pinCode !== undefined ? uDoc.pinCode : (uDoc.pin !== undefined ? uDoc.pin : '');
+      const cleanPin = rawPin && String(rawPin).trim() !== '' && String(rawPin).trim() !== 'Non défini' ? String(rawPin).trim() : '';
+
+      const isActif = Boolean(
+        (cleanPin !== '') ||
+        uDoc.isRegistered === true ||
+        uDoc.statut === 'Activé'
+      );
+
+      return {
+        ...official,
+        ...uDoc,
+        id: official.id,
+        firstName: official.firstName,
+        nickname: official.nickname,
+        fullRosterName: official.fullRosterName,
+        pin: cleanPin,
+        pinCode: cleanPin,
+        isRegistered: isActif,
+        statut: isActif ? 'Activé' : "En attente d'activation",
+      };
+    });
+  }, [firestoreUsers, members]);
+
+  // 2. UNIFICATION DU COMPTEUR SUR LA PAGE DE CONNEXION ET DANS LE CERVEAU
+  const activeCount = getRegisteredMembersCount(liveMembersList);
+  const totalMembersCount = liveMembersList.length || 12;
 
   const [mode, setMode] = useState<'REGISTER_MEMBER' | 'LOGIN_MEMBER' | 'LOGIN_ADMIN'>('REGISTER_MEMBER');
 
@@ -102,8 +133,8 @@ export const AuthScreen: React.FC = () => {
       return;
     }
 
-    // 1. RECHERCHE DE MEMBRE INSENSIBLE À LA CASSE
-    const member = members.find(m =>
+    // 1. RECHERCHE DE MEMBRE INSENSIBLE À LA CASSE DANS LES DONNÉES EN TEMPS RÉEL
+    const member = (liveMembersList || members).find(m =>
       (m.login || m.firstName || m.name || '').toLowerCase() === inputName ||
       (m.nickname || '').toLowerCase() === inputName ||
       (m.fullRosterName || '').toLowerCase().includes(inputName) ||
@@ -118,35 +149,72 @@ export const AuthScreen: React.FC = () => {
       return;
     }
 
-    // 2. SÉCURISATION DU PROCESSUS D'ACTIVATION (ASYNC/AWAIT)
+    // Sécurité : Empêcher l'écrasement du code PIN d'un compte déjà activé
+    const existingPin = String(member.pinCode || member.pin || '').trim();
+    if (member.isRegistered && existingPin && existingPin !== String(codePin).trim()) {
+      alert(`Le compte de ${member.nickname} est déjà activé. Veuillez vous connecter avec votre code PIN dans l'onglet Connexion.`);
+      setErrorMsg(`Le compte de ${member.nickname} est déjà activé. Connectez-vous avec votre code PIN personnel.`);
+      return;
+    }
+
+    // 2. SÉCURISATION DU PROCESSUS D'ACTIVATION (ASYNC/AWAIT & FIRESTORE)
+    const memberId = member.id;
+    const inputPin = String(codePin).trim();
+    const nowIso = new Date().toISOString();
+
     try {
-      // 1. Mettre à jour Firestore
+      // 1. Mise à jour Firestore immédiate requise par la consigne
       try {
-        await updateDoc(doc(db, "members", member.id), {
+        await updateDoc(doc(db, "users", memberId), {
+          pinCode: inputPin,
+          pin: inputPin,
           isRegistered: true,
-          pin: String(codePin).trim(),
-          updatedAt: new Date().toISOString()
+          statut: "Activé",
+          lastLogin: nowIso,
+          updatedAt: nowIso
         });
-      } catch (errUpdate) {
-        await setDoc(doc(db, "members", member.id), {
-          id: member.id,
+      } catch {
+        await setDoc(doc(db, "users", memberId), {
+          id: memberId,
           firstName: member.firstName,
           nickname: member.nickname,
           fullRosterName: member.fullRosterName,
+          pinCode: inputPin,
+          pin: inputPin,
           isRegistered: true,
-          pin: String(codePin).trim(),
-          avatar: member.avatar || member.photoUrl || "",
-          photoUrl: member.photoUrl || member.avatar || "",
-          updatedAt: new Date().toISOString()
+          statut: "Activé",
+          lastLogin: nowIso,
+          updatedAt: nowIso
         }, { merge: true });
+      }
+
+      // Synchronisation miroir dans members
+      try {
+        await setDoc(doc(db, "members", memberId), {
+          id: memberId,
+          firstName: member.firstName,
+          nickname: member.nickname,
+          fullRosterName: member.fullRosterName,
+          pinCode: inputPin,
+          pin: inputPin,
+          isRegistered: true,
+          statut: "Activé",
+          lastLogin: nowIso,
+          updatedAt: nowIso
+        }, { merge: true });
+      } catch (errM) {
+        console.warn('Miroir members activation:', errM);
       }
 
       // 2. Mettre à jour le statut local
       const updatedMember = {
         ...member,
         isRegistered: true,
-        pin: String(codePin).trim(),
-        updatedAt: new Date().toISOString()
+        statut: 'Activé',
+        pin: inputPin,
+        pinCode: inputPin,
+        updatedAt: nowIso,
+        lastLogin: nowIso
       };
 
       // 3. Connecter l'utilisateur en toute sécurité
@@ -180,8 +248,8 @@ export const AuthScreen: React.FC = () => {
       return;
     }
 
-    // 1. RECHERCHE DE MEMBRE INSENSIBLE À LA CASSE
-    const member = members.find(m =>
+    // 1. RECHERCHE DE MEMBRE INSENSIBLE À LA CASSE DANS LES DONNÉES EN TEMPS RÉEL
+    const member = (liveMembersList || members).find(m =>
       (m.login || m.firstName || m.name || '').toLowerCase() === inputName ||
       (m.nickname || '').toLowerCase() === inputName ||
       (m.fullRosterName || '').toLowerCase().includes(inputName) ||
@@ -195,66 +263,134 @@ export const AuthScreen: React.FC = () => {
       return;
     }
 
-    try {
-      let expectedPin = member.pin;
-      let avatarUrl = member.avatar || member.photoUrl || "";
-      try {
-        const memberSnap = await getDoc(doc(db, "members", member.id));
-        if (memberSnap.exists()) {
-          const fsData = memberSnap.data();
-          if (fsData.pin) expectedPin = fsData.pin;
-          if (fsData.avatar || fsData.photoUrl) avatarUrl = fsData.avatar || fsData.photoUrl;
-        }
-      } catch (fsErr) {
-        console.warn('Erreur vérification Firestore membre:', fsErr);
-      }
+    const memberId = member.id;
+    const inputPin = String(pinCodeSaisi).trim();
+    const nowIso = new Date().toISOString();
 
-      if (!member.isRegistered || !expectedPin || expectedPin === 'Non défini') {
-        const resolvedAvatar = avatarUrl || member.avatar || member.photoUrl || "";
+    // 2. FLUX PREMIÈRE CONNEXION OU VÉRIFICATION STRICTE DU CODE PIN
+    const expectedPin = String(member.pinCode || member.pin || '').trim();
+
+    // Cas 1 : Le membre se connecte pour la première fois (pas encore de code PIN défini dans la base)
+    // Enregistrement immédiat dans Firestore et activation instantanée
+    if (!expectedPin || expectedPin === 'Non défini') {
+      try {
         try {
-          await updateDoc(doc(db, "members", member.id), {
+          await updateDoc(doc(db, "users", memberId), {
+            pinCode: inputPin,
+            pin: inputPin,
             isRegistered: true,
-            pin: String(pinCodeSaisi).trim(),
-            avatar: resolvedAvatar,
-            photoUrl: resolvedAvatar,
-            lastLogin: new Date().toISOString(),
-            updatedAt: new Date().toISOString()
+            statut: "Activé",
+            lastLogin: nowIso,
+            updatedAt: nowIso
           });
-        } catch (err) {
-          await setDoc(doc(db, "members", member.id), {
-            id: member.id,
+        } catch {
+          await setDoc(doc(db, "users", memberId), {
+            id: memberId,
             firstName: member.firstName,
             nickname: member.nickname,
             fullRosterName: member.fullRosterName,
+            pinCode: inputPin,
+            pin: inputPin,
             isRegistered: true,
-            pin: String(pinCodeSaisi).trim(),
-            avatar: resolvedAvatar,
-            photoUrl: resolvedAvatar,
-            lastLogin: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
+            statut: "Activé",
+            lastLogin: nowIso,
+            updatedAt: nowIso
           }, { merge: true });
         }
-      } else if (expectedPin !== pinCodeSaisi) {
-        setErrorMsg('Code PIN incorrect.');
+
+        try {
+          await setDoc(doc(db, "members", memberId), {
+            id: memberId,
+            firstName: member.firstName,
+            nickname: member.nickname,
+            fullRosterName: member.fullRosterName,
+            pinCode: inputPin,
+            pin: inputPin,
+            isRegistered: true,
+            statut: "Activé",
+            lastLogin: nowIso,
+            updatedAt: nowIso
+          }, { merge: true });
+        } catch (e) {
+          console.warn(e);
+        }
+
+        const updatedMember = {
+          ...member,
+          isRegistered: true,
+          statut: 'Activé',
+          pin: inputPin,
+          pinCode: inputPin,
+          avatar: member.avatar || member.photoUrl,
+          photoUrl: member.photoUrl || member.avatar,
+          lastLogin: nowIso,
+          updatedAt: nowIso
+        };
+
+        setCurrentUser(updatedMember);
+        localStorage.setItem('rouama_user', JSON.stringify(updatedMember));
+        localStorage.setItem('erouama_active_session', JSON.stringify({ type: 'MEMBER', member: updatedMember }));
+
+        setSuccessMsg(`Bienvenue chez vous, ${member.nickname} ! Votre compte a été activé.`);
+        clearAllFields();
         return;
+      } catch (err) {
+        console.error('Erreur activation première connexion:', err);
+        setErrorMsg("Une erreur est survenue lors de l'enregistrement de votre code PIN.");
+        return;
+      }
+    }
+
+    // Cas 2 : Le compte est déjà activé -> VÉRIFICATION STRICTE DU CODE PIN
+    // L'accès doit TOUJOURS être refusé avec une alerte ("Code PIN incorrect") si String(inputPin).trim() !== String(member.pinCode).trim()
+    if (inputPin !== expectedPin) {
+      alert("Code PIN incorrect");
+      setErrorMsg("Code PIN incorrect.");
+      return;
+    }
+
+    try {
+      try {
+        await updateDoc(doc(db, "users", memberId), {
+          pinCode: inputPin,
+          pin: inputPin,
+          isRegistered: true,
+          statut: "Activé",
+          lastLogin: nowIso
+        });
+      } catch {
+        await setDoc(doc(db, "users", memberId), {
+          id: memberId,
+          pinCode: inputPin,
+          pin: inputPin,
+          isRegistered: true,
+          statut: "Activé",
+          lastLogin: nowIso
+        }, { merge: true });
+      }
+
+      try {
+        await setDoc(doc(db, "members", memberId), {
+          pinCode: inputPin,
+          pin: inputPin,
+          isRegistered: true,
+          statut: "Activé",
+          lastLogin: nowIso
+        }, { merge: true });
+      } catch (e) {
+        console.warn(e);
       }
 
       const updatedMember = {
         ...member,
         isRegistered: true,
-        pin: String(pinCodeSaisi).trim(),
-        avatar: avatarUrl || member.avatar,
-        photoUrl: avatarUrl || member.photoUrl,
-        lastLogin: new Date().toISOString()
+        statut: 'Activé',
+        pin: expectedPin,
+        pinCode: expectedPin,
+        avatar: member.avatar || member.photoUrl,
+        photoUrl: member.photoUrl || member.avatar,
+        lastLogin: nowIso
       };
-
-      try {
-        await updateDoc(doc(db, "members", member.id), {
-          lastLogin: new Date().toISOString()
-        });
-      } catch (e) {
-        console.warn(e);
-      }
 
       setCurrentUser(updatedMember);
       localStorage.setItem('rouama_user', JSON.stringify(updatedMember));
@@ -312,7 +448,7 @@ export const AuthScreen: React.FC = () => {
             « DINIYO ROUAMA, chez nous la mesure de l'amour c'est d'aimer sans mesure »
           </p>
           <div className="inline-block mt-3 px-3 py-1 bg-[#355E3B]/10 text-[#355E3B] text-[10px] sm:text-xs font-black rounded-full border border-[#355E3B]/20 shadow-sm">
-            Portail Fraternel Sécurisé • MEMBRES INSCRITS SUR L'APP : {displayRegistered} / {totalMembersCount}
+            Portail Fraternel Sécurisé • MEMBRES INSCRITS SUR L'APP : {activeCount} / {totalMembersCount}
           </div>
         </div>
 

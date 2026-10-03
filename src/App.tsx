@@ -14,7 +14,7 @@ import { AdminPortal } from './components/admin/AdminPortal';
 import { TabType } from './components/Navigation';
 import { AdminRole, RouamaMember } from './types';
 import { LayoutDashboard, Church, CreditCard, Newspaper, Tent, Rocket, FileText, Shield, LogOut, Download, User, Sparkles, KeyRound } from 'lucide-react';
-import { ADMIN_USERS } from './data/membersData';
+import { ADMIN_USERS, getRegisteredMembersCount } from './data/membersData';
 import { ChangePasswordModal } from './components/admin/ChangePasswordModal';
 
 function MainLayout() {
@@ -31,37 +31,9 @@ function MainLayout() {
     }
   };
   const [isInstalled, setIsInstalled] = useState(false);
-  const contextRegisteredCount = (members || []).filter(m => m.isRegistered === true).length;
-  const DEFAULT_ACTIVATED_COUNT = 6;
-  const initialRegistered = contextRegisteredCount > 0 ? contextRegisteredCount : DEFAULT_ACTIVATED_COUNT;
 
-  const [totalRegistered, setTotalRegistered] = useState<number>(initialRegistered);
-
-  useEffect(() => {
-    if (contextRegisteredCount > 0) {
-      setTotalRegistered(contextRegisteredCount);
-    }
-
-    const unsubscribe = onSnapshot(
-      collection(db, 'members'),
-      (snapshot) => {
-        if (!snapshot.empty) {
-          const count = snapshot.docs.filter(doc => doc.data()?.isRegistered === true).length;
-          setTotalRegistered(count > 0 ? count : DEFAULT_ACTIVATED_COUNT);
-        } else {
-          setTotalRegistered(contextRegisteredCount > 0 ? contextRegisteredCount : DEFAULT_ACTIVATED_COUNT);
-        }
-      },
-      (error) => {
-        console.warn('Erreur écoute Firestore members dans App:', error);
-        setTotalRegistered(contextRegisteredCount > 0 ? contextRegisteredCount : DEFAULT_ACTIVATED_COUNT);
-      }
-    );
-
-    return () => unsubscribe();
-  }, [contextRegisteredCount]);
-
-  const registeredCount = totalRegistered > 0 ? totalRegistered : initialRegistered;
+  // Synchronisation dynamique du compteur de membres inscrits strictement via getRegisteredMembersCount
+  const registeredCount = getRegisteredMembersCount(members);
   const totalMembers = members && members.length > 0 ? members.length : 12;
 
   React.useEffect(() => {

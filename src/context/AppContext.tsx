@@ -28,7 +28,7 @@ import {
   MemberRubricProgress,
   FUND_LABELS,
 } from '../types';
-import { INITIAL_ROUAMA_MEMBERS, ADMIN_USERS } from '../data/membersData';
+import { INITIAL_ROUAMA_MEMBERS, ADMIN_USERS, isMemberActive, getRegisteredMembersCount } from '../data/membersData';
 import { sendEmailBroadcastAsync } from '../utils/emailService';
 import {
   collection,
@@ -668,168 +668,99 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     );
     unsubscribes.push(unsubPayments);
 
-    // 2. MEMBRES DE L'ASSOCIATION (Persistance stricte sans reset ni écrasement)
-    const unsubMembers = onSnapshot(
-      collection(db, 'members'),
-      async (snapshot) => {
+    // 2. ÉCOUTEUR UNIQUE EN TEMPS RÉEL DE LA COLLECTION 'users'
+    // Harmonisation stricte : un seul et unique écouteur Firestore en temps réel pour tous les membres
+    const unsubUsers = onSnapshot(
+      collection(db, 'users'),
+      (snapshot) => {
         setIsFirebaseConnected(true);
 
-        // RÈGLE 1 : Si la collection est complètement vide (0 document),
-        // SEULEMENT ALORS on amorce les 12 membres officiels par défaut.
-        if (snapshot.empty) {
-          console.log('🌱 Initialisation unique de la collection members (0 document détecté)');
-          const initialList: RouamaMember[] = [];
-          for (const official of INITIAL_ROUAMA_MEMBERS) {
-            initialList.push(official);
-            setDoc(doc(db, 'members', official.id), sanitizeFirestore(official)).catch(console.warn);
-          }
-          setMembers(initialList);
-          return;
-        }
-
-        // RÈGLE 2 : Si des données existent déjà dans Firestore,
-        // STRICTEMENT conserver les données en ligne sans les remplacer ni les supprimer.
-        const firestoreDocsMap = new Map<string, RouamaMember>();
+        const usersDocsMap = new Map<string, any>();
         snapshot.docs.forEach((docSnap) => {
-          const data = docSnap.data() as any;
-          // Lecture de TOUTES les variantes possibles de clés pour le code PIN et la photo
-          const userPin = data.pin || data.password || data.code || data.accessCode || data.activationCode || undefined;
-          const userAvatar = data.avatar || data.photoURL || data.photoUrl || data.profilePicture || data.avatarUrl || undefined;
-
-          firestoreDocsMap.set(docSnap.id, {
-            id: docSnap.id,
-            firstName: data.firstName || '',
-            fullRosterName: data.fullRosterName || data.firstName || '',
-            nickname: data.nickname || '',
-            phone: data.phone || '',
-            email: data.email || '',
-            assignedRole: data.assignedRole,
-            avatar: userAvatar,
-            photoUrl: userAvatar,
-            isRegistered: Boolean(data.isRegistered || userPin),
-            pin: userPin,
-            ...data,
-          });
+          const d = docSnap.data();
+          // Ignorer les identifiants de rôles admin s'ils existent dans users
+          if (['TRESORIER', 'CERVEAU', 'PAYOR', 'SDP', 'ORGANISATEUR', 'PROJET', 'COM', 'SECRETARIAT', 'SPIRITUALITE'].includes(docSnap.id)) {
+            return;
+          }
+          usersDocsMap.set(docSnap.id, { ...d, _docId: docSnap.id });
         });
 
-        // Reconstituer la liste avec conservation intégrale des données Firestore
-        const reconciledList: RouamaMember[] = [];
-        const orderMap = new Map(INITIAL_ROUAMA_MEMBERS.map((m, idx) => [m.id, idx]));
-
-        for (const official of INITIAL_ROUAMA_MEMBERS) {
-          let existing = firestoreDocsMap.get(official.id);
-          if (!existing) {
-            for (const m of firestoreDocsMap.values()) {
+        // Harmonisation stricte avec les 12 membres officiels
+        const reconciledList: RouamaMember[] = INITIAL_ROUAMA_MEMBERS.map((official) => {
+          let uDoc = usersDocsMap.get(official.id);
+          if (!uDoc) {
+            for (const docData of usersDocsMap.values()) {
               if (
-                normalizeRosterString(m.nickname) === normalizeRosterString(official.nickname) ||
-                normalizeRosterString(m.firstName) === normalizeRosterString(official.firstName) ||
-                (m.fullRosterName && normalizeRosterString(m.fullRosterName).includes(normalizeRosterString(official.firstName))) ||
-                (official.fullRosterName && normalizeRosterString(official.fullRosterName).includes(normalizeRosterString(m.firstName))) ||
-                (official.id === '2' && (
-                  normalizeRosterString(m.firstName) === 'ORTINIEL' ||
-                  normalizeRosterString(m.nickname) === 'ESPRIT'
-                )) ||
-                (official.id === '11' && (
-                  normalizeRosterString(m.nickname) === 'CLEMSO' ||
-                  normalizeRosterString(m.firstName) === 'LEGER' ||
-                  normalizeRosterString(m.firstName) === 'LÉGER'
-                )) ||
-                (m.phone && official.phone && m.phone.replace(/\D/g, '') === official.phone.replace(/\D/g, '')) ||
-                (m.email && official.email && m.email.toLowerCase().trim() === official.email.toLowerCase().trim())
+                normalizeRosterString(docData.firstName) === normalizeRosterString(official.firstName) ||
+                normalizeRosterString(docData.nickname) === normalizeRosterString(official.nickname) ||
+                (docData.fullRosterName && normalizeRosterString(docData.fullRosterName).includes(normalizeRosterString(official.firstName))) ||
+                (official.fullRosterName && normalizeRosterString(official.fullRosterName).includes(normalizeRosterString(docData.firstName))) ||
+                (official.id === '2' && (normalizeRosterString(docData.firstName) === 'ORTINIEL' || normalizeRosterString(docData.nickname) === 'ESPRIT')) ||
+                (official.id === '11' && (normalizeRosterString(docData.nickname) === 'CLEMSO' || normalizeRosterString(docData.firstName) === 'LEGER'))
               ) {
-                existing = m;
+                uDoc = docData;
                 break;
               }
             }
           }
 
-          if (existing) {
-            // STRICTEMENT CONSERVER LES DONNÉES EN LIGNE (PIN, isRegistered, rôles, etc.)
-            // Synchronisation du prénom et surnom si mise à jour dans les constantes officielles
-            const effectiveFirstName = official.firstName;
-            const effectiveNickname = official.nickname;
-            const effectiveFullRosterName = official.fullRosterName;
+          const rawPin = uDoc
+            ? (uDoc.pinCode !== undefined ? uDoc.pinCode : (uDoc.pin !== undefined ? uDoc.pin : (uDoc.password || uDoc.code || '')))
+            : (official.pinCode || official.pin || '');
+          const cleanPin = rawPin && String(rawPin).trim() !== '' && String(rawPin).trim() !== 'Non défini' ? String(rawPin).trim() : '';
 
-            // Mise à jour de Firestore si le profil a été actualisé
-            if (
-              existing.firstName !== effectiveFirstName ||
-              existing.nickname !== effectiveNickname ||
-              existing.fullRosterName !== effectiveFullRosterName
-            ) {
-              setDoc(doc(db, 'members', existing.id || official.id), {
-                firstName: effectiveFirstName,
-                login: effectiveFirstName,
-                nickname: effectiveNickname,
-                surname: effectiveNickname,
-                fullRosterName: effectiveFullRosterName,
-              }, { merge: true }).catch(console.warn);
-            }
+          // RÈGLE : Un membre est considéré comme "INSCRIT ET ACTIVÉ" dans TOUTE l'application si ET SEULEMENT SI :
+          // - Son document Firestore possède un code PIN valide (non vide) : m.pinCode && String(m.pinCode).trim() !== ""
+          // OU
+          // - Son champ d'activation est vrai : m.isRegistered === true OU m.statut === "Activé".
+          const isActive = uDoc
+            ? Boolean(
+                (cleanPin !== '') ||
+                uDoc.isRegistered === true ||
+                uDoc.statut === 'Activé'
+              )
+            : Boolean(
+                (cleanPin !== '') ||
+                official.isRegistered === true ||
+                official.statut === 'Activé'
+              );
 
-            // Synchronisation de l'email si celui-ci a été mis à jour dans le code source
-            const effectiveEmail = official.email || existing.email || '';
-            if (official.email && existing.email !== official.email) {
-              setDoc(doc(db, 'members', existing.id || official.id), { email: official.email }, { merge: true }).catch(console.warn);
-            }
+          const photo =
+            (typeof uDoc?.photoUrl === 'string' && uDoc.photoUrl.trim() ? uDoc.photoUrl.trim() : '') ||
+            (typeof uDoc?.avatar === 'string' && uDoc.avatar.trim() ? uDoc.avatar.trim() : '') ||
+            (typeof uDoc?.photoURL === 'string' && uDoc.photoURL.trim() ? uDoc.photoURL.trim() : '') ||
+            official.photoUrl ||
+            official.avatar ||
+            '';
 
-            // Variantes de photo et de code PIN réelles issues de Firestore
-            const existingRaw = existing as any;
-            const photo = existing.photoUrl || existing.avatar || existingRaw.photoURL || existingRaw.profilePicture || existingRaw.avatarUrl || existingRaw.profileImage || existingRaw.image || official.photoUrl || official.avatar || undefined;
-            const effectivePin = existing.pin || existingRaw.password || existingRaw.code || existingRaw.userPin || existingRaw.accessCode || existingRaw.activationCode || undefined;
+          const effectivePin = cleanPin || (isActive && !uDoc ? (official.pinCode || official.pin || undefined) : undefined);
 
-            reconciledList.push({
-              ...official,
-              ...existing,
-              firstName: effectiveFirstName,
-              nickname: effectiveNickname,
-              fullRosterName: effectiveFullRosterName,
-              avatar: photo,
-              photoUrl: photo,
-              email: effectiveEmail,
-              id: existing.id || official.id,
-              isRegistered: Boolean(existing.isRegistered === true && effectivePin && effectivePin !== 'Non défini'),
-              pin: effectivePin || undefined,
-            });
-          } else {
-            // Membre manquant individuel : initialisé sans écraser les autres
-            const newMember: RouamaMember = { ...official };
-            reconciledList.push(newMember);
-            setDoc(doc(db, 'members', official.id), sanitizeFirestore(newMember)).catch(console.warn);
-          }
-        }
-
-        // Conserver les autres membres s'il y en a pour ne rien perdre
-        firestoreDocsMap.forEach((m, id) => {
-          if (!reconciledList.some(r => r.id === id)) {
-            reconciledList.push(m);
-          }
+          return {
+            id: official.id,
+            firstName: official.firstName,
+            nickname: official.nickname,
+            fullRosterName: official.fullRosterName,
+            phone: uDoc?.phone || official.phone,
+            email: uDoc?.email || official.email || '',
+            pin: effectivePin,
+            pinCode: effectivePin,
+            statut: isActive ? 'Activé' : 'En attente',
+            isRegistered: isActive,
+            avatar: photo,
+            photoUrl: photo,
+            assignedRole: uDoc?.assignedRole || official.assignedRole,
+            resteADevoir: typeof uDoc?.resteADevoir === 'number' ? uDoc.resteADevoir : (official.resteADevoir || 0),
+            updatedAt: uDoc?.updatedAt || official.updatedAt,
+            lastLogin: uDoc?.lastLogin || official.lastLogin,
+          };
         });
 
-        // Conserver l'ordre fraternel officiel (1 à 12)
-        reconciledList.sort((a, b) => {
-          const orderA = orderMap.has(a.id) ? orderMap.get(a.id)! : 999;
-          const orderB = orderMap.has(b.id) ? orderMap.get(b.id)! : 999;
-          return orderA - orderB;
-        });
+        setMembers(reconciledList);
 
-        // SYNCHRONISATION DU DÉFAUT :
-        // Conserver rigoureusement la photo chargée dans le state global (members) sans la réinitialiser au redémarrage ou après un rafraîchissement
-        setMembers((prevMembers) => {
-          const prevMap = new Map(prevMembers.map(m => [m.id, m]));
-          return reconciledList.map(item => {
-            const prevM = prevMap.get(item.id);
-            const preservedPhoto = item.photoUrl || item.avatar || prevM?.photoUrl || prevM?.avatar || undefined;
-            return {
-              ...item,
-              photoUrl: preservedPhoto,
-              avatar: preservedPhoto,
-            };
-          });
-        });
-
-        // Mettre à jour l'utilisateur actif si c'est un membre et rafraîchir sa photo de profil
+        // Mettre à jour l'utilisateur actif si c'est un membre et rafraîchir sa photo de profil / infos
         setCurrentUser((prev) => {
           if (prev && prev.type === 'MEMBER' && prev.member) {
-            const fresh = reconciledList.find(m =>
+            const fresh = reconciledList.find((m) =>
               m.id === prev.member!.id ||
               normalizeRosterString(m.firstName) === normalizeRosterString(prev.member!.firstName) ||
               normalizeRosterString(m.nickname) === normalizeRosterString(prev.member!.nickname)
@@ -844,85 +775,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               };
               try {
                 localStorage.setItem(EROUAMA_ACTIVE_SESSION_KEY, JSON.stringify({ ...prev, member: updatedMember }));
+                localStorage.setItem('rouama_user', JSON.stringify(updatedMember));
               } catch (e) {}
               return { ...prev, member: updatedMember };
             }
           }
           return prev;
         });
-      },
-      (err) => {
-        console.warn('Firestore members listener notification:', err);
-      }
-    );
-    unsubscribes.push(unsubMembers);
-
-    // 2.bis COLLECTION 'users' (Synchronisation de la photo de profil chargée depuis la collection Firestore users)
-    const unsubUsers = onSnapshot(
-      collection(db, 'users'),
-      (snapshot) => {
-        if (snapshot.empty) return;
-        const usersPhotosMap = new Map<string, string>();
-        snapshot.docs.forEach((docSnap) => {
-          const d = docSnap.data() as any;
-          const p =
-            d.photoUrl ||
-            d.avatar ||
-            d.photoURL ||
-            d.profilePicture ||
-            d.avatarUrl ||
-            d.profileImage ||
-            d.image;
-          if (p && typeof p === 'string' && p.trim()) {
-            const clean = p.trim();
-            usersPhotosMap.set(docSnap.id, clean);
-            if (d.firstName) usersPhotosMap.set(normalizeRosterString(d.firstName), clean);
-            if (d.nickname) usersPhotosMap.set(normalizeRosterString(d.nickname), clean);
-          }
-        });
-
-        if (usersPhotosMap.size > 0) {
-          setMembers((prev) =>
-            prev.map((m) => {
-              const photoFromUsers =
-                usersPhotosMap.get(m.id) ||
-                usersPhotosMap.get(normalizeRosterString(m.firstName)) ||
-                usersPhotosMap.get(normalizeRosterString(m.nickname));
-              if (photoFromUsers && (!m.photoUrl || !m.avatar)) {
-                return {
-                  ...m,
-                  photoUrl: m.photoUrl || photoFromUsers,
-                  avatar: m.avatar || photoFromUsers,
-                };
-              }
-              return m;
-            })
-          );
-
-          setCurrentUser((prev) => {
-            if (prev && prev.type === 'MEMBER' && prev.member) {
-              const photoFromUsers =
-                usersPhotosMap.get(prev.member.id) ||
-                usersPhotosMap.get(normalizeRosterString(prev.member.firstName)) ||
-                usersPhotosMap.get(normalizeRosterString(prev.member.nickname));
-              if (photoFromUsers && (!prev.member.photoUrl || !prev.member.avatar)) {
-                const updated = {
-                  ...prev.member,
-                  photoUrl: prev.member.photoUrl || photoFromUsers,
-                  avatar: prev.member.avatar || photoFromUsers,
-                };
-                try {
-                  localStorage.setItem(
-                    EROUAMA_ACTIVE_SESSION_KEY,
-                    JSON.stringify({ ...prev, member: updated })
-                  );
-                } catch (e) {}
-                return { ...prev, member: updated };
-              }
-            }
-            return prev;
-          });
-        }
       },
       (err) => {
         console.warn('Firestore users listener notification:', err);
@@ -1313,11 +1172,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       console.warn('Erreur lecture Firestore dans registerMember:', e);
     }
 
-    const candidatePin = fsData.pin || fsData.password || fsData.code;
-    const isAlreadyRegistered = Boolean(fsData.isRegistered === true && candidatePin && candidatePin !== 'Non défini');
+    const candidatePin = fsData.pinCode || fsData.pin || matched.pinCode || matched.pin;
+    const isAlreadyRegistered = Boolean((fsData.isRegistered === true || fsData.statut === 'Activé' || matched.statut === 'Activé') && candidatePin && candidatePin !== 'Non défini');
 
     // Si le compte est déjà activé avec un autre PIN, informer le membre
-    if (isAlreadyRegistered && candidatePin !== pin) {
+    if (isAlreadyRegistered && String(candidatePin).trim() !== String(pin).trim()) {
       return {
         success: false,
         message: `Le compte de ${matched.nickname} est déjà activé. Connectez-vous avec votre code PIN personnel ou contactez le CERVEAU.`
@@ -1333,30 +1192,29 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     // 1. DANS LE FORMULAIRE DE PREMIÈRE CONNEXION / ACTIVATION :
     // Lorsqu'un membre saisit son prénom et définit son code PIN à 4 chiffres :
-    // - Mets à jour directement son document dans Firestore :
+    // - Met à jour directement son document dans Firestore (users et members)
+    const updatePayload = {
+      id: memberId,
+      firstName: matched.firstName,
+      nickname: matched.nickname,
+      fullRosterName: matched.fullRosterName,
+      isRegistered: true,
+      statut: 'Activé',
+      pin: String(pin).trim(),
+      pinCode: String(pin).trim(),
+      avatar: avatarUrl || "",
+      photoUrl: avatarUrl || "",
+      lastLogin: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
     try {
-      await updateDoc(doc(db, "members", memberId), {
-        isRegistered: true,
-        pin: pin,              // Enregistre le vrai PIN saisi
-        avatar: avatarUrl || "",    // Enregistre l'URL ou image si présente
-        lastLogin: new Date().toISOString()
-      });
+      await Promise.all([
+        setDoc(doc(db, 'users', memberId), updatePayload, { merge: true }),
+        setDoc(doc(db, 'members', memberId), updatePayload, { merge: true })
+      ]);
     } catch (err) {
-      try {
-        await setDoc(doc(db, 'members', memberId), {
-          id: memberId,
-          firstName: matched.firstName,
-          nickname: matched.nickname,
-          fullRosterName: matched.fullRosterName,
-          isRegistered: true,
-          pin: pin,
-          avatar: avatarUrl || "",
-          lastLogin: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-        }, { merge: true });
-      } catch (err2) {
-        console.error('Erreur finale Firebase registerMember:', err2);
-      }
+      console.warn('Erreur setDoc registerMember Firestore:', err);
     }
 
     const newRecord: RegisteredUserRecord = {
@@ -1371,7 +1229,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const updatedMember: RouamaMember = {
       ...matched,
       isRegistered: true,
-      pin: pin,
+      statut: 'Activé',
+      pin: String(pin).trim(),
+      pinCode: String(pin).trim(),
       avatar: avatarUrl || matched.avatar,
       photoUrl: avatarUrl || matched.photoUrl,
     };
@@ -1387,9 +1247,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return { success: false, message: 'Veuillez saisir votre prénom ou surnom fraternel.' };
     }
 
-    const cleanInput = normalizeRosterString(inputName);
     const matched = findRosterMember(inputName);
-
     if (!matched) {
       return { success: false, message: "Désolé mais ce prénom ne correspond à aucun membre officiel Rouama. Vérifiez l'orthographe de votre prénom officiel." };
     }
@@ -1397,16 +1255,23 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const memberId = matched.id;
     let fsData: any = {};
     try {
-      const docSnap = await getDoc(doc(db, "members", memberId));
-      if (docSnap.exists()) {
-        fsData = docSnap.data();
+      const userSnap = await getDoc(doc(db, "users", memberId));
+      if (userSnap.exists()) {
+        fsData = userSnap.data();
+      } else {
+        const memSnap = await getDoc(doc(db, "members", memberId));
+        if (memSnap.exists()) {
+          fsData = memSnap.data();
+        }
       }
     } catch (e) {
       console.warn('Erreur lecture Firestore dans loginMember:', e);
     }
 
-    const expectedPin = fsData.pin || fsData.password || fsData.code || matched.pin;
-    const isRegistered = Boolean(fsData.isRegistered === true && expectedPin && expectedPin !== 'Non défini');
+    // VÉRIFICATION DU CODE PIN : Première connexion OU Vérification stricte
+    const expectedPin = String(matched.pinCode || matched.pin || fsData.pinCode || fsData.pin || '').trim();
+    const inputPinClean = String(pin).trim();
+    const nowIso = new Date().toISOString();
 
     const avatarUrl = (typeof fsData.avatar === 'string' && fsData.avatar.trim()) ||
       (typeof fsData.photoUrl === 'string' && fsData.photoUrl.trim()) ||
@@ -1415,63 +1280,106 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       matched.photoUrl ||
       "";
 
-    // Si le membre n'est pas encore activé dans Firestore (ou réinitialisé)
-    // S'il fournit un code PIN à 4 chiffres, activation automatique lors de la première connexion
-    if (!isRegistered || !expectedPin) {
-      if (!pin || pin.length !== 4 || !/^\d{4}$/.test(pin)) {
-        return {
-          success: false,
-          message: `Le compte de ${matched.nickname} est en attente d'activation. Veuillez saisir un code PIN à 4 chiffres pour l'activer.`
-        };
-      }
-
+    // Cas 1 : Première connexion (pas encore de PIN dans Firestore)
+    if (!expectedPin || expectedPin === 'Non défini') {
       try {
-        await updateDoc(doc(db, "members", memberId), {
+        try {
+          await updateDoc(doc(db, "users", memberId), {
+            pinCode: inputPinClean,
+            pin: inputPinClean,
+            isRegistered: true,
+            statut: "Activé",
+            lastLogin: nowIso,
+            updatedAt: nowIso
+          });
+        } catch {
+          await setDoc(doc(db, "users", memberId), {
+            id: memberId,
+            firstName: matched.firstName,
+            nickname: matched.nickname,
+            fullRosterName: matched.fullRosterName,
+            pinCode: inputPinClean,
+            pin: inputPinClean,
+            isRegistered: true,
+            statut: 'Activé',
+            lastLogin: nowIso,
+            updatedAt: nowIso
+          }, { merge: true });
+        }
+
+        try {
+          await setDoc(doc(db, "members", memberId), {
+            id: memberId,
+            firstName: matched.firstName,
+            nickname: matched.nickname,
+            fullRosterName: matched.fullRosterName,
+            pinCode: inputPinClean,
+            pin: inputPinClean,
+            isRegistered: true,
+            statut: 'Activé',
+            lastLogin: nowIso,
+            updatedAt: nowIso
+          }, { merge: true });
+        } catch (e) {
+          console.warn(e);
+        }
+
+        const activatedMember: RouamaMember = {
+          ...matched,
           isRegistered: true,
-          pin: pin,
-          avatar: avatarUrl || "",
-          lastLogin: new Date().toISOString()
-        });
+          statut: 'Activé',
+          pin: inputPinClean,
+          pinCode: inputPinClean,
+          avatar: avatarUrl || matched.avatar,
+          photoUrl: avatarUrl || matched.photoUrl,
+          lastLogin: nowIso,
+          updatedAt: nowIso
+        };
+
+        setMembers(prev => prev.map(m => m.id === memberId ? activatedMember : m));
+        setCurrentUser({ type: 'MEMBER', member: activatedMember });
+        return { success: true, message: `Bienvenue chez vous, ${activatedMember.nickname} ! Votre compte a été activé.` };
       } catch (err) {
-        await setDoc(doc(db, "members", memberId), {
-          id: memberId,
-          firstName: matched.firstName,
-          nickname: matched.nickname,
-          fullRosterName: matched.fullRosterName,
-          isRegistered: true,
-          pin: pin,
-          avatar: avatarUrl || "",
-          lastLogin: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-        }, { merge: true });
+        console.error('Erreur activation première connexion:', err);
+        return { success: false, message: "Erreur lors de l'activation du compte." };
       }
-
-      const activatedMember: RouamaMember = {
-        ...matched,
-        isRegistered: true,
-        pin: pin,
-        avatar: avatarUrl || matched.avatar,
-        photoUrl: avatarUrl || matched.photoUrl,
-      };
-
-      setMembers(prev => prev.map(m => m.id === memberId ? activatedMember : m));
-      setCurrentUser({ type: 'MEMBER', member: activatedMember });
-      return { success: true, message: `Première connexion réussie ! Bienvenue chez vous, ${matched.nickname} !` };
     }
 
-    // Le membre est déjà activé -> vérification du PIN saisi
-    if (expectedPin !== pin) {
+    // Cas 2 : Compte déjà activé -> Vérification stricte
+    if (inputPinClean !== expectedPin) {
       return { success: false, message: 'Code PIN incorrect.' };
     }
 
-    // PIN correct -> Enregistrement de lastLogin dans Firestore
+    // PIN correct -> Enregistrement de lastLogin & statut dans Firestore (users et members)
     try {
-      await updateDoc(doc(db, "members", memberId), {
-        isRegistered: true,
-        pin: pin,
-        avatar: avatarUrl || "",
-        lastLogin: new Date().toISOString()
-      });
+      try {
+        await updateDoc(doc(db, "users", memberId), {
+          pinCode: expectedPin,
+          pin: expectedPin,
+          isRegistered: true,
+          statut: "Activé",
+          lastLogin: nowIso
+        });
+      } catch {
+        await setDoc(doc(db, "users", memberId), {
+          pinCode: expectedPin,
+          pin: expectedPin,
+          isRegistered: true,
+          statut: 'Activé',
+          lastLogin: nowIso
+        }, { merge: true });
+      }
+      try {
+        await setDoc(doc(db, "members", memberId), {
+          pinCode: expectedPin,
+          pin: expectedPin,
+          isRegistered: true,
+          statut: 'Activé',
+          lastLogin: nowIso
+        }, { merge: true });
+      } catch (e) {
+        console.warn(e);
+      }
     } catch (err) {
       console.warn('Erreur updateDoc lastLogin Firestore:', err);
     }
@@ -1479,9 +1387,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const connectedMember: RouamaMember = {
       ...matched,
       isRegistered: true,
-      pin: pin,
+      statut: 'Activé',
+      pin: expectedPin,
+      pinCode: expectedPin,
       avatar: avatarUrl || matched.avatar,
       photoUrl: avatarUrl || matched.photoUrl,
+      lastLogin: nowIso,
     };
 
     setMembers(prev => prev.map(m => m.id === memberId ? connectedMember : m));
@@ -3300,6 +3211,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const updateMemberProfile = updateMember;
 
   const assignMemberRole = (memberId: string, role?: AdminRole) => {
+    setDoc(doc(db, 'users', memberId), { assignedRole: role || null }, { merge: true }).catch(console.warn);
     setDoc(doc(db, 'members', memberId), { assignedRole: role || null }, { merge: true }).catch(console.warn);
     setMembers(prev =>
       prev.map(m => (m.id === memberId ? { ...m, assignedRole: role } : m))
@@ -3307,9 +3219,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const resetMemberPin = (memberId: string) => {
-    setDoc(doc(db, 'members', memberId), { pin: null, isRegistered: false }, { merge: true }).catch(console.warn);
+    const resetPayload = { pin: null, pinCode: null, isRegistered: false, statut: 'En attente', updatedAt: new Date().toISOString() };
+    setDoc(doc(db, 'users', memberId), resetPayload, { merge: true }).catch(console.warn);
+    setDoc(doc(db, 'members', memberId), resetPayload, { merge: true }).catch(console.warn);
     setMembers(prev =>
-      prev.map(m => (m.id === memberId ? { ...m, pin: undefined, isRegistered: false } : m))
+      prev.map(m => (m.id === memberId ? { ...m, pin: undefined, pinCode: undefined, isRegistered: false, statut: 'En attente' } : m))
     );
     try {
       const currentList = getStoredRegisteredUsers();

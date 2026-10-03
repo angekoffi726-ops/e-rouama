@@ -143,14 +143,18 @@ export const EditMemberModal: React.FC<EditMemberModalProps> = ({
 
     try {
       const existingMemberData = member;
+      const finalPin = trimmedPin || existingMemberData.pinCode || existingMemberData.pin || '';
+      const isActif = Boolean(finalPin || existingMemberData.isRegistered);
       const formFields = {
         firstName: trimmedFirstName,
         nickname: nickname.trim() || trimmedFirstName,
         fullRosterName: fullRosterName.trim() || trimmedFirstName,
         phone: phone.trim(),
         email: email.trim(),
-        pin: trimmedPin || existingMemberData.pin || '',
-        isRegistered: Boolean(trimmedPin || existingMemberData.isRegistered),
+        pin: finalPin,
+        pinCode: finalPin,
+        isRegistered: isActif,
+        statut: isActif ? 'Activé' : "En attente d'activation",
       };
 
       // RÈGLE STRICTE N°1 & N°2 :
