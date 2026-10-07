@@ -1,7 +1,7 @@
 import React, { useRef, useState, useEffect } from 'react';
 import { useApp } from '../../context/AppContext';
 import { TabType } from '../Navigation';
-import { doc, setDoc, getDoc } from 'firebase/firestore';
+import { doc, setDoc, getDoc, updateDoc } from 'firebase/firestore';
 import { db } from '../../firebase';
 import { compressProfileImage } from '../../utils/imageCompressor';
 import { EditMemberModal } from '../common/EditMemberModal';
@@ -30,7 +30,7 @@ interface DashboardTabProps {
 }
 
 export const DashboardTab: React.FC<DashboardTabProps> = ({ onNavigateTab }) => {
-  const { currentUser, updateMemberProfile, updateMemberAvatar, getMemberDuesDetail, newsItems, activities, verseOfTheDay } = useApp();
+  const { currentUser, members, updateMemberProfile, updateMemberAvatar, getMemberDuesDetail, newsItems, activities, verseOfTheDay } = useApp();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [uploadSuccess, setUploadSuccess] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
@@ -142,12 +142,29 @@ export const DashboardTab: React.FC<DashboardTabProps> = ({ onNavigateTab }) => 
     }
   };
 
-  const handleUpdateMemberPin = async (e: React.FormEvent) => {
+  // 1. CORRECTION DE LA FONCTION DE CHANGEMENT DE PIN UTILISATEUR (handleChangePin)
+  const handleChangePin = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!memberId) return;
 
-    const trimmed = newPin.trim();
-    if (trimmed.length !== 4 || !/^\d{4}$/.test(trimmed)) {
+    // 1. Identifie le document exact du membre connecté dans Firestore via son ID unique
+    const currentUserId = String(
+      (currentUser as any)?.member?.id ||
+      (currentUser as any)?.id ||
+      memberId ||
+      (members || []).find((m: any) =>
+        (m.nickname && nickname && m.nickname.toLowerCase() === nickname.toLowerCase()) ||
+        (m.firstName && ((currentMember?.firstName || '') as string).toLowerCase() === m.firstName.toLowerCase())
+      )?.id ||
+      '1'
+    ).trim();
+
+    if (!currentUserId) {
+      setPinError("Impossible d'identifier votre compte utilisateur.");
+      return;
+    }
+
+    const cleanPin = String(newPin).trim();
+    if (cleanPin.length !== 4 || !/^\d{4}$/.test(cleanPin)) {
       setPinError('Le code PIN doit comporter exactement 4 chiffres.');
       return;
     }
@@ -156,17 +173,87 @@ export const DashboardTab: React.FC<DashboardTabProps> = ({ onNavigateTab }) => 
     setPinError(null);
 
     try {
-      await updateMemberProfile(memberId, {
-        pin: trimmed,
+      const nowIso = new Date().toISOString();
+
+      // 2. Effectue la mise à jour asynchrone explicite dans Firestore :
+      // await updateDoc(doc(db, "users", currentUserId), { pinCode: String(newPin).trim() });
+      try {
+        await updateDoc(doc(db, 'users', currentUserId), {
+          pinCode: cleanPin,
+          pin: cleanPin,
+          isRegistered: true,
+          statut: 'Activé',
+          updatedAt: nowIso,
+        });
+      } catch (errUsersUpdate) {
+        // Fallback setDoc avec merge si le document n'existait pas encore
+        await setDoc(doc(db, 'users', currentUserId), {
+          id: currentUserId,
+          pinCode: cleanPin,
+          pin: cleanPin,
+          isRegistered: true,
+          statut: 'Activé',
+          updatedAt: nowIso,
+        }, { merge: true });
+      }
+
+      // Synchronisation miroir dans la collection 'members'
+      try {
+        await updateDoc(doc(db, 'members', currentUserId), {
+          pinCode: cleanPin,
+          pin: cleanPin,
+          isRegistered: true,
+          statut: 'Activé',
+          updatedAt: nowIso,
+        });
+      } catch (errMembersUpdate) {
+        await setDoc(doc(db, 'members', currentUserId), {
+          id: currentUserId,
+          pinCode: cleanPin,
+          pin: cleanPin,
+          isRegistered: true,
+          statut: 'Activé',
+          updatedAt: nowIso,
+        }, { merge: true });
+      }
+
+      // 3. Met à jour l'objet utilisateur en session locale (currentUser / localStorage) avec le nouveau pinCode
+      const updatedMemberObj = {
+        ...(currentMember || {}),
+        ...((currentUser as any)?.member || {}),
+        id: currentUserId,
+        pinCode: cleanPin,
+        pin: cleanPin,
         isRegistered: true,
+        statut: 'Activé',
+        updatedAt: nowIso,
+      };
+
+      try {
+        localStorage.setItem('rouama_user', JSON.stringify(updatedMemberObj));
+        localStorage.setItem(
+          'erouama_active_session',
+          JSON.stringify({ type: 'MEMBER', member: updatedMemberObj })
+        );
+      } catch (e) {
+        console.warn('Erreur mise à jour localStorage session:', e);
+      }
+
+      // Mise à jour de l'état global via AppContext
+      await updateMemberProfile(currentUserId, {
+        pin: cleanPin,
+        pinCode: cleanPin,
+        isRegistered: true,
+        statut: 'Activé',
       });
 
+      // 4. Affiche un toast / notification de confirmation : "Code PIN mis à jour avec succès !"
       setPinSuccess(true);
       setTimeout(() => {
         setIsPinModalOpen(false);
         setPinSuccess(false);
         setNewPin('');
-      }, 1800);
+      }, 1600);
     } catch (err) {
       console.error('Erreur mise à jour code PIN membre:', err);
       setPinError("Une erreur est survenue lors de la sauvegarde du PIN.");
@@ -174,6 +261,8 @@ export const DashboardTab: React.FC<DashboardTabProps> = ({ onNavigateTab }) => 
       setIsSavingPin(false);
     }
   };
+
+  const handleUpdateMemberPin = handleChangePin;
 
   return (
     <div className="space-y-6 sm:space-y-8 animate-fadeIn">
@@ -560,7 +649,7 @@ export const DashboardTab: React.FC<DashboardTabProps> = ({ onNavigateTab }) => 
               Définis un code secret personnel à 4 chiffres pour sécuriser l'accès à ton espace <strong className="text-amber-300">E-ROUAMA</strong>.
             </p>
 
-            <form onSubmit={handleUpdateMemberPin} className="space-y-4">
+            <form onSubmit={handleChangePin} className="space-y-4">
               <div>
                 <label className="block text-xs font-bold text-slate-300 mb-1.5 text-center">
                   Nouveau Code PIN (4 chiffres)

@@ -3204,6 +3204,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       };
       delete updatedData.newPhotoBase64;
 
+      // Synchronisation stricte de pinCode et pin
+      if (formFields.pin !== undefined || formFields.pinCode !== undefined) {
+        const rawPin = formFields.pinCode !== undefined ? formFields.pinCode : formFields.pin;
+        const cleanPin = rawPin !== null && rawPin !== undefined ? String(rawPin).trim() : '';
+        updatedData.pin = cleanPin;
+        updatedData.pinCode = cleanPin;
+        if (cleanPin) {
+          updatedData.isRegistered = true;
+          updatedData.statut = 'Activé';
+        }
+      }
+
       // 2. SAUVEGARDE PROPRE DANS FIRESTORE :
       // Utilise updateDoc ou setDoc(docRef, updatedData, { merge: true }) pour préserver tous les champs non modifiés (notamment photoUrl / avatar)
       const memberRef = doc(db, 'members', memberId);
@@ -3217,9 +3229,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       // Synchronisation miroir propre dans 'users'
       try {
-        await setDoc(doc(db, 'users', memberId), cleaned, { merge: true });
+        await updateDoc(doc(db, 'users', memberId), cleaned);
       } catch (e) {
-        console.warn('Sync users doc:', e);
+        await setDoc(doc(db, 'users', memberId), cleaned, { merge: true });
       }
 
       // Mise à jour synchrone du state global members
