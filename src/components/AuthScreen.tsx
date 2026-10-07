@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { collection, onSnapshot, doc, updateDoc, setDoc } from 'firebase/firestore';
+import { collection, onSnapshot, doc, updateDoc, setDoc, addDoc } from 'firebase/firestore';
 import { db } from '../firebase';
 import { useApp } from '../context/AppContext';
 import { ADMIN_USERS, INITIAL_ROUAMA_MEMBERS, getRegisteredMembersCount, isMemberActive } from '../data/membersData';
@@ -392,6 +392,22 @@ export const AuthScreen: React.FC = () => {
         lastLogin: nowIso
       };
 
+      // Si le membre possède un rôle administratif attribué, enregistrer dans admin_logs
+      if (member.assignedRole || (member as any).role) {
+        const assignedRole = member.assignedRole || (member as any).role;
+        try {
+          await addDoc(collection(db, 'admin_logs'), {
+            userId: member.id,
+            memberName: `${member.firstName} (${member.nickname || member.name})`,
+            role: assignedRole,
+            loginTimestamp: nowIso,
+            dateString: nowIso.split('T')[0],
+          });
+        } catch (e) {
+          console.warn('Erreur log admin_logs membre:', e);
+        }
+      }
+
       setCurrentUser(updatedMember);
       localStorage.setItem('rouama_user', JSON.stringify(updatedMember));
       localStorage.setItem('erouama_active_session', JSON.stringify({ type: 'MEMBER', member: updatedMember }));
@@ -404,7 +420,7 @@ export const AuthScreen: React.FC = () => {
     }
   };
 
-  const handleAdminLogin = (e: React.FormEvent) => {
+  const handleAdminLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg(null);
     setSuccessMsg(null);
@@ -418,6 +434,20 @@ export const AuthScreen: React.FC = () => {
     if (!res.success) {
       setErrorMsg(res.message);
     } else {
+      // Enregistrement direct supplémentaire dans Firestore (admin_logs) pour synchronisation temps réel instantanée
+      try {
+        const cleanInput = adminRoleInput.trim().toUpperCase().replace(/[\s-]/g, '_');
+        const now = new Date();
+        await addDoc(collection(db, 'admin_logs'), {
+          userId: cleanInput,
+          memberName: cleanInput,
+          role: cleanInput,
+          loginTimestamp: now.toISOString(),
+          dateString: now.toISOString().split('T')[0],
+        });
+      } catch (err) {
+        console.warn('Erreur admin_logs dans handleAdminLogin:', err);
+      }
       setSuccessMsg(res.message);
       clearAllFields();
     }

@@ -353,3 +353,12 @@ export interface FinancialBilan {
   archivedBySecretariat: boolean;
   publishedByCom?: boolean;
 }
+
+export interface AdminLoginLog {
+  id: string;
+  userId: string;
+  memberName: string;
+  role: AdminRole | string;
+  loginTimestamp: string;
+  dateString: string;
+}

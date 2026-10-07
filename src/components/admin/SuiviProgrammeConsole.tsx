@@ -1,4 +1,6 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
+import { collection, onSnapshot, addDoc } from 'firebase/firestore';
+import { db } from '../../firebase';
 import { useApp } from '../../context/AppContext';
 import {
   AdminRole,
@@ -10,6 +12,7 @@ import {
   FinancialBilan,
   AgrProject,
   EventActivity,
+  AdminLoginLog,
 } from '../../types';
 import {
   Shield,
@@ -36,7 +39,141 @@ import {
   PhoneCall,
   User,
   Check,
+  Activity,
+  Users,
+  Zap,
+  Radio,
+  CheckCircle,
+  XCircle,
+  ArrowUpRight,
+  History,
+  LogIn,
 } from 'lucide-react';
+
+interface AdminDepartmentConfig {
+  key: string;
+  name: string;
+  shortName: string;
+  icon: string;
+  badgeBg: string;
+  badgeText: string;
+  borderColor: string;
+  description: string;
+  aliases: string[];
+}
+
+export const ADMIN_DEPARTMENTS_CONFIG: AdminDepartmentConfig[] = [
+  {
+    key: 'TRESORIER',
+    name: 'Trésorerie Générale',
+    shortName: 'Trésorier',
+    icon: '💰',
+    badgeBg: 'bg-emerald-500/10',
+    badgeText: 'text-emerald-400',
+    borderColor: 'border-emerald-500/30',
+    description: 'Gestion des caisses, validation des dépôts et bilans financiers',
+    aliases: ['TRESOR', 'TRESORIER', 'TRESORERIE'],
+  },
+  {
+    key: 'CERVEAU',
+    name: 'Le Cerveau (Président)',
+    shortName: 'Présidence (Cerveau)',
+    icon: '🧠',
+    badgeBg: 'bg-amber-500/10',
+    badgeText: 'text-amber-400',
+    borderColor: 'border-amber-500/30',
+    description: 'Verrouillage des décaissements et alertes financières',
+    aliases: ['CERVEAU', 'PRESID', 'PRESIDENT', 'PRESIDENCE'],
+  },
+  {
+    key: 'PAYOR',
+    name: 'Espace Payor',
+    shortName: 'Payor',
+    icon: '⚖️',
+    badgeBg: 'bg-purple-500/10',
+    badgeText: 'text-purple-400',
+    borderColor: 'border-purple-500/30',
+    description: 'Validation administrative des PV, règlements et bilans',
+    aliases: ['PAYOR', 'RESP_PAYOR'],
+  },
+  {
+    key: 'SECRETARIAT',
+    name: 'Secrétariat Général',
+    shortName: 'Secrétariat',
+    icon: '📝',
+    badgeBg: 'bg-blue-500/10',
+    badgeText: 'text-blue-400',
+    borderColor: 'border-blue-500/30',
+    description: 'Rédaction des PVs, présences et registre officiel',
+    aliases: ['SECRETAR', 'SECRETAIRE', 'SECRETARIAT', 'SG'],
+  },
+  {
+    key: 'COM',
+    name: "Base d'Information et de Communication (BIC)",
+    shortName: 'BIC (Com)',
+    icon: '📢',
+    badgeBg: 'bg-cyan-500/10',
+    badgeText: 'text-cyan-400',
+    borderColor: 'border-cyan-500/30',
+    description: 'Diffusion officielle, alertes publiques et accusés ACK',
+    aliases: ['COM', 'BIC', 'COMMUNICATION'],
+  },
+  {
+    key: 'ORGANISATION',
+    name: 'Commission Organisation',
+    shortName: 'Organisation',
+    icon: '🎪',
+    badgeBg: 'bg-rose-500/10',
+    badgeText: 'text-rose-400',
+    borderColor: 'border-rose-500/30',
+    description: 'Événements, comités ad-hoc et budget prévisionnel',
+    aliases: ['ORGANIS', 'ORGANISATEUR', 'ORGANISATION', 'PCO'],
+  },
+  {
+    key: 'PROJET',
+    name: 'Commission Projets (AGR)',
+    shortName: 'Respo Projet',
+    icon: '🚀',
+    badgeBg: 'bg-indigo-500/10',
+    badgeText: 'text-indigo-400',
+    borderColor: 'border-indigo-500/30',
+    description: 'Études de rentabilité et montage des projets d’investissement',
+    aliases: ['PROJET', 'AGR', 'RESPO_PROJET', 'RESP_PROJET'],
+  },
+  {
+    key: 'SPIRITUALITE',
+    name: 'Commission Spiritualité',
+    shortName: 'Spiritualité',
+    icon: '🕊️',
+    badgeBg: 'bg-violet-500/10',
+    badgeText: 'text-violet-400',
+    borderColor: 'border-violet-500/30',
+    description: 'Prière ROUAMA, liturgie AELF et méditations',
+    aliases: ['SPIRIT', 'SPIRITUALITE'],
+  },
+  {
+    key: 'SDP',
+    name: 'Chargé du Suivi du Programme (SDP)',
+    shortName: 'Chargé du Suivi',
+    icon: '🕵️',
+    badgeBg: 'bg-yellow-500/10',
+    badgeText: 'text-yellow-400',
+    borderColor: 'border-yellow-500/30',
+    description: 'Supervision interne et contrôle du respect du calendrier',
+    aliases: ['SDP', 'PROGRAMME', 'SUIVI', 'RESP_PROGRAMME', 'SUIVI_PROGRAMME', 'CHARGE_DU_SUIVI'],
+  },
+  {
+    key: 'SUPER_ADMIN',
+    name: 'Super Administrateur',
+    shortName: 'Super Admin',
+    icon: '👑',
+    badgeBg: 'bg-red-500/10',
+    badgeText: 'text-red-400',
+    borderColor: 'border-red-500/30',
+    description: 'Supervision générale et audit souverain de la plateforme',
+    aliases: ['SUPER_ADMIN', 'SUPERADMIN', 'ADMIN_GENERAL'],
+  },
+];
 
 interface SuiviProgrammeConsoleProps {
   activeRole?: AdminRole;
@@ -53,6 +190,8 @@ export const SuiviProgrammeConsole: React.FC<SuiviProgrammeConsoleProps> = ({ ac
     declarations,
     programmeTasks,
     programmeAlerts,
+    adminLogs,
+    logAdminConnection,
     addProgrammeTask,
     updateProgrammeTask,
     deleteProgrammeTask,
@@ -60,8 +199,430 @@ export const SuiviProgrammeConsole: React.FC<SuiviProgrammeConsoleProps> = ({ ac
     resolveProgrammeAlert,
   } = useApp();
 
-  // Tab state: SYNTHESE, TACHES, ALERTES, AUDIT
-  const [activeTab, setActiveTab] = useState<'SYNTHESE' | 'TACHES' | 'ALERTES' | 'AUDIT'>('SYNTHESE');
+  // Tab state: SYNTHESE, TACHES, ALERTES, AUDIT, CONNEXIONS
+  const [activeTab, setActiveTab] = useState<'SYNTHESE' | 'TACHES' | 'ALERTES' | 'AUDIT' | 'CONNEXIONS'>('SYNTHESE');
+
+  // =========================================================
+  // ÉCOUTE FIRESTORE EN TEMPS RÉEL (onSnapshot) DES ADMIN_LOGS
+  // =========================================================
+  const [realtimeAdminLogs, setRealtimeAdminLogs] = useState<AdminLoginLog[]>([]);
+
+  useEffect(() => {
+    const unsub = onSnapshot(
+      collection(db, 'admin_logs'),
+      (snapshot) => {
+        const loaded: AdminLoginLog[] = [];
+        snapshot.forEach((d) => {
+          loaded.push({ id: d.id, ...(d.data() as any) });
+        });
+        loaded.sort((a, b) => (b.loginTimestamp || '').localeCompare(a.loginTimestamp || ''));
+        setRealtimeAdminLogs(loaded);
+      },
+      (err) => {
+        console.warn('Erreur écoute collection admin_logs:', err);
+      }
+    );
+    return () => unsub();
+  }, []);
+
+  const effectiveAdminLogs = useMemo(() => {
+    if (realtimeAdminLogs.length > 0) return realtimeAdminLogs;
+    return adminLogs || [];
+  }, [realtimeAdminLogs, adminLogs]);
+
+  // Date du jour (Multi-format pour prise en compte stricte des fuseaux horaires)
+  const todayDateStrings = useMemo(() => {
+    const now = new Date();
+    const isoDate = now.toISOString().split('T')[0];
+    const localYear = now.getFullYear();
+    const localMonth = String(now.getMonth() + 1).padStart(2, '0');
+    const localDay = String(now.getDate()).padStart(2, '0');
+    return [isoDate, `${localYear}-${localMonth}-${localDay}`];
+  }, []);
+
+  const todayDisplayDate = useMemo(() => {
+    return new Date().toLocaleDateString('fr-FR', {
+      weekday: 'long',
+      day: 'numeric',
+      month: 'long',
+      year: 'numeric',
+    });
+  }, []);
+
+  // Filtrage des logs pour la journée actuelle
+  const todayLogs = useMemo(() => {
+    return effectiveAdminLogs.filter((log) => {
+      if (!log) return false;
+      if (log.dateString && todayDateStrings.includes(log.dateString)) return true;
+      if (log.loginTimestamp) {
+        const logDateIso = log.loginTimestamp.split('T')[0];
+        if (todayDateStrings.includes(logDateIso)) return true;
+        const d = new Date(log.loginTimestamp);
+        if (!isNaN(d.getTime())) {
+          const now = new Date();
+          return (
+            d.getFullYear() === now.getFullYear() &&
+            d.getMonth() === now.getMonth() &&
+            d.getDate() === now.getDate()
+          );
+        }
+      }
+      return false;
+    });
+  }, [effectiveAdminLogs, todayDateStrings]);
+
+  const deptAttendanceMatch = (dept: AdminDepartmentConfig, role?: string) => {
+    if (!role) return false;
+    const cleanRole = role.toUpperCase().trim();
+    const cleanKey = dept.key.toUpperCase().trim();
+    return (
+      cleanRole === cleanKey ||
+      cleanRole.includes(cleanKey) ||
+      cleanKey.includes(cleanRole) ||
+      dept.aliases.some((alias) => cleanRole.includes(alias))
+    );
+  };
+
+  // Compilation des statistiques par département pour le jour en cours
+  const departmentAttendance = useMemo(() => {
+    return ADMIN_DEPARTMENTS_CONFIG.map((dept) => {
+      const logsForDept = todayLogs.filter((log) => deptAttendanceMatch(dept, log.role));
+
+      const count = logsForDept.length;
+      const isConnectedToday = count > 0;
+      const sortedLogs = [...logsForDept].sort((a, b) =>
+        (b.loginTimestamp || '').localeCompare(a.loginTimestamp || '')
+      );
+      const latestLog = sortedLogs[0];
+      const lastLoginTime = latestLog?.loginTimestamp
+        ? new Date(latestLog.loginTimestamp).toLocaleTimeString('fr-FR', {
+            hour: '2-digit',
+            minute: '2-digit',
+          })
+        : null;
+
+      return {
+        ...dept,
+        count,
+        isConnectedToday,
+        latestLog,
+        lastLoginTime,
+        logs: sortedLogs,
+      };
+    });
+  }, [todayLogs]);
+
+  const connectedDepts = useMemo(() => {
+    return departmentAttendance.filter((d) => d.isConnectedToday);
+  }, [departmentAttendance]);
+
+  const absentDepts = useMemo(() => {
+    return departmentAttendance.filter((d) => !d.isConnectedToday);
+  }, [departmentAttendance]);
+
+  const totalConnectionsToday = todayLogs.length;
+
+  // Simulation test pour vérification immédiate dans l'espace SDP
+  const [isSimulatingLogin, setIsSimulatingLogin] = useState<boolean>(false);
+  const [simulationRoleSelected, setSimulationRoleSelected] = useState<string>('TRESORIER');
+
+  const handleSimulateAdminLogin = async (deptKey: string) => {
+    setIsSimulatingLogin(true);
+    try {
+      const targetDept = ADMIN_DEPARTMENTS_CONFIG.find((d) => d.key === deptKey);
+      const now = new Date();
+      await addDoc(collection(db, 'admin_logs'), {
+        userId: deptKey,
+        memberName: targetDept?.name || deptKey,
+        role: deptKey,
+        loginTimestamp: now.toISOString(),
+        dateString: now.toISOString().split('T')[0],
+      });
+    } catch (err) {
+      console.warn('Erreur simulation admin_logs:', err);
+    } finally {
+      setIsSimulatingLogin(false);
+    }
+  };
+
+  // =========================================================
+  // RENDU DES 2 BLOCS D'AUDIT DES CONNEXIONS ADMINS (JOUR J)
+  // =========================================================
+  const renderAdminAttendanceTwoBlocks = () => (
+    <div className="space-y-6">
+      {/* En-tête de section avec badge temps réel et assiduité */}
+      <div className="bg-slate-900 border border-emerald-500/30 rounded-3xl p-5 sm:p-6 shadow-xl relative overflow-hidden">
+        <div className="absolute top-0 right-0 w-64 h-64 bg-emerald-500/10 rounded-full blur-3xl pointer-events-none" />
+        <div className="relative z-10 flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+          <div>
+            <div className="inline-flex items-center gap-2 bg-emerald-500/20 text-emerald-300 px-3 py-1 rounded-full text-xs font-black uppercase tracking-wider mb-2 border border-emerald-500/30">
+              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping inline-block" />
+              <span>Audit des Connexions Administrateurs • En Direct (onSnapshot)</span>
+            </div>
+            <h3 className="text-lg sm:text-xl font-black text-white flex flex-wrap items-center gap-2">
+              <span>Contrôle d'Assiduité des Départements Admins</span>
+              <span className="text-xs font-mono font-bold text-slate-300 bg-slate-950 px-2.5 py-1 rounded-xl border border-slate-800">
+                {todayDisplayDate}
+              </span>
+            </h3>
+            <p className="text-xs text-slate-400 mt-1 max-w-2xl">
+              Supervision continue de l'assiduité des responsables de départements admins (Trésorier, Organisateur, Respo Projet, Payor, Secrétaire, etc.).
+            </p>
+          </div>
+
+          <div className="flex items-center gap-3">
+            <div className="bg-slate-950 px-4 py-2.5 rounded-2xl border border-slate-800 text-right">
+              <span className="text-[10px] text-slate-400 uppercase font-bold block">Assiduité Globale</span>
+              <span className="text-xl font-black text-emerald-400 font-mono">
+                {connectedDepts.length} / {ADMIN_DEPARTMENTS_CONFIG.length} connectés
+              </span>
+              <span className="text-[10px] text-slate-500 block">
+                {totalConnectionsToday} session{totalConnectionsToday > 1 ? 's' : ''} au total
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* GRILLE DES 2 BLOCS DU CAHIER DES CHARGES */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+
+        {/* ========================================================= */}
+        {/* BLOC 1 : DÉPARTEMENTS ADMINS CONNECTÉS AUJOURD'HUI */}
+        {/* ========================================================= */}
+        <div className="bg-slate-900 border border-slate-800 rounded-3xl p-5 sm:p-6 shadow-xl flex flex-col justify-between">
+          <div>
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3 mb-4">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 bg-emerald-500/10 rounded-xl border border-emerald-500/20 text-emerald-400">
+                  <CheckCircle className="w-5 h-5" />
+                </div>
+                <div>
+                  <h4 className="text-sm font-black text-white uppercase tracking-wide">
+                    BLOC 1 : DÉPARTEMENTS ADMINS CONNECTÉS AUJOURD'HUI
+                  </h4>
+                  <p className="text-[11px] text-slate-400 font-medium">
+                    Responsables ayant effectué au moins 1 connexion ce jour
+                  </p>
+                </div>
+              </div>
+              <span className="bg-emerald-500/20 text-emerald-300 text-xs font-black px-2.5 py-1 rounded-full border border-emerald-500/30">
+                🟢 {connectedDepts.length} Présent(s)
+              </span>
+            </div>
+
+            {connectedDepts.length === 0 ? (
+              <div className="bg-slate-950/80 rounded-2xl border border-slate-800/80 p-8 text-center space-y-2 my-2">
+                <Clock className="w-8 h-8 text-slate-600 mx-auto animate-pulse" />
+                <p className="text-xs font-bold text-slate-300">
+                  Aucune connexion administrative enregistrée aujourd'hui pour l'instant.
+                </p>
+                <p className="text-[11px] text-slate-500">
+                  Dès qu'un responsable se connecte, son statut passera instantanément à 🟢 En ligne / Passé aujourd'hui.
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-3 max-h-[420px] overflow-y-auto pr-1">
+                {connectedDepts.map((dept) => (
+                  <div
+                    key={dept.key}
+                    className="bg-slate-950 p-3.5 rounded-2xl border border-emerald-500/30 hover:border-emerald-500/60 transition-all flex items-center justify-between gap-3 shadow-md"
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      <span className="text-2xl p-2 bg-slate-900 rounded-xl border border-slate-800 shrink-0">
+                        {dept.icon}
+                      </span>
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className={`px-2 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider ${dept.badgeBg} ${dept.badgeText} border ${dept.borderColor}`}>
+                            {dept.shortName}
+                          </span>
+                          <span className="text-xs font-black text-white truncate">
+                            {dept.name}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-2 mt-1 text-[11px] text-slate-400">
+                          <Clock className="w-3 h-3 text-emerald-400 shrink-0" />
+                          <span>
+                            Dernière connexion : <strong className="text-white">{dept.lastLoginTime ? `Connecté à ${dept.lastLoginTime}` : "Aujourd'hui"}</strong>
+                          </span>
+                          {dept.latestLog?.memberName && dept.latestLog.memberName !== dept.key && (
+                            <span className="text-slate-500 truncate hidden sm:inline">
+                              • {dept.latestLog.memberName}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="text-right shrink-0">
+                      <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 text-[10px] font-black">
+                        <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                        <span>🟢 En ligne / Passé aujourd'hui</span>
+                      </div>
+                      <span className="block text-[10px] font-bold text-slate-400 mt-1">
+                        {dept.count} connexion{dept.count > 1 ? 's' : ''}
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="mt-4 pt-3 border-t border-slate-800/80 flex items-center justify-between text-[11px] text-slate-400">
+            <span>Mise à jour instantanée sans rechargement (onSnapshot)</span>
+            <span className="text-emerald-400 font-mono font-bold">● Synchronisé</span>
+          </div>
+        </div>
+
+        {/* ========================================================= */}
+        {/* BLOC 2 : FRÉQUENCE & NOMBRE DE CONNEXIONS DU JOUR */}
+        {/* ========================================================= */}
+        <div className="bg-slate-900 border border-slate-800 rounded-3xl p-5 sm:p-6 shadow-xl flex flex-col justify-between">
+          <div>
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3 mb-4">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 bg-amber-500/10 rounded-xl border border-amber-500/20 text-amber-400">
+                  <BarChart3 className="w-5 h-5" />
+                </div>
+                <div>
+                  <h4 className="text-sm font-black text-white uppercase tracking-wide">
+                    BLOC 2 : FRÉQUENCE & NOMBRE DE CONNEXIONS DU JOUR
+                  </h4>
+                  <p className="text-[11px] text-slate-400 font-medium">
+                    Compteur d'assiduité par département ({totalConnectionsToday} sessions au total)
+                  </p>
+                </div>
+              </div>
+              <span className="bg-slate-950 text-slate-300 text-xs font-mono font-black px-2.5 py-1 rounded-full border border-slate-800">
+                {totalConnectionsToday} Connexions
+              </span>
+            </div>
+
+            {/* Tableau ou cartes récapitulatives avec le compteur d'assiduité du jour */}
+            <div className="space-y-2 max-h-[420px] overflow-y-auto pr-1">
+              {departmentAttendance.map((dept) => {
+                const isZero = dept.count === 0;
+                return (
+                  <div
+                    key={dept.key}
+                    className={`p-3 rounded-2xl border transition-all flex items-center justify-between gap-3 ${
+                      isZero
+                        ? 'bg-rose-950/20 border-rose-500/30 hover:border-rose-500/50'
+                        : 'bg-slate-950 border-slate-800 hover:border-slate-700'
+                    }`}
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      <span className="text-xl p-1.5 bg-slate-900 rounded-xl border border-slate-800 shrink-0">
+                        {dept.icon}
+                      </span>
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-black text-white truncate">
+                            {dept.name}
+                          </span>
+                          <span className="text-[10px] text-slate-400 font-semibold">
+                            ({dept.shortName})
+                          </span>
+                        </div>
+                        <p className="text-[10px] text-slate-400 truncate">
+                          {dept.description}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="text-right shrink-0">
+                      {isZero ? (
+                        <div className="space-y-1">
+                          <span className="inline-block px-2.5 py-1 rounded-full bg-rose-500/20 border border-rose-500/40 text-rose-300 text-[10px] font-black">
+                            🔴 0 connexion aujourd'hui
+                          </span>
+                          <span className="block text-[10px] text-rose-400/80 font-bold">
+                            Absent / Non connecté
+                          </span>
+                        </div>
+                      ) : (
+                        <div className="space-y-1">
+                          <span className="inline-block px-2.5 py-1 rounded-full bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 text-[10px] font-black font-mono">
+                            {dept.shortName} : {dept.count} connexion{dept.count > 1 ? 's' : ''} aujourd'hui
+                          </span>
+                          <span className="block text-[10px] text-slate-400">
+                            Dernier passage : {dept.lastLoginTime || 'Aujourd’hui'}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Barre de relance pour absents */}
+          <div className="mt-4 pt-3 border-t border-slate-800/80 flex flex-wrap items-center justify-between gap-2 text-[11px]">
+            <div className="flex items-center gap-2 text-slate-400">
+              <span>Départements non connectés aujourd'hui :</span>
+              <span className="text-rose-400 font-bold font-mono">{absentDepts.length} / {ADMIN_DEPARTMENTS_CONFIG.length}</span>
+            </div>
+            {absentDepts.length > 0 && (
+              <button
+                type="button"
+                onClick={() => handleOpenAlertModal(absentDepts[0].key, absentDepts[0].name)}
+                className="text-[10px] bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/30 px-2.5 py-1 rounded-lg font-bold flex items-center gap-1 transition-all"
+              >
+                <AlertTriangle className="w-3 h-3 text-rose-400" />
+                <span>Relancer les absents</span>
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* BARRE DE SIMULATION & TEST IMMÉDIAT DE CONNEXION */}
+      <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+        <div className="flex items-center gap-2.5">
+          <Zap className="w-4 h-4 text-amber-400 shrink-0" />
+          <div>
+            <span className="text-xs font-bold text-white block">
+              Tester l'actualisation temps réel d'une connexion admin
+            </span>
+            <span className="text-[10px] text-slate-400 block">
+              Simule l'enregistrement immédiat dans Firestore (admin_logs) pour tester l'actualisation instantanée sans rafraîchir.
+            </span>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2 w-full sm:w-auto">
+          <select
+            value={simulationRoleSelected}
+            onChange={(e) => setSimulationRoleSelected(e.target.value)}
+            className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-1.5 text-xs text-white font-bold"
+          >
+            {ADMIN_DEPARTMENTS_CONFIG.map((d) => (
+              <option key={d.key} value={d.key}>
+                {d.icon} {d.shortName} ({d.name})
+              </option>
+            ))}
+          </select>
+
+          <button
+            type="button"
+            disabled={isSimulatingLogin}
+            onClick={() => handleSimulateAdminLogin(simulationRoleSelected)}
+            className="bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-slate-950 font-black px-3.5 py-1.5 rounded-xl text-xs flex items-center gap-1.5 transition-all cursor-pointer shrink-0"
+          >
+            {isSimulatingLogin ? (
+              <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+            ) : (
+              <LogIn className="w-3.5 h-3.5" />
+            )}
+            <span>Simuler Connexion</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 
   // Filters for TACHES tab
   const [filterDepartment, setFilterDepartment] = useState<string>('ALL');
@@ -480,11 +1041,11 @@ export const SuiviProgrammeConsole: React.FC<SuiviProgrammeConsoleProps> = ({ ac
   }, [evaluatedTasks, programmeAlerts]);
 
   // Open Alert Modal with prefill for a specific department or task
-  const handleOpenAlertModal = (dept: DepartmentRole, deptName: string, task?: ProgrammeTask) => {
+  const handleOpenAlertModal = (dept: string, deptName: string, task?: ProgrammeTask) => {
     const summary = departmentSummaries.find(d => d.key === dept);
     setAlertTargetTask(task || null);
     setAlertForm({
-      targetDepartment: dept,
+      targetDepartment: dept as DepartmentRole,
       targetDepartmentName: deptName,
       title: task ? `Rappel : ${task.title}` : `Signalement d'audit : ${deptName}`,
       message: task
@@ -681,6 +1242,22 @@ export const SuiviProgrammeConsole: React.FC<SuiviProgrammeConsoleProps> = ({ ac
 
         <button
           type="button"
+          onClick={() => setActiveTab('CONNEXIONS')}
+          className={`flex items-center gap-2 px-4 py-2.5 rounded-xl font-black text-xs sm:text-sm transition-all cursor-pointer ${
+            activeTab === 'CONNEXIONS'
+              ? 'bg-amber-500 text-slate-950 shadow-md scale-102'
+              : 'text-slate-400 hover:text-white hover:bg-slate-800'
+          }`}
+        >
+          <LogIn className="w-4 h-4 text-emerald-400" />
+          <span>AUDIT CONNEXIONS ADMINS ({connectedDepts.length}/{ADMIN_DEPARTMENTS_CONFIG.length})</span>
+          {connectedDepts.length > 0 && (
+            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping inline-block" />
+          )}
+        </button>
+
+        <button
+          type="button"
           onClick={() => setActiveTab('TACHES')}
           className={`flex items-center gap-2 px-4 py-2.5 rounded-xl font-black text-xs sm:text-sm transition-all cursor-pointer ${
             activeTab === 'TACHES'
@@ -724,6 +1301,9 @@ export const SuiviProgrammeConsole: React.FC<SuiviProgrammeConsoleProps> = ({ ac
       {/* ========================================================= */}
       {activeTab === 'SYNTHESE' && (
         <div className="space-y-6">
+          {/* Les 2 blocs d'audit de présence intégrés directement au sommet */}
+          {renderAdminAttendanceTwoBlocks()}
+
           <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 bg-slate-900 border border-slate-800 p-5 rounded-2xl">
             <div>
               <h2 className="text-lg font-black text-white flex items-center gap-2">
@@ -1423,6 +2003,100 @@ export const SuiviProgrammeConsole: React.FC<SuiviProgrammeConsoleProps> = ({ ac
               </div>
             </div>
           )}
+        </div>
+      )}
+
+      {/* ========================================================= */}
+      {/* 5. AUDIT DÉTAILLÉ DES CONNEXIONS ADMINS (TAB DÉDIÉ) */}
+      {/* ========================================================= */}
+      {activeTab === 'CONNEXIONS' && (
+        <div className="space-y-6">
+          {renderAdminAttendanceTwoBlocks()}
+
+          {/* HISTORIQUE DÉTAILLÉ DE TOUTES LES CONNEXIONS DE LA JOURNÉE */}
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-5 sm:p-6 shadow-xl space-y-4">
+            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 border-b border-slate-800 pb-4">
+              <div>
+                <h4 className="text-base font-black text-white flex items-center gap-2">
+                  <History className="w-5 h-5 text-amber-400" />
+                  <span>Journal Chronologique des Connexions Administrateurs ({todayLogs.length} logs ce jour)</span>
+                </h4>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Flux continu d'événements enregistrés en temps réel dans Firestore (<code>admin_logs</code>).
+                </p>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-mono bg-slate-950 px-3 py-1.5 rounded-xl border border-slate-800 text-emerald-400 font-bold flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping inline-block" />
+                  <span>Écoute en Direct (onSnapshot)</span>
+                </span>
+              </div>
+            </div>
+
+            {todayLogs.length === 0 ? (
+              <div className="bg-slate-950 rounded-2xl border border-slate-800 p-8 text-center text-slate-400 text-xs">
+                <Clock className="w-8 h-8 text-slate-600 mx-auto mb-2" />
+                <p className="font-bold text-slate-300">Aucun journal de connexion enregistré pour l'instant aujourd'hui.</p>
+                <p className="text-slate-500 mt-1">Utilisez la barre de simulation ci-dessus ou connectez-vous avec l'un des rôles administrateurs pour tester.</p>
+              </div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs text-slate-300">
+                  <thead className="bg-slate-950 text-slate-400 uppercase text-[10px] font-bold border-b border-slate-800">
+                    <tr>
+                      <th className="p-3">Heure</th>
+                      <th className="p-3">Département / Rôle</th>
+                      <th className="p-3">Responsable / Profil</th>
+                      <th className="p-3">Identifiant</th>
+                      <th className="p-3 text-right">Statut</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-800/60 font-mono">
+                    {todayLogs.map((log, idx) => {
+                      const deptConfig = ADMIN_DEPARTMENTS_CONFIG.find(
+                        d => d.key === log.role || deptAttendanceMatch(d, log.role)
+                      );
+                      const timeStr = log.loginTimestamp
+                        ? new Date(log.loginTimestamp).toLocaleTimeString('fr-FR', {
+                            hour: '2-digit',
+                            minute: '2-digit',
+                            second: '2-digit',
+                          })
+                        : '--:--';
+
+                      return (
+                        <tr key={log.id || idx} className="hover:bg-slate-950/50 transition-colors">
+                          <td className="p-3 text-white font-bold flex items-center gap-2">
+                            <Clock className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                            <span>{timeStr}</span>
+                          </td>
+                          <td className="p-3">
+                            <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-md text-[10px] font-black uppercase ${deptConfig?.badgeBg || 'bg-slate-800'} ${deptConfig?.badgeText || 'text-white'} border ${deptConfig?.borderColor || 'border-slate-700'}`}>
+                              <span>{deptConfig?.icon || '🛡️'}</span>
+                              <span>{deptConfig?.shortName || log.role}</span>
+                            </span>
+                          </td>
+                          <td className="p-3 text-slate-200 font-sans font-bold">
+                            {log.memberName || log.role}
+                          </td>
+                          <td className="p-3 text-slate-400 text-[11px]">
+                            {log.userId || log.role}
+                          </td>
+                          <td className="p-3 text-right">
+                            <span className="inline-flex items-center gap-1 text-emerald-400 text-[10px] font-bold">
+                              <CheckCircle className="w-3 h-3" />
+                              <span>Enregistré</span>
+                            </span>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
         </div>
       )}
 

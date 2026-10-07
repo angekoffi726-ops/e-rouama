@@ -109,6 +109,11 @@ service cloud.firestore {
       allow read, write: if true;
     }
 
+    // 19. Audit des connexions Administrateurs & Responsables
+    match /admin_logs/{logId} {
+      allow read, write: if true;
+    }
+
     // Refus par défaut pour toute autre collection non répertoriée
     match /{document=**} {
       allow read, write: if false;

@@ -27,6 +27,7 @@ import {
   TabType,
   MemberRubricProgress,
   FUND_LABELS,
+  AdminLoginLog,
 } from '../types';
 import { INITIAL_ROUAMA_MEMBERS, ADMIN_USERS, isMemberActive, getRegisteredMembersCount } from '../data/membersData';
 import { sendEmailBroadcastAsync } from '../utils/emailService';
@@ -65,6 +66,8 @@ interface AppContextType {
   // Suivi du Programme & Alertes Auditeur (SDP)
   programmeTasks: ProgrammeTask[];
   programmeAlerts: ProgrammeAlert[];
+  adminLogs: AdminLoginLog[];
+  logAdminConnection: (role: string, memberName?: string, userId?: string) => Promise<void>;
   addProgrammeTask: (task: Omit<ProgrammeTask, 'id' | 'createdAt'>) => Promise<{ success: boolean; id: string }>;
   updateProgrammeTask: (taskId: string, updates: Partial<ProgrammeTask>) => Promise<{ success: boolean }>;
   deleteProgrammeTask: (taskId: string) => Promise<{ success: boolean }>;
@@ -429,6 +432,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [religiousEvents, setReligiousEvents] = useState<ReligiousEvent[]>([]);
   const [programmeTasks, setProgrammeTasks] = useState<ProgrammeTask[]>([]);
   const [programmeAlerts, setProgrammeAlerts] = useState<ProgrammeAlert[]>([]);
+  const [adminLogs, setAdminLogs] = useState<AdminLoginLog[]>([]);
 
   // Sauvegarder la session active locale
   useEffect(() => {
@@ -1084,6 +1088,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
     unsubscribes.push(unsubProgAlerts);
 
+    // 14. AUDIT DES CONNEXIONS ADMINISTRATEURS & RESPONSABLES (LOGS FIRESTORE)
+    const unsubAdminLogs = onSnapshot(collection(db, 'admin_logs'), (snapshot) => {
+      const loaded: AdminLoginLog[] = [];
+      snapshot.forEach(d => loaded.push({ id: d.id, ...(d.data() as any) }));
+      loaded.sort((a, b) => (b.loginTimestamp || '').localeCompare(a.loginTimestamp || ''));
+      setAdminLogs(loaded);
+    });
+    unsubscribes.push(unsubAdminLogs);
+
     return () => {
       unsubscribes.forEach(u => u());
     };
@@ -1397,7 +1410,34 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     setMembers(prev => prev.map(m => m.id === memberId ? connectedMember : m));
     setCurrentUser({ type: 'MEMBER', member: connectedMember });
+
+    // Si le membre possède un rôle admin attribué, enregistrer dans admin_logs
+    if (connectedMember.assignedRole) {
+      logAdminConnection(
+        connectedMember.assignedRole,
+        `${connectedMember.firstName} (${connectedMember.nickname})`,
+        connectedMember.id
+      );
+    }
+
     return { success: true, message: `Bienvenue chez vous, ${connectedMember.nickname} !` };
+  };
+
+  // Enregistrement des connexions d'administrateurs dans Firestore (admin_logs)
+  const logAdminConnection = async (role: string, memberName?: string, userId?: string) => {
+    try {
+      const now = new Date();
+      const payload = {
+        userId: userId || role,
+        memberName: memberName || role,
+        role: role,
+        loginTimestamp: now.toISOString(),
+        dateString: now.toISOString().split('T')[0],
+      };
+      await addDoc(collection(db, 'admin_logs'), sanitizeFirestore(payload));
+    } catch (err) {
+      console.warn('Erreur log connexion admin:', err);
+    }
   };
 
   // Connexion Admin
@@ -1447,6 +1487,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
 
     setCurrentUser({ type: 'ADMIN', adminRole: adminDef.id });
+
+    // 1. Enregistre un événement dans Firestore collection 'admin_logs'
+    logAdminConnection(adminDef.id, adminDef.roleName, adminDef.id);
+
     return { success: true, message: `Connexion au rôle ${adminDef.roleName} réussie.` };
   };
 
@@ -3394,6 +3438,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         isFirebaseConnected,
         programmeTasks,
         programmeAlerts,
+        adminLogs,
+        logAdminConnection,
         addProgrammeTask,
         updateProgrammeTask,
         deleteProgrammeTask,
