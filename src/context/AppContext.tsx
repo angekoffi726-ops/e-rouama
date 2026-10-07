@@ -28,6 +28,7 @@ import {
   MemberRubricProgress,
   FUND_LABELS,
   AdminLoginLog,
+  InfoRequest,
 } from '../types';
 import { INITIAL_ROUAMA_MEMBERS, ADMIN_USERS, isMemberActive, getRegisteredMembersCount } from '../data/membersData';
 import { sendEmailBroadcastAsync } from '../utils/emailService';
@@ -73,6 +74,19 @@ interface AppContextType {
   deleteProgrammeTask: (taskId: string) => Promise<{ success: boolean }>;
   createProgrammeAlert: (alert: Omit<ProgrammeAlert, 'id' | 'sentAt' | 'status'>) => Promise<{ success: boolean; id: string }>;
   resolveProgrammeAlert: (alertId: string) => Promise<{ success: boolean }>;
+
+  // Demandes d'Information Inter-Admins (Messagerie B2B - info_requests)
+  infoRequests: InfoRequest[];
+  createInfoRequest: (
+    req: Omit<InfoRequest, 'id' | 'createdAt' | 'status' | 'isRead'>
+  ) => Promise<{ success: boolean; id?: string; message: string }>;
+  replyInfoRequest: (
+    id: string,
+    replyMessage: string,
+    replierName: string
+  ) => Promise<{ success: boolean; message: string }>;
+  markInfoRequestRead: (id: string) => Promise<{ success: boolean }>;
+  deleteInfoRequest: (id: string) => Promise<{ success: boolean }>;
 
   // Spiritualité
   verseOfTheDay: VerseOfTheDay | null;
@@ -433,6 +447,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [programmeTasks, setProgrammeTasks] = useState<ProgrammeTask[]>([]);
   const [programmeAlerts, setProgrammeAlerts] = useState<ProgrammeAlert[]>([]);
   const [adminLogs, setAdminLogs] = useState<AdminLoginLog[]>([]);
+  const [infoRequests, setInfoRequests] = useState<InfoRequest[]>([]);
 
   // Sauvegarder la session active locale
   useEffect(() => {
@@ -1096,6 +1111,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setAdminLogs(loaded);
     });
     unsubscribes.push(unsubAdminLogs);
+
+    // 15. DEMANDES D'INFORMATION INTER-ADMINS (MESSAGERIE B2B - info_requests)
+    const unsubInfoReqs = onSnapshot(collection(db, 'info_requests'), (snapshot) => {
+      const loaded: InfoRequest[] = [];
+      snapshot.forEach(d => loaded.push({ id: d.id, ...(d.data() as any) }));
+      loaded.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+      setInfoRequests(loaded);
+    });
+    unsubscribes.push(unsubInfoReqs);
 
     return () => {
       unsubscribes.forEach(u => u());
@@ -3389,6 +3413,83 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
+  // =========================================================================
+  // DEMANDES D'INFORMATION INTER-ADMINISTRATIONS (MESSAGERIE B2B)
+  // =========================================================================
+  const createInfoRequest = async (
+    req: Omit<InfoRequest, 'id' | 'createdAt' | 'status' | 'isRead'>
+  ): Promise<{ success: boolean; id?: string; message: string }> => {
+    try {
+      const id = 'REQ-' + Date.now() + '-' + Math.random().toString(36).substring(2, 6).toUpperCase();
+      const nowIso = new Date().toISOString();
+      const newReq: InfoRequest = {
+        ...req,
+        id,
+        isRead: false,
+        status: 'En attente',
+        replyMessage: null,
+        createdAt: nowIso,
+        updatedAt: nowIso,
+      };
+      await setDoc(doc(db, 'info_requests', id), sanitizeFirestore(newReq));
+      setInfoRequests(prev => [newReq, ...prev.filter(r => r.id !== id)]);
+      return { success: true, id, message: "Demande d'information transmise avec succès." };
+    } catch (err: any) {
+      console.warn("Erreur createInfoRequest:", err);
+      return { success: false, message: err?.message || "Erreur lors de l'envoi de la demande." };
+    }
+  };
+
+  const replyInfoRequest = async (
+    id: string,
+    replyMessage: string,
+    replierName: string
+  ): Promise<{ success: boolean; message: string }> => {
+    try {
+      const nowIso = new Date().toISOString();
+      const updates = {
+        replyMessage: replyMessage.trim(),
+        status: 'Répondu',
+        isRead: true,
+        repliedAt: nowIso,
+        repliedBy: replierName,
+        updatedAt: nowIso,
+      };
+      await updateDoc(doc(db, 'info_requests', id), sanitizeFirestore(updates));
+      setInfoRequests(prev =>
+        prev.map(r => (r.id === id ? { ...r, ...updates } : r))
+      );
+      return { success: true, message: "Réponse transmise avec succès au département demandeur." };
+    } catch (err: any) {
+      console.warn("Erreur replyInfoRequest:", err);
+      return { success: false, message: err?.message || "Erreur lors de l'envoi de la réponse." };
+    }
+  };
+
+  const markInfoRequestRead = async (id: string): Promise<{ success: boolean }> => {
+    try {
+      await updateDoc(doc(db, 'info_requests', id), { isRead: true, updatedAt: new Date().toISOString() });
+      setInfoRequests(prev =>
+        prev.map(r => (r.id === id ? { ...r, isRead: true } : r))
+      );
+      return { success: true };
+    } catch (err) {
+      console.warn("Erreur markInfoRequestRead:", err);
+      return { success: false };
+    }
+  };
+
+  const deleteInfoRequest = async (id: string): Promise<{ success: boolean }> => {
+    try {
+      await deleteDoc(doc(db, 'info_requests', id));
+      setInfoRequests(prev => prev.filter(r => r.id !== id));
+      return { success: true };
+    } catch (err) {
+      console.warn("Erreur deleteInfoRequest:", err);
+      return { success: false };
+    }
+  };
+
   const updateVerseOfTheDay = (verse: string, reference?: string) => {
     const updated: VerseOfTheDay = {
       verse,
@@ -3457,6 +3558,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         deleteProgrammeTask,
         createProgrammeAlert,
         resolveProgrammeAlert,
+        infoRequests,
+        createInfoRequest,
+        replyInfoRequest,
+        markInfoRequestRead,
+        deleteInfoRequest,
         verseOfTheDay,
         prayerIntentions,
         religiousEvents,

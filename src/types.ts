@@ -362,3 +362,21 @@ export interface AdminLoginLog {
   loginTimestamp: string;
   dateString: string;
 }
+
+export interface InfoRequest {
+  id: string;
+  senderRole: string;
+  senderRoleLabel?: string;
+  senderName: string;
+  recipientRole: string;
+  recipientRoleLabel?: string;
+  subject: string;
+  message: string;
+  replyMessage?: string | null;
+  isRead: boolean;
+  status: 'En attente' | 'Répondu' | string;
+  createdAt: string;
+  updatedAt?: string;
+  repliedAt?: string;
+  repliedBy?: string;
+}

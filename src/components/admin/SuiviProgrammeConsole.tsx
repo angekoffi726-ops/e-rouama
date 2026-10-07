@@ -48,7 +48,9 @@ import {
   ArrowUpRight,
   History,
   LogIn,
+  MessageSquare,
 } from 'lucide-react';
+import { InfoRequestsModule } from './InfoRequestsModule';
 
 interface AdminDepartmentConfig {
   key: string;
@@ -197,10 +199,17 @@ export const SuiviProgrammeConsole: React.FC<SuiviProgrammeConsoleProps> = ({ ac
     deleteProgrammeTask,
     createProgrammeAlert,
     resolveProgrammeAlert,
+    infoRequests = [],
   } = useApp();
 
-  // Tab state: SYNTHESE, TACHES, ALERTES, AUDIT, CONNEXIONS
-  const [activeTab, setActiveTab] = useState<'SYNTHESE' | 'TACHES' | 'ALERTES' | 'AUDIT' | 'CONNEXIONS'>('SYNTHESE');
+  // Tab state: SYNTHESE, TACHES, ALERTES, AUDIT, CONNEXIONS, NAVETTE
+  const [activeTab, setActiveTab] = useState<'SYNTHESE' | 'TACHES' | 'ALERTES' | 'AUDIT' | 'CONNEXIONS' | 'NAVETTE'>('SYNTHESE');
+
+  const unreadInfoRequestsForSdp = useMemo(() => {
+    return (infoRequests || []).filter(
+      r => (r.recipientRole === 'SDP' || r.recipientRole.includes('PROGRAMME')) && !r.isRead
+    ).length;
+  }, [infoRequests]);
 
   // =========================================================
   // ÉCOUTE FIRESTORE EN TEMPS RÉEL (onSnapshot) DES ADMIN_LOGS
@@ -1294,6 +1303,24 @@ export const SuiviProgrammeConsole: React.FC<SuiviProgrammeConsoleProps> = ({ ac
           <Lock className="w-4 h-4 text-emerald-300" />
           <span>ACCÈS EN LECTURE SEULE D'AUDIT</span>
         </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveTab('NAVETTE')}
+          className={`flex items-center gap-2 px-4 py-2.5 rounded-xl font-black text-xs sm:text-sm transition-all cursor-pointer ${
+            activeTab === 'NAVETTE'
+              ? 'bg-indigo-600 text-white shadow-md scale-102'
+              : 'text-slate-400 hover:text-white hover:bg-slate-800'
+          }`}
+        >
+          <MessageSquare className="w-4 h-4 text-indigo-400" />
+          <span>NAVETTE & DEMANDES D'INFO</span>
+          {unreadInfoRequestsForSdp > 0 && (
+            <span className="bg-rose-500 text-white text-[10px] font-black px-1.5 py-0.2 rounded-full shadow-sm animate-pulse">
+              {unreadInfoRequestsForSdp}
+            </span>
+          )}
+        </button>
       </div>
 
       {/* ========================================================= */}
@@ -2097,6 +2124,15 @@ export const SuiviProgrammeConsole: React.FC<SuiviProgrammeConsoleProps> = ({ ac
               </div>
             )}
           </div>
+        </div>
+      )}
+
+      {/* ========================================================= */}
+      {/* 6. NAVETTE & DEMANDES D'INFORMATION (INTER-ADMINS) */}
+      {/* ========================================================= */}
+      {activeTab === 'NAVETTE' && (
+        <div className="space-y-6">
+          <InfoRequestsModule currentRole="SDP" senderNameOverride="Chargé du Suivi du Programme" />
         </div>
       )}
 

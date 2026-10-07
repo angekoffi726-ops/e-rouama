@@ -11,6 +11,7 @@ import { getDailyVerseForDate, PRAYER_ROUAMA } from '../../utils/versesData';
 import { RbacWarningBanner } from './RbacWarningBanner';
 import { CerveauMembersCredentialsViewer } from './CerveauMembersCredentialsViewer';
 import { SuiviProgrammeConsole } from './SuiviProgrammeConsole';
+import { InfoRequestsModule, isRoleEligibleForInfoModule, normalizeToEligibleDeptKey } from './InfoRequestsModule';
 import { EmailRecipientSelector } from '../common/EmailRecipientSelector';
 import {
   Shield,
@@ -418,7 +419,11 @@ export const AdminPortal: React.FC = () => {
     religiousEvents,
     createReligiousEvent,
     programmeAlerts,
+    infoRequests = [],
   } = useApp();
+
+  // Sous-onglet actif par console ('METIER' ou 'NAVETTE') pour les départements éligibles
+  const [adminActiveSubTab, setAdminActiveSubTab] = useState<Record<string, 'METIER' | 'NAVETTE'>>({});
 
   // Détermination du rôle natif normalisé de l'utilisateur connecté
   const userNativeRole: AdminRole = useMemo(() => {
@@ -446,6 +451,15 @@ export const AdminPortal: React.FC = () => {
   const activeRole: AdminRole = allowedConsoles.includes(selectedRole)
     ? selectedRole
     : (allowedConsoles[0] || 'TRESORIER');
+
+  // Compteur temps réel des demandes d'information non lues pour la console active
+  const unreadInfoRequestsForActiveRole = useMemo(() => {
+    if (!isRoleEligibleForInfoModule(activeRole)) return 0;
+    const normalizedKey = normalizeToEligibleDeptKey(activeRole);
+    return (infoRequests || []).filter(
+      r => normalizeToEligibleDeptKey(r.recipientRole) === normalizedKey && !r.isRead
+    ).length;
+  }, [infoRequests, activeRole]);
 
   // 1. RECALCUL AUTOMATIQUE ET DYNAMIQUE DES SOLDES (FIRESTORE) :
   const calculateBalances = (paymentsList: any[]) => {
@@ -2866,9 +2880,65 @@ export const AdminPortal: React.FC = () => {
       </div>
 
       {/* ========================================================= */}
-      {/* 1. ESPACE TRÉSORIER GÉNÉRAL */}
+      {/* BARRE DE SOUS-NAVIGATION POUR DÉPARTEMENTS ÉLIGIBLES (HORS CERVEAU ET SUPER ADMIN) */}
       {/* ========================================================= */}
-      {activeRole === 'TRESORIER' && (
+      {isRoleEligibleForInfoModule(activeRole) && (
+        <div className="flex flex-wrap items-center justify-between gap-3 bg-slate-900/90 p-2.5 rounded-2xl border border-slate-800 shadow-md">
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setAdminActiveSubTab(prev => ({ ...prev, [activeRole]: 'METIER' }))}
+              className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-black transition-all cursor-pointer ${
+                (adminActiveSubTab[activeRole] || 'METIER') === 'METIER'
+                  ? 'bg-amber-500 text-slate-950 shadow-md font-black'
+                  : 'text-slate-400 hover:text-white hover:bg-slate-800'
+              }`}
+            >
+              <span>{CONSOLE_CONFIG[activeRole]?.icon}</span>
+              <span>CONSOLE {CONSOLE_CONFIG[activeRole]?.label?.toUpperCase()}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setAdminActiveSubTab(prev => ({ ...prev, [activeRole]: 'NAVETTE' }))}
+              className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-black transition-all cursor-pointer ${
+                adminActiveSubTab[activeRole] === 'NAVETTE'
+                  ? 'bg-indigo-600 text-white shadow-md font-black'
+                  : 'text-slate-400 hover:text-white hover:bg-slate-800'
+              }`}
+            >
+              <MessageSquare className="w-4 h-4 text-indigo-400" />
+              <span>NAVETTE & DEMANDES D'INFORMATION</span>
+              {unreadInfoRequestsForActiveRole > 0 && (
+                <span className="bg-rose-500 text-white text-[10px] font-black px-2 py-0.5 rounded-full animate-pulse shadow-sm">
+                  {unreadInfoRequestsForActiveRole} non lue{unreadInfoRequestsForActiveRole > 1 ? 's' : ''}
+                </span>
+              )}
+            </button>
+          </div>
+
+          <span className="text-[11px] text-slate-400 font-bold px-3 py-1 bg-slate-950 rounded-xl border border-slate-800">
+            {adminActiveSubTab[activeRole] === 'NAVETTE'
+              ? '📨 Navette Administrative B2B • Temps Réel'
+              : '💼 Espace Métier Opérationnel'}
+          </span>
+        </div>
+      )}
+
+      {/* ========================================================= */}
+      {/* AFFICHAGE DU MODULE NAVETTE OU DES CONSOLES MÉTIERS */}
+      {/* ========================================================= */}
+      {isRoleEligibleForInfoModule(activeRole) && adminActiveSubTab[activeRole] === 'NAVETTE' ? (
+        <InfoRequestsModule
+          currentRole={activeRole}
+          senderNameOverride={CONSOLE_CONFIG[activeRole]?.shortName}
+        />
+      ) : (
+        <>
+          {/* ========================================================= */}
+          {/* 1. ESPACE TRÉSORIER GÉNÉRAL */}
+          {/* ========================================================= */}
+          {activeRole === 'TRESORIER' && (
         <div className="space-y-8">
           {/* RBAC Lock Badge */}
           <RbacWarningBanner
@@ -5707,6 +5777,36 @@ export const AdminPortal: React.FC = () => {
             roleName="SECRÉTARIAT GÉNÉRAL"
             allowedActionsText="Rédaction des Procès-Verbaux (PV), gestion des archives et transmissions officielles."
           />
+
+          {/* Raccourci Navette Administrative pour le Secrétariat */}
+          <div className="bg-gradient-to-r from-indigo-950/70 via-slate-900 to-slate-950 border border-indigo-500/40 rounded-3xl p-5 sm:p-6 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-xl">
+            <div className="flex items-start sm:items-center gap-3.5">
+              <div className="w-11 h-11 rounded-2xl bg-indigo-500/15 border border-indigo-500/30 flex items-center justify-center text-indigo-400 shrink-0 shadow-inner">
+                <MessageSquare className="w-6 h-6" />
+              </div>
+              <div>
+                <h4 className="text-sm sm:text-base font-black text-white flex items-center gap-2">
+                  <span>Navette Administrative & Demandes d'Information Inter-Admins</span>
+                  {unreadInfoRequestsForActiveRole > 0 && (
+                    <span className="bg-rose-500 text-white text-[10px] font-black px-2 py-0.5 rounded-full animate-pulse shadow-sm">
+                      {unreadInfoRequestsForActiveRole} non lue{unreadInfoRequestsForActiveRole > 1 ? 's' : ''}
+                    </span>
+                  )}
+                </h4>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Besoin de vérifier un montant précis auprès de la Trésorerie ou une décision logistique avec l'Organisation avant de clôturer un PV ?
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setAdminActiveSubTab(prev => ({ ...prev, [activeRole]: 'NAVETTE' }))}
+              className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-black px-4 py-2.5 rounded-xl transition-all shadow-md shrink-0 cursor-pointer flex items-center gap-2 self-end sm:self-center"
+            >
+              <Send className="w-4 h-4" />
+              <span>Ouvrir la Navette d'Information</span>
+            </button>
+          </div>
 
           {/* Draft PV Form */}
           <div className="bg-slate-900 rounded-[2.5rem] p-6 sm:p-8 border border-slate-800 shadow-xl space-y-6">
@@ -9092,6 +9192,8 @@ export const AdminPortal: React.FC = () => {
           />
           <SuiviProgrammeConsole activeRole={activeRole} />
         </div>
+      )}
+        </>
       )}
 
       {/* ========================================================= */}

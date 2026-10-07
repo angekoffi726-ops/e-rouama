@@ -114,6 +114,11 @@ service cloud.firestore {
       allow read, write: if true;
     }
 
+    // 20. Module de Demande d'Information Inter-Admins (Messagerie B2B)
+    match /info_requests/{requestId} {
+      allow read, write: if true;
+    }
+
     // Refus par défaut pour toute autre collection non répertoriée
     match /{document=**} {
       allow read, write: if false;
