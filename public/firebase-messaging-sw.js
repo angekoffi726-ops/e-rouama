@@ -19,23 +19,23 @@ try {
   firebase.initializeApp(firebaseConfig);
   const messaging = firebase.messaging();
 
-  // Écouteur de messages en arrière-plan FCM
+// Écouteur de messages en arrière-plan FCM
   messaging.onBackgroundMessage((payload) => {
-    console.log('[E-ROUAMA SW] Message reçu en arrière-plan:', payload);
-    const notificationTitle = payload.notification?.title || payload.data?.title || 'E-ROUAMA';
-    const notificationOptions = {
+    console.log('[firebase-messaging-sw.js] Push reçu en arrière-plan:', payload);
+    const title = payload.notification?.title || payload.data?.title || 'E-ROUAMA';
+    const options = {
       body: payload.notification?.body || payload.data?.body || '',
-      icon: '/icon-192.png',
-      badge: '/icon-192.png',
+      icon: payload.notification?.icon || '/icon-192.png',
+      badge: payload.notification?.badge || '/icon-192.png',
       vibrate: [200, 100, 200],
-      tag: 'erouama-notification',
+      tag: payload.notification?.tag || payload.data?.tag || 'erouama-push',
       requireInteraction: true,
-      data: payload.data || { url: '/' }
+      data: payload.data || { click_action: '/' }
     };
-    return self.registration.showNotification(notificationTitle, notificationOptions);
+    return self.registration.showNotification(title, options);
   });
 } catch (err) {
-  console.warn('[E-ROUAMA SW] Erreur initialisation Firebase Messaging:', err);
+  console.warn('[firebase-messaging-sw.js] Erreur initialisation Firebase Messaging:', err);
 }
 
 // Écouteur natif d'événements Push (Web Push standard / Android background fallback)
@@ -44,11 +44,12 @@ self.addEventListener('push', (event) => {
 
   try {
     const payload = event.data.json();
-    const title = payload.notification?.title || payload.data?.title || payload.title || 'E-ROUAMA';
-    const body = payload.notification?.body || payload.data?.body || payload.body || '';
-    const icon = '/icon-192.png';
-    const badge = '/icon-192.png';
-    const tag = payload.data?.tag || payload.tag || 'erouama-notification';
+    console.log('[firebase-messaging-sw.js] Push reçu:', payload);
+    const title = payload.notification?.title || payload.webpush?.notification?.title || payload.data?.title || payload.title || 'E-ROUAMA';
+    const body = payload.notification?.body || payload.webpush?.notification?.body || payload.data?.body || payload.body || '';
+    const icon = payload.notification?.icon || payload.webpush?.notification?.icon || '/icon-192.png';
+    const badge = payload.notification?.badge || payload.webpush?.notification?.badge || '/icon-192.png';
+    const tag = payload.notification?.tag || payload.webpush?.notification?.tag || payload.data?.tag || 'erouama-push';
 
     event.waitUntil(
       self.registration.showNotification(title, {
@@ -58,7 +59,7 @@ self.addEventListener('push', (event) => {
         vibrate: [200, 100, 200],
         tag: tag,
         requireInteraction: true,
-        data: payload.data || { url: '/' }
+        data: payload.data || { click_action: payload.webpush?.fcm_options?.link || '/' }
       })
     );
   } catch (e) {
@@ -69,7 +70,9 @@ self.addEventListener('push', (event) => {
         icon: '/icon-192.png',
         badge: '/icon-192.png',
         vibrate: [200, 100, 200],
-        tag: 'erouama-notification'
+        tag: 'erouama-push',
+        requireInteraction: true,
+        data: { click_action: '/' }
       })
     );
   }
@@ -78,7 +81,7 @@ self.addEventListener('push', (event) => {
 // Écouteur de clic sur la notification (redirige l'utilisateur vers la PWA)
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
-  const targetUrl = event.notification.data?.url || event.notification.data?.click_action || '/';
+  const targetUrl = event.notification.data?.click_action || event.notification.data?.url || '/';
 
   event.waitUntil(
     clients.matchAll({ type: 'window', includeUncontrolled: true }).then((windowClients) => {
@@ -113,10 +116,10 @@ self.addEventListener('message', (event) => {
       body: body || '',
       icon: icon || '/icon-192.png',
       badge: '/icon-192.png',
-      tag: tag || 'erouama-notification',
+      tag: tag || 'erouama-push',
       vibrate: [200, 100, 200],
       requireInteraction: true,
-      data: data || { url: '/' }
+      data: data || { click_action: '/' }
     });
   }
 });

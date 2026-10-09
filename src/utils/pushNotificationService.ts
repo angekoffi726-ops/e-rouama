@@ -490,37 +490,48 @@ export const dispatchPushNotification = async (options: PushDispatchOptions) => 
     });
 
     // Construction du format natif FCM HTTP v1 haute priorité Android / WebPush
-    const buildFcmHttpV1Message = (token?: string) => ({
-      ...(token ? { token } : {}),
-      notification: {
-        title: formattedTitle,
-        body: options.body,
-      },
-      android: {
-        priority: 'high',
+    const buildFcmHttpV1Envelope = (token?: string) => ({
+      message: {
+        token: token || '',
         notification: {
-          channel_id: 'default',
-          sound: 'default',
-          default_vibrate_timings: true,
+          title: formattedTitle,
+          body: options.body,
         },
-      },
-      webpush: {
-        headers: {
-          Urgency: 'high',
+        android: {
+          priority: 'high',
+          notification: {
+            channel_id: 'default',
+            sound: 'default',
+            default_vibrate_timings: true,
+          },
         },
-        notification: {
-          requireInteraction: true,
+        webpush: {
+          headers: {
+            Urgency: 'high',
+            TTL: '86400',
+          },
+          notification: {
+            title: formattedTitle,
+            body: options.body,
+            icon: '/icon-192.png',
+            badge: '/icon-192.png',
+            requireInteraction: true,
+            vibrate: [200, 100, 200],
+            tag: 'erouama-push',
+          },
+          fcm_options: {
+            link: options.url || '/',
+          },
         },
-      },
-      data: {
-        click_action: options.url || '/',
-        title: formattedTitle,
-        body: options.body,
-        url: options.url || '/',
-        senderRole: options.senderRole || '',
-        senderName: options.senderName || '',
+        data: {
+          title: formattedTitle,
+          body: options.body,
+          click_action: options.url || '/',
+        },
       },
     });
+
+    const primaryMessageObj = buildFcmHttpV1Envelope(targetTokens[0] || '').message;
 
     const payload = {
       title: formattedTitle,
@@ -531,6 +542,7 @@ export const dispatchPushNotification = async (options: PushDispatchOptions) => 
       sound: 'default',
       requireInteraction: true,
       vibrate: [200, 100, 200],
+      tag: 'erouama-push',
       senderRole: options.senderRole || '',
       senderName: options.senderName || '',
       targetRole: options.targetRole || 'ALL',
@@ -541,8 +553,8 @@ export const dispatchPushNotification = async (options: PushDispatchOptions) => 
       fcmTokens: targetTokens,
       type: options.type,
       url: options.url || '/',
-      message: buildFcmHttpV1Message(targetTokens[0] || ''),
-      messages: targetTokens.map(token => buildFcmHttpV1Message(token)),
+      message: primaryMessageObj,
+      messages: targetTokens.map(token => buildFcmHttpV1Envelope(token)),
       notification: {
         title: formattedTitle,
         body: options.body,
@@ -561,9 +573,19 @@ export const dispatchPushNotification = async (options: PushDispatchOptions) => 
       webpush: {
         headers: {
           Urgency: 'high',
+          TTL: '86400',
         },
         notification: {
+          title: formattedTitle,
+          body: options.body,
+          icon: '/icon-192.png',
+          badge: '/icon-192.png',
           requireInteraction: true,
+          vibrate: [200, 100, 200],
+          tag: 'erouama-push',
+        },
+        fcm_options: {
+          link: options.url || '/',
         },
       },
       data: {
