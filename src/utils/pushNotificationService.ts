@@ -389,13 +389,18 @@ export const extractRecipientFcmTokens = async (options: {
 
     const collectTokensFromDoc = (docId: string, u: any) => {
       const uId = String(u.id || '').trim();
-      if (excludedIds.has(docId) || (uId && excludedIds.has(uId))) {
-        return;
-      }
 
+      // RÈGLE STRICTE BROADCAST / COMMUNAUTAIRE :
+      // Pour toute diffusion collective (ALL / TOUS / broadcast général), inclure ABSOLUMENT TOUS les jetons
+      // de la collection users/members sans exception, Y COMPRIS l'administrateur/Cerveau qui a exécuté l'action.
       if (isBroadcastAll) {
         if (Array.isArray(u.fcmTokens)) tokens.push(...u.fcmTokens.filter(Boolean));
         if (u.fcmToken && typeof u.fcmToken === 'string') tokens.push(u.fcmToken);
+        return;
+      }
+
+      // Exclusion de l'expéditeur UNIQUEMENT pour les messages directs (tests unitaires ou chats 1-à-1)
+      if (excludedIds.has(docId) || (uId && excludedIds.has(uId))) {
         return;
       }
 
@@ -453,7 +458,17 @@ export const dispatchPushNotification = async (options: PushDispatchOptions) => 
       ? normalizeDepartmentKey(options.targetRole)
       : null;
 
-    const excludedUserId = options.metadata?.excludedUserId ? String(options.metadata.excludedUserId).trim() : undefined;
+    const isBroadcastAll =
+      (options.targetRole || '').toUpperCase().trim() === 'ALL' ||
+      (options.targetRole || '').toUpperCase().trim() === 'TOUS' ||
+      normalizedDept === 'all';
+
+    // Règle stricte : Ne filtrer/exclure que pour les messages directs ou chats 1-à-1
+    const excludedUserId = isBroadcastAll
+      ? undefined
+      : options.metadata?.excludedUserId
+      ? String(options.metadata.excludedUserId).trim()
+      : undefined;
 
     // Récupération simultanée de tous les jetons FCM des destinataires concernés dans Firestore
     const targetTokens = await extractRecipientFcmTokens({
@@ -566,15 +581,24 @@ export const listenForIncomingPushNotifications = (
           const targetDepartment = normalizeDepartmentKey(data.targetDepartment || data.targetRole || '');
           const targetUserId = (data.targetUserId || '').trim();
           const senderRole = (data.senderRole || '').toUpperCase().trim();
+          const isBroadcast = targetRole === 'ALL' || targetRole === 'TOUS' || targetDepartment === 'all';
 
-          // Ne pas notifier l'utilisateur de sa propre action si c'est lui qui l'a émise (sauf s'il est spécifiquement ciblé par targetUserId)
-          if (!targetUserId && senderRole && cleanRole && senderRole === cleanRole) {
-            return;
-          }
+          // RÈGLE STRICTE AUTO-NOTIFICATION :
+          // Ne filtrer/exclure l'expéditeur QUE pour les messages directs de test unitaire ou chats 1-à-1.
+          // POUR TOUTES LES NOTIFICATIONS DE BROADCAST / COMMUNAUTAIRES (ex: Validation d'un Gbrairai pour tous les membres,
+          // Publication de Projet, Activités Org/Spir, Annonces générales) :
+          // Le ciblage inclut TOUS les membres sans exception, Y COMPRIS celui de l'administrateur/Cerveau (Wilfried)
+          // qui a exécuté l'action, garantissant que chaque membre reçoive l'actualité sur son profil membre.
+          if (!isBroadcast) {
+            // Ne pas notifier l'utilisateur de sa propre action si c'est lui qui l'a émise (sauf s'il est spécifiquement ciblé par targetUserId)
+            if (!targetUserId && senderRole && cleanRole && senderRole === cleanRole) {
+              return;
+            }
 
-          // Ne pas notifier un utilisateur explicitement exclu dans les métadonnées (ex: payeur exclu du broadcast gbrairai)
-          if (data.metadata?.excludedUserId && cleanUserId && String(data.metadata.excludedUserId).trim() === cleanUserId) {
-            return;
+            // Ne pas notifier un utilisateur explicitement exclu dans les métadonnées pour un envoi direct
+            if (data.metadata?.excludedUserId && cleanUserId && String(data.metadata.excludedUserId).trim() === cleanUserId) {
+              return;
+            }
           }
 
           const roleMatches =

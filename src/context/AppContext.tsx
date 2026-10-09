@@ -2376,7 +2376,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         url: '/',
       }).catch(console.warn);
 
-      // Destinataire 2 (TOUS LES AUTRES MEMBRES) : "🎉 Nouveau Gbrairai disponible !"
+      // Destinataire 2 (TOUS LES MEMBRES) : "🎉 Nouveau Gbrairai disponible !"
       dispatchPushNotification({
         title: '🎉 Nouveau Gbrairai disponible !',
         body: "Un gbrairai vient d'être validé. Connectez-vous pour voir l'information !",
@@ -2389,9 +2389,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         sound: 'default',
         requireInteraction: true,
         url: '/',
-        metadata: {
-          excludedUserId: payerId,
-        },
       }).catch(console.warn);
     } catch (notifErr) {
       console.warn('Erreur notification validation paiement:', notifErr);
@@ -2622,7 +2619,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       requireInteraction: true,
       url: '/',
       metadata: {
-        excludedUserId: resolvedPayerId || undefined,
+        excludedUserId: isTargetAll ? undefined : (resolvedPayerId || undefined),
       },
     }).catch(console.warn);
   };
