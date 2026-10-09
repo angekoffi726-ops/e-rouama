@@ -46,7 +46,7 @@ import {
 } from 'firebase/firestore';
 import { db, testFirestoreConnection, sanitizeFirestore } from '../firebase';
 import { compressReceiptImage } from '../utils/imageCompressor';
-import { dispatchPushNotification } from '../utils/pushNotificationService';
+import { dispatchPushNotification, markPushNotificationAsDeleted } from '../utils/pushNotificationService';
 
 interface AppContextType {
   currentUser: CurrentUser | null;
@@ -932,8 +932,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const loaded: NewsItem[] = [];
         snapshot.forEach(d => {
           const item = { id: d.id, ...(d.data() as any) };
-          // Séparation stricte : filtrer les messages exclusifs au canal MAIL
-          if (item.dispatchChannel !== 'MAIL') {
+          // Séparation stricte : filtrer les messages exclusifs au canal MAIL et les messages supprimés
+          if (item.dispatchChannel !== 'MAIL' && !item.deleted && item.deleted !== true && item.status !== 'deleted') {
             loaded.push(item);
           }
         });
@@ -2826,14 +2826,23 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const deleteNewsItem = async (newsId: string) => {
+    // RÈGLE 3 : Marquer explicitement comme supprimé (deleted: true) pour que les fonctions d'arrière-plan ne renvoient aucun payload
     try {
+      await updateDoc(doc(db, 'news', newsId), { deleted: true, status: 'deleted' }).catch(() => {});
       await deleteDoc(doc(db, 'news', newsId));
     } catch (err) {
       console.warn('Erreur lors de la suppression Firestore du communiqué (news) :', err);
     }
     try {
+      await updateDoc(doc(db, 'announcements', newsId), { deleted: true, status: 'deleted' }).catch(() => {});
       await deleteDoc(doc(db, 'announcements', newsId));
     } catch (_) {}
+
+    // Nettoyer également la collection des push_notifications associées
+    try {
+      await markPushNotificationAsDeleted(newsId);
+    } catch (_) {}
+
     setNewsItems(prev => prev.filter(n => n.id !== newsId));
   };
 
