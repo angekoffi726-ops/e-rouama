@@ -31,6 +31,7 @@ import {
   InfoRequest,
 } from '../types';
 import { INITIAL_ROUAMA_MEMBERS, ADMIN_USERS, isMemberActive, getRegisteredMembersCount } from '../data/membersData';
+import { getDefaultRolesForMember } from '../data/departmentMapping';
 import { sendEmailBroadcastAsync } from '../utils/emailService';
 import {
   collection,
@@ -45,6 +46,7 @@ import {
 } from 'firebase/firestore';
 import { db, testFirestoreConnection, sanitizeFirestore } from '../firebase';
 import { compressReceiptImage } from '../utils/imageCompressor';
+import { dispatchPushNotification } from '../utils/pushNotificationService';
 
 interface AppContextType {
   currentUser: CurrentUser | null;
@@ -98,6 +100,7 @@ interface AppContextType {
 
   // Auth
   setCurrentUser: (userOrUpdater: any) => void;
+  switchWorkspace: (view: 'MEMBER' | 'ADMIN', targetRole?: AdminRole) => void;
   registerMember: (firstNameOrRosterName: string, pin: string) => Promise<{ success: boolean; message: string }>;
   loginMember: (firstNameOrRosterName: string, pin: string) => Promise<{ success: boolean; message: string }>;
   loginAdmin: (adminId: string, pin: string) => { success: boolean; message: string };
@@ -754,6 +757,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
           const effectivePin = cleanPin || (isActive && !uDoc ? (official.pinCode || official.pin || undefined) : undefined);
 
+          const defaultRoles = getDefaultRolesForMember(official.id, official.firstName, official.nickname);
+          const memberRoles = uDoc?.roles || (official as any).roles || defaultRoles.roles;
+          const memberDepts = uDoc?.departments || (official as any).departments || defaultRoles.departments;
+          const memberFcmTokens = Array.isArray(uDoc?.fcmTokens) ? uDoc.fcmTokens : (uDoc?.fcmToken ? [uDoc.fcmToken] : []);
+
           return {
             id: official.id,
             firstName: official.firstName,
@@ -767,7 +775,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             isRegistered: isActive,
             avatar: photo,
             photoUrl: photo,
-            assignedRole: uDoc?.assignedRole || official.assignedRole,
+            assignedRole: uDoc?.assignedRole || official.assignedRole || defaultRoles.adminRole,
+            roles: memberRoles,
+            departments: memberDepts,
+            fcmTokens: memberFcmTokens,
+            fcmToken: uDoc?.fcmToken || memberFcmTokens[0] || undefined,
             resteADevoir: typeof uDoc?.resteADevoir === 'number' ? uDoc.resteADevoir : (official.resteADevoir || 0),
             updatedAt: uDoc?.updatedAt || official.updatedAt,
             lastLogin: uDoc?.lastLogin || official.lastLogin,
@@ -1624,6 +1636,51 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setCurrentUser(null);
   };
 
+  // Bascule instantanée In-App entre l'Espace Membre et l'Espace Administration / Département
+  const switchWorkspace = (targetView: 'MEMBER' | 'ADMIN', targetRole?: AdminRole) => {
+    setCurrentUserState((prev) => {
+      if (!prev) return null;
+
+      const memberObj = prev.member || (prev.id ? members.find(m => m.id === prev.id) : undefined);
+      const memberId = memberObj?.id || prev.id;
+      const defaultMeta = memberId
+        ? getDefaultRolesForMember(memberId, memberObj?.firstName, memberObj?.nickname)
+        : { roles: ['membre'], departments: [], adminRole: undefined };
+
+      const assignedRole = targetRole || prev.adminRole || memberObj?.assignedRole || defaultMeta.adminRole || 'SDP';
+
+      let updatedUser: CurrentUser;
+      if (targetView === 'ADMIN') {
+        updatedUser = {
+          ...prev,
+          type: 'ADMIN',
+          activeView: 'ADMIN',
+          adminRole: assignedRole,
+          member: memberObj,
+          id: memberId,
+          roles: prev.roles || memberObj?.roles || defaultMeta.roles,
+          departments: prev.departments || memberObj?.departments || defaultMeta.departments,
+        };
+      } else {
+        updatedUser = {
+          ...prev,
+          type: 'MEMBER',
+          activeView: 'MEMBER',
+          member: memberObj,
+          id: memberId,
+          roles: prev.roles || memberObj?.roles || defaultMeta.roles,
+          departments: prev.departments || memberObj?.departments || defaultMeta.departments,
+        };
+      }
+
+      try {
+        localStorage.setItem(EROUAMA_ACTIVE_SESSION_KEY, JSON.stringify(updatedUser));
+      } catch (e) {}
+
+      return updatedUser;
+    });
+  };
+
   // Calcul du statut des cotisations
   const getMemberDuesDetail = (memberId: string): MemberDuesDetail => {
     const now = new Date();
@@ -2013,6 +2070,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         ? 'Règlement Totalité'
         : 'Acompte par tranche';
 
+      // Notification Push FCM (Événement 1 : Nouvelle Demande) -> Trésorier uniquement
+      dispatchPushNotification({
+        title: 'E-ROUAMA - Trésorerie',
+        body: `Nouvelle demande de paiement reçue de ${activeMember.nickname || activeMember.firstName}.`,
+        senderRole: 'MEMBRE',
+        senderName: activeMember.nickname || activeMember.firstName,
+        targetRole: 'TRESORIER',
+        type: 'PAYMENT',
+        rawTitle: true,
+        url: '/',
+      }).catch(console.warn);
+
       return {
         success: true,
         message: `Reçu (${displayCategory} de ${amount.toLocaleString('fr-FR')} F CFA) transmis en direct sur Firebase au Trésorier pour validation.`
@@ -2253,6 +2322,39 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     } catch (recalcErr) {
       console.warn('Erreur mise à jour resteADevoir:', recalcErr);
     }
+
+    // 7. NOTIFICATIONS PUSH FCM (ÉVÉNEMENT 2A : VALIDATION PAIEMENT)
+    try {
+      const payerId = targetDecl.memberId;
+      const payerMember = members.find(m => m.id === payerId);
+      const memberNickname = targetDecl.memberNickname || payerMember?.nickname || targetDecl.memberName || 'Un membre';
+
+      // Destinataire 1 (Membre concerné)
+      dispatchPushNotification({
+        title: 'Paiement Validé !',
+        body: 'Votre demande a été validée, votre solde est actualisé.',
+        senderRole: 'TRÉSORIER',
+        senderName: 'Trésorerie E-ROUAMA',
+        targetUserId: payerId,
+        type: 'PAYMENT',
+        rawTitle: true,
+        url: '/',
+      }).catch(console.warn);
+
+      // Destinataire 2 (Tous les autres membres)
+      dispatchPushNotification({
+        title: 'E-ROUAMA - Fraternité',
+        body: `${memberNickname} vient de régulariser sa contribution ! 👏`,
+        senderRole: 'TRÉSORIER',
+        senderName: 'Trésorerie E-ROUAMA',
+        targetRole: 'ALL',
+        type: 'PAYMENT',
+        rawTitle: true,
+        url: '/',
+      }).catch(console.warn);
+    } catch (notifErr) {
+      console.warn('Erreur notification validation paiement:', notifErr);
+    }
   };
 
   // 3. Rejeter le reçu (Trésorier -> Met à jour Firestore via updateDoc avec motif)
@@ -2274,6 +2376,27 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         { status: 'REJECTED', rejectionReason: finalReason },
         { merge: true }
       );
+    }
+
+    // NOTIFICATIONS PUSH FCM (ÉVÉNEMENT 2B : REJET PAIEMENT)
+    try {
+      const targetDecl = declarations.find(d => d.id === targetId);
+      const payerId = targetDecl?.memberId;
+      if (payerId) {
+        // Destinataire : Membre concerné uniquement
+        dispatchPushNotification({
+          title: 'Reçu non conforme',
+          body: `Votre reçu n'a pas pu être validé : ${finalReason}. Veuillez vérifier et renvoyer.`,
+          senderRole: 'TRÉSORIER',
+          senderName: 'Trésorerie E-ROUAMA',
+          targetUserId: payerId,
+          type: 'PAYMENT',
+          rawTitle: true,
+          url: '/',
+        }).catch(console.warn);
+      }
+    } catch (rejectNotifErr) {
+      console.warn('Erreur notification rejet paiement:', rejectNotifErr);
     }
   };
 
@@ -2958,6 +3081,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
     setDoc(doc(db, 'secretary_pvs', newPv.id), sanitizeFirestore(newPv)).catch(console.warn);
     setPvs(prev => [newPv, ...prev]);
+
+    // Notification Push FCM immédiate pour tous les membres / admins
+    dispatchPushNotification({
+      title: 'E-ROUAMA : Secrétariat Général',
+      body: `Nouveau Procès-Verbal rédigé : "${newPv.title}" (${newPv.meetingDate}).`,
+      senderRole: 'SECRÉTARIAT',
+      senderName: 'Secrétariat Général',
+      targetRole: 'ALL',
+      type: 'PV_PUBLISHED',
+      url: '/',
+    }).catch(console.warn);
   };
 
   const approvePVPayor = (pvId: string) => {
@@ -2967,6 +3101,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     );
     const pv = pvs.find(p => p.id === pvId);
     if (pv) {
+      dispatchPushNotification({
+        title: 'E-ROUAMA : Secrétariat Général',
+        body: `Procès-Verbal officiel validé par le Payor : "${pv.title}".`,
+        senderRole: 'PAYOR',
+        senderName: 'Espace Payor',
+        targetRole: 'ALL',
+        type: 'PV_PUBLISHED',
+        url: '/',
+      }).catch(console.warn);
+
       const detailsHeader = [
         (pv.startTime || pv.endTime) ? `⏱️ Horaires : ${pv.startTime || '--:--'} à ${pv.endTime || '--:--'}` : null,
         pv.attendeesCount !== undefined && pv.attendeesCount !== null ? `👥 Participants : ${pv.attendeesCount} personne(s)` : null,
@@ -3433,6 +3577,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       };
       await setDoc(doc(db, 'info_requests', id), sanitizeFirestore(newReq));
       setInfoRequests(prev => [newReq, ...prev.filter(r => r.id !== id)]);
+
+      // Notification Push FCM envoyée au rôle destinataire
+      dispatchPushNotification({
+        title: `E-ROUAMA : ${req.senderRoleLabel || req.senderRole}`,
+        body: `Demande d'information : "${req.subject}"\n${req.message.substring(0, 100)}...`,
+        senderRole: req.senderRole,
+        senderName: req.senderName,
+        targetRole: req.recipientRole,
+        type: 'INFO_REQUEST',
+        url: '/',
+      }).catch(console.warn);
+
       return { success: true, id, message: "Demande d'information transmise avec succès." };
     } catch (err: any) {
       console.warn("Erreur createInfoRequest:", err);
@@ -3459,6 +3615,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setInfoRequests(prev =>
         prev.map(r => (r.id === id ? { ...r, ...updates } : r))
       );
+
+      // Notification Push FCM envoyée en réponse au demandeur
+      const targetReq = infoRequests.find(r => r.id === id);
+      dispatchPushNotification({
+        title: `E-ROUAMA : ${replierName}`,
+        body: `Réponse à "${targetReq?.subject || 'Demande d\'information'}" : ${replyMessage.substring(0, 100)}...`,
+        senderRole: replierName,
+        senderName: replierName,
+        targetRole: targetReq ? targetReq.senderRole : 'ALL',
+        type: 'INFO_REQUEST',
+        url: '/',
+      }).catch(console.warn);
+
       return { success: true, message: "Réponse transmise avec succès au département demandeur." };
     } catch (err: any) {
       console.warn("Erreur replyInfoRequest:", err);
@@ -3570,6 +3739,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         addPrayerIntention,
         createReligiousEvent,
         setCurrentUser,
+        switchWorkspace,
         registerMember,
         loginMember,
         loginAdmin,

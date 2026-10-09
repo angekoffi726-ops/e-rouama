@@ -5,6 +5,7 @@ import { doc, setDoc, getDoc, updateDoc } from 'firebase/firestore';
 import { db } from '../../firebase';
 import { compressProfileImage } from '../../utils/imageCompressor';
 import { EditMemberModal } from '../common/EditMemberModal';
+import { requestPushPermissionAndSaveToken, isPushNotificationSupported } from '../../utils/pushNotificationService';
 import {
   Camera,
   Upload,
@@ -264,6 +265,39 @@ export const DashboardTab: React.FC<DashboardTabProps> = ({ onNavigateTab }) => 
 
   const handleUpdateMemberPin = handleChangePin;
 
+  // État des notifications Push FCM
+  const [isPushLoading, setIsPushLoading] = useState(false);
+  const [pushStatusMessage, setPushStatusMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [isPushActive, setIsPushActive] = useState<boolean>(() => {
+    return typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted';
+  });
+
+  useEffect(() => {
+    if (typeof window !== 'undefined' && 'Notification' in window) {
+      setIsPushActive(Notification.permission === 'granted');
+    }
+  }, []);
+
+  const handleTogglePushNotifications = async () => {
+    setIsPushLoading(true);
+    setPushStatusMessage(null);
+    try {
+      const targetUserId = currentMember?.id || (currentUser as any)?.id || 'member';
+      const res = await requestPushPermissionAndSaveToken(targetUserId, 'MEMBER', currentMember?.id);
+      if (res.success) {
+        setIsPushActive(true);
+        setPushStatusMessage({ type: 'success', text: '🔔 Notifications Push activées avec succès façon Wave !' });
+      } else {
+        setPushStatusMessage({ type: 'error', text: res.message });
+      }
+    } catch (e: any) {
+      setPushStatusMessage({ type: 'error', text: e?.message || 'Erreur lors de l’activation des notifications.' });
+    } finally {
+      setIsPushLoading(false);
+      setTimeout(() => setPushStatusMessage(null), 6000);
+    }
+  };
+
   return (
     <div className="space-y-6 sm:space-y-8 animate-fadeIn">
       {/* Hidden file input for avatar upload */}
@@ -406,9 +440,46 @@ export const DashboardTab: React.FC<DashboardTabProps> = ({ onNavigateTab }) => 
                     <KeyRound className="w-3.5 h-3.5 text-amber-300" />
                     <span>Changer mon PIN</span>
                   </button>
+
+                  {/* Bouton d'action Opt-In Notifications Push FCM (style Wave) */}
+                  <button
+                    onClick={handleTogglePushNotifications}
+                    disabled={isPushLoading}
+                    className={`px-3 py-1 rounded-xl flex items-center gap-1.5 transition-all cursor-pointer shadow-sm active:scale-95 ${
+                      isPushActive
+                        ? 'bg-indigo-950/80 hover:bg-indigo-900 text-indigo-200 border border-indigo-400/50'
+                        : 'bg-slate-900/80 hover:bg-slate-800 text-amber-300 border border-amber-400/50 hover:text-white'
+                    }`}
+                    title={isPushActive ? "Notifications push actives sur cet appareil" : "Activer les notifications push gratuites sur votre appareil (style Wave)"}
+                  >
+                    {isPushLoading ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin text-amber-300" />
+                    ) : (
+                      <Bell className={`w-3.5 h-3.5 ${isPushActive ? 'text-indigo-400' : 'text-amber-400 animate-bounce'}`} />
+                    )}
+                    <span>{isPushActive ? '🔔 Notifications Push Activées' : '🔔 Activer les notifications Push'}</span>
+                  </button>
                 </>
               )}
             </div>
+
+            {/* Toast inline d'information sur les notifications push */}
+            {pushStatusMessage && (
+              <div
+                className={`mt-2 text-xs font-bold px-3 py-1.5 rounded-xl border flex items-center gap-2 animate-fadeIn ${
+                  pushStatusMessage.type === 'success'
+                    ? 'bg-emerald-500/20 text-emerald-200 border-emerald-500/40'
+                    : 'bg-rose-500/20 text-rose-200 border-rose-500/40'
+                }`}
+              >
+                {pushStatusMessage.type === 'success' ? (
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-300 shrink-0" />
+                ) : (
+                  <AlertTriangle className="w-3.5 h-3.5 text-rose-300 shrink-0" />
+                )}
+                <span>{pushStatusMessage.text}</span>
+              </div>
+            )}
           </div>
         </div>
       </div>

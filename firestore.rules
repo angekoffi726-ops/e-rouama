@@ -119,6 +119,11 @@ service cloud.firestore {
       allow read, write: if true;
     }
 
+    // 21. Notifications Push FCM & Événements en temps réel
+    match /push_notifications/{notifId} {
+      allow read, write: if true;
+    }
+
     // Refus par défaut pour toute autre collection non répertoriée
     match /{document=**} {
       allow read, write: if false;

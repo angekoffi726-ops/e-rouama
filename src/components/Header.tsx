@@ -3,6 +3,8 @@ import { useApp } from '../context/AppContext';
 import { LogOut, Download, Shield, User, KeyRound } from 'lucide-react';
 import { ADMIN_USERS } from '../data/membersData';
 import { ChangePasswordModal } from './admin/ChangePasswordModal';
+import { RoleWorkspaceToggle } from './RoleWorkspaceToggle';
+import { InstallPwaBanner } from './InstallPwaBanner';
 
 export const Header: React.FC<{ onOpenAdminModal?: () => void }> = ({ onOpenAdminModal }) => {
   const { currentUser, logout, members, isFirebaseConnected } = useApp();
@@ -130,18 +132,12 @@ export const Header: React.FC<{ onOpenAdminModal?: () => void }> = ({ onOpenAdmi
               </div>
             </div>
 
+            {/* Workspace Toggle (Bascule instantanée Espace Membre <-> Espace Administration) */}
+            <RoleWorkspaceToggle compact />
+
             {/* Actions: Install PWA & Logout */}
             <div className="flex items-center gap-1.5 sm:gap-2">
-              {!isInstalled && (
-                <button
-                  onClick={handleInstallClick}
-                  className="bg-amber-500 hover:bg-amber-400 text-slate-900 font-bold px-3 py-2 rounded-xl text-xs flex items-center gap-1.5 transition-all shadow-md active:scale-95"
-                  title="Installer l'application PWA"
-                >
-                  <Download className="w-4 h-4" />
-                  <span className="hidden sm:inline">Installer l'App</span>
-                </button>
-              )}
+              <InstallPwaBanner variant="button" />
 
               {isAdmin && onOpenAdminModal && (
                 <button

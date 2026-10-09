@@ -5,6 +5,7 @@ import { useApp } from '../context/AppContext';
 import { ADMIN_USERS, INITIAL_ROUAMA_MEMBERS, getRegisteredMembersCount, isMemberActive } from '../data/membersData';
 import { AdminRole } from '../types';
 import { Shield, KeyRound, UserCheck, AlertCircle, Lock, ArrowRight, CheckCircle2 } from 'lucide-react';
+import { requestPushPermissionAndSaveToken, dispatchPushNotification } from '../utils/pushNotificationService';
 
 const normalizeName = (str: string): string => {
   return (str || '')
@@ -331,6 +332,22 @@ export const AuthScreen: React.FC = () => {
         localStorage.setItem('rouama_user', JSON.stringify(updatedMember));
         localStorage.setItem('erouama_active_session', JSON.stringify({ type: 'MEMBER', member: updatedMember }));
 
+        // Demande de permission et enregistrement du token Push FCM dans Firestore (users/{userId}/fcmToken)
+        requestPushPermissionAndSaveToken(member.id, 'MEMBER', member.id).catch((err) => {
+          console.warn('Note enregistrement FCM token membre (activation):', err);
+        });
+
+        // Diffusion de la notification Push pour informer le groupe du nouveau compte activé
+        dispatchPushNotification({
+          title: 'E-ROUAMA : Nouveau Membre Activé',
+          body: `Bienvenue à ${member.nickname || member.firstName} qui vient d'activer son compte !`,
+          senderRole: 'SYSTÈME',
+          senderName: 'E-ROUAMA',
+          targetRole: 'ALL',
+          type: 'GENERAL',
+          url: '/',
+        }).catch(console.warn);
+
         setSuccessMsg(`Bienvenue chez vous, ${member.nickname} ! Votre compte a été activé.`);
         clearAllFields();
         return;
@@ -412,6 +429,11 @@ export const AuthScreen: React.FC = () => {
       localStorage.setItem('rouama_user', JSON.stringify(updatedMember));
       localStorage.setItem('erouama_active_session', JSON.stringify({ type: 'MEMBER', member: updatedMember }));
 
+      // Demande de permission et enregistrement du token Push FCM dans Firestore (users/{userId}/fcmToken)
+      requestPushPermissionAndSaveToken(member.id, 'MEMBER', member.id).catch((err) => {
+        console.warn('Note enregistrement FCM token membre:', err);
+      });
+
       setSuccessMsg(`Bienvenue chez vous, ${member.nickname} !`);
       clearAllFields();
     } catch (err) {
@@ -444,6 +466,11 @@ export const AuthScreen: React.FC = () => {
           role: cleanInput,
           loginTimestamp: now.toISOString(),
           dateString: now.toISOString().split('T')[0],
+        });
+
+        // Demande de permission et enregistrement du token Push FCM dans Firestore (users/{adminId}/fcmToken)
+        requestPushPermissionAndSaveToken(cleanInput, 'ADMIN').catch((err) => {
+          console.warn('Note enregistrement FCM token admin:', err);
         });
       } catch (err) {
         console.warn('Erreur admin_logs dans handleAdminLogin:', err);

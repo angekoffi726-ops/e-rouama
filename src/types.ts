@@ -83,6 +83,10 @@ export interface RouamaMember {
   avatar?: string;
   photoUrl?: string;
   assignedRole?: AdminRole;
+  roles?: string[]; // Liste des rôles/départements attribués: ['membre', 'suivi_programme', 'cerveau']
+  departments?: string[]; // Liste des départements normalisés pour requêtes array-contains
+  fcmTokens?: string[]; // Tableau des jetons FCM actifs associés aux appareils
+  fcmToken?: string;
   resteADevoir?: number;
   updatedAt?: string;
   lastLogin?: string;
@@ -106,6 +110,10 @@ export interface CurrentUser {
   nickname?: string;
   pin?: string;
   isRegistered?: boolean;
+  roles?: string[];
+  departments?: string[];
+  fcmTokens?: string[];
+  activeView?: 'MEMBER' | 'ADMIN';
 }
 
 export type FundType = 'COTISATION' | 'ANNIVERSAIRE' | 'SOIREE_ROUAMA' | 'LOISIRS' | 'AGR' | 'CAS_SOCIAUX';

@@ -16,6 +16,9 @@ import { AdminRole, RouamaMember } from './types';
 import { LayoutDashboard, Church, CreditCard, Newspaper, Tent, Rocket, FileText, Shield, LogOut, Download, User, Sparkles, KeyRound } from 'lucide-react';
 import { ADMIN_USERS, getRegisteredMembersCount } from './data/membersData';
 import { ChangePasswordModal } from './components/admin/ChangePasswordModal';
+import { registerPushServiceWorker, listenForIncomingPushNotifications } from './utils/pushNotificationService';
+import { RoleWorkspaceToggle } from './components/RoleWorkspaceToggle';
+import { InstallPwaBanner } from './components/InstallPwaBanner';
 
 function MainLayout() {
   const { currentUser, logout, members, newsItems, gbairaiMessages, getMemberDuesStatus } = useApp();
@@ -52,6 +55,19 @@ function MainLayout() {
       window.removeEventListener('beforeinstallprompt', handleBeforeInstall);
     };
   }, []);
+
+  // Initialisation du Service Worker et écoute des Push Notifications en temps réel
+  useEffect(() => {
+    registerPushServiceWorker();
+
+    const userRole = currentUser?.type === 'ADMIN' ? currentUser.adminRole : currentUser?.member?.assignedRole;
+    const userId = currentUser?.type === 'MEMBER' ? currentUser.member?.id : currentUser?.adminRole;
+
+    const unsub = listenForIncomingPushNotifications(userRole, userId);
+    return () => {
+      unsub();
+    };
+  }, [currentUser]);
 
   const handleInstallClick = async () => {
     if (deferredPrompt) {
@@ -108,6 +124,9 @@ function MainLayout() {
           </div>
 
           <div className="flex items-center gap-3 ml-auto flex-wrap justify-end">
+            {/* In-App Workspace Switcher Toggle */}
+            <RoleWorkspaceToggle />
+
             <button
               onClick={() => setIsAdminChangePasswordOpen(true)}
               className="flex items-center space-x-2 px-4 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 rounded-full font-black text-xs shadow-md transition-all active:scale-95 border border-amber-300"
@@ -117,15 +136,7 @@ function MainLayout() {
               <span>MODIFIER MON MOT DE PASSE</span>
             </button>
 
-            {!isInstalled && (
-              <button
-                onClick={handleInstallClick}
-                className="flex items-center space-x-2 px-4 py-2 bg-[#355E3B] hover:bg-[#2A4B2F] text-white rounded-full font-extrabold text-xs shadow-md transition-all active:scale-95 border border-emerald-400/30"
-              >
-                <Download className="w-4 h-4" />
-                <span>Installer l'App</span>
-              </button>
-            )}
+            <InstallPwaBanner variant="button" />
 
             <button
               onClick={() => logout()}
@@ -331,16 +342,11 @@ function MainLayout() {
         </div>
 
         {/* Action Buttons */}
-        <div className="flex items-center space-x-3 ml-auto">
-          {!isInstalled && (
-            <button
-              onClick={handleInstallClick}
-              className="flex items-center space-x-2 px-4 sm:px-5 py-2.5 bg-[#355E3B] hover:bg-[#2A4B2F] text-white rounded-[2rem] font-extrabold text-xs sm:text-sm shadow-md active:scale-95 transition-all border border-emerald-300/30"
-            >
-              <Download className="w-4 h-4" />
-              <span>Installer l'App</span>
-            </button>
-          )}
+        <div className="flex items-center space-x-3 ml-auto flex-wrap justify-end">
+          {/* In-App Workspace Switcher Toggle */}
+          <RoleWorkspaceToggle />
+
+          <InstallPwaBanner variant="button" />
 
           <button
             onClick={logout}
@@ -384,6 +390,9 @@ function MainLayout() {
 
       {/* Tab Content */}
       <main className="flex-1 p-4 sm:p-6 lg:p-8 max-w-7xl w-full mx-auto">
+        {/* Bannière dynamique d'installation PWA si non installé */}
+        <InstallPwaBanner variant="banner" />
+
         {activeTab === 'DASHBOARD' && <DashboardTab onNavigateTab={setActiveTab} />}
         {activeTab === 'PRIERE_ROUAMA' && <PriereRouamaTab />}
         {activeTab === 'FINANCES' && <FinancesTab />}
