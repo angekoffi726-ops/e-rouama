@@ -2587,27 +2587,22 @@ export const AdminPortal: React.FC = () => {
     const unsubAnnouncements = onSnapshot(
       collection(db, "announcements"),
       (snapshot) => {
-        const loadedAnnouncements = snapshot.docs
-          .filter(docSnap => {
-            const data = docSnap.data();
-            return data.deleted !== true && data.status !== 'deleted';
-          })
-          .map(docSnap => {
-            const data = docSnap.data();
-            const authorVal = data.author || data.authorRole || data.createdBy || '';
-            const createdByVal = data.createdBy || data.authorRole || data.author || '';
-            return {
-              id: docSnap.id,
-              ...data,
-              author: authorVal,
-              createdBy: createdByVal,
-            };
-          }) as NewsItem[];
+        const loadedAnnouncements = snapshot.docs.map(docSnap => {
+          const data = docSnap.data();
+          const authorVal = data.author || data.authorRole || data.createdBy || '';
+          const createdByVal = data.createdBy || data.authorRole || data.author || '';
+          return {
+            id: docSnap.id,
+            ...data,
+            author: authorVal,
+            createdBy: createdByVal,
+          };
+        }) as NewsItem[];
 
         if (loadedAnnouncements.length > 0) {
           setAnnouncements(prev => {
             const map = new Map<string, NewsItem>();
-            prev.filter(item => item.deleted !== true && item.status !== 'deleted').forEach(item => map.set(item.id, item));
+            prev.forEach(item => map.set(item.id, item));
             loadedAnnouncements.forEach(item => {
               if (item.dispatchChannel !== 'MAIL') {
                 map.set(item.id, item);
@@ -2627,22 +2622,17 @@ export const AdminPortal: React.FC = () => {
     const unsubNews = onSnapshot(
       collection(db, "news"),
       (snapshot) => {
-        const loadedNews = snapshot.docs
-          .filter(docSnap => {
-            const data = docSnap.data();
-            return data.deleted !== true && data.status !== 'deleted';
-          })
-          .map(docSnap => {
-            const data = docSnap.data();
-            const authorVal = data.author || data.authorRole || data.createdBy || '';
-            const createdByVal = data.createdBy || data.authorRole || data.author || '';
-            return {
-              id: docSnap.id,
-              ...data,
-              author: authorVal,
-              createdBy: createdByVal,
-            };
-          }) as NewsItem[];
+        const loadedNews = snapshot.docs.map(docSnap => {
+          const data = docSnap.data();
+          const authorVal = data.author || data.authorRole || data.createdBy || '';
+          const createdByVal = data.createdBy || data.authorRole || data.author || '';
+          return {
+            id: docSnap.id,
+            ...data,
+            author: authorVal,
+            createdBy: createdByVal,
+          };
+        }) as NewsItem[];
 
         setAnnouncements(prev => {
           const map = new Map<string, NewsItem>();
@@ -2651,7 +2641,7 @@ export const AdminPortal: React.FC = () => {
               map.set(item.id, item);
             }
           });
-          prev.filter(item => item.deleted !== true && item.status !== 'deleted').forEach(item => {
+          prev.forEach(item => {
             if (item.dispatchChannel !== 'MAIL' && !map.has(item.id)) {
               map.set(item.id, item);
             }
@@ -2730,10 +2720,8 @@ export const AdminPortal: React.FC = () => {
       onConfirm: async () => {
         try {
           setDeletingAnnouncementId(id);
-          await updateDoc(doc(db, "announcements", id), { deleted: true, status: 'deleted' }).catch(() => {});
           await deleteDoc(doc(db, "announcements", id));
           try {
-            await updateDoc(doc(db, "news", id), { deleted: true, status: 'deleted' }).catch(() => {});
             await deleteDoc(doc(db, "news", id));
           } catch (_) {}
 

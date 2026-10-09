@@ -220,8 +220,6 @@ export interface NewsItem {
   payerId?: string;
   targetMemberIds?: string[];
   excludedMemberIds?: string[];
-  deleted?: boolean;
-  status?: string;
 }
 
 export interface Committee {
