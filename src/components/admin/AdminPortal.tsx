@@ -7,6 +7,7 @@ import { AdminRole, FundType, FUND_LABELS, TargetAudience, Committee, AgrProject
 import { ADMIN_USERS } from '../../data/membersData';
 import { getDefaultRolesForMember } from '../../data/departmentMapping';
 import { sendEmailBroadcastAsync } from '../../utils/emailService';
+import { dispatchPushNotification } from '../../utils/pushNotificationService';
 import { fetchAELFDailyReadings, AELFDayData } from '../../utils/aelfService';
 import { getDailyVerseForDate, PRAYER_ROUAMA } from '../../utils/versesData';
 import { RbacWarningBanner } from './RbacWarningBanner';
@@ -1048,6 +1049,26 @@ export const AdminPortal: React.FC = () => {
     content: string,
     channel: 'APP' | 'MAIL' | 'GENERAL'
   ) => {
+    // Notification Push FCM : TOUS LES MEMBRES (ou membre ciblé)
+    if (channel === 'APP' || channel === 'GENERAL') {
+      const pushTargetRole = spiritualRecipientMode === 'SPECIFIC' && spiritualSelectedMemberId ? undefined : 'ALL';
+      const pushTargetUserId = spiritualRecipientMode === 'SPECIFIC' && spiritualSelectedMemberId ? spiritualSelectedMemberId : undefined;
+      dispatchPushNotification({
+        title: '📢 Nouveauté Spiritualité',
+        body: title,
+        senderRole: 'SPIRITUALITE',
+        senderName: 'Département Spiritualité',
+        targetRole: pushTargetRole,
+        targetUserId: pushTargetUserId,
+        type: 'GENERAL',
+        rawTitle: true,
+        priority: 'high',
+        sound: 'default',
+        requireInteraction: true,
+        url: '/',
+      }).catch(console.warn);
+    }
+
     if (channel === 'APP') {
       publishNews(title, content, 'ANNONCE', 'TOUS', 'SPIRITUALITÉ', 'APP');
       setToastMessage("✝️ Publié avec succès sur l'Application E-ROUAMA !");
@@ -2338,6 +2359,21 @@ export const AdminPortal: React.FC = () => {
       setToastMessage("📲 Communiqué publié dans l'application avec succès !");
       setTimeout(() => setToastMessage(null), 4000);
       
+      dispatchPushNotification({
+        title: '📢 Nouveauté Communication',
+        body: exactSubject,
+        senderRole: 'COMMUNICATION',
+        senderName: 'Commission Communication',
+        targetRole: comRecipientMode === 'SPECIFIC' ? undefined : 'ALL',
+        targetUserId: comRecipientMode === 'SPECIFIC' ? comSelectedMemberId : undefined,
+        type: 'GENERAL',
+        rawTitle: true,
+        priority: 'high',
+        sound: 'default',
+        requireInteraction: true,
+        url: '/',
+      }).catch(console.warn);
+
       // 2. NETTOYAGE DU FORMULAIRE APRÈS SUCCÈS
       setNewsTitle('');
       setNewsContent('');
@@ -2398,6 +2434,19 @@ export const AdminPortal: React.FC = () => {
         // CAS 3 UNIQUEMENT : Enregistrement dans Firestore si canal GENERAL (NE PAS enregistrer si canal MAIL)
         if (comDispatchChannel === 'GENERAL') {
           publishNews(exactSubject, exactMessage, newsCategory, newsTarget, 'COM', 'APP');
+          dispatchPushNotification({
+            title: '📢 Nouveauté Communication',
+            body: exactSubject,
+            senderRole: 'COMMUNICATION',
+            senderName: 'Commission Communication',
+            targetUserId: comSelectedMemberId || undefined,
+            type: 'GENERAL',
+            rawTitle: true,
+            priority: 'high',
+            sound: 'default',
+            requireInteraction: true,
+            url: '/',
+          }).catch(console.warn);
         }
 
         // 3. BILAN : Confirmation visuelle
@@ -2481,6 +2530,19 @@ export const AdminPortal: React.FC = () => {
         // CAS 3 UNIQUEMENT : Enregistrement dans Firestore si canal GENERAL (NE PAS enregistrer si canal MAIL)
         if (comDispatchChannel === 'GENERAL') {
           publishNews(exactSubject, exactMessage, newsCategory, newsTarget, 'COM', 'APP');
+          dispatchPushNotification({
+            title: '📢 Nouveauté Communication',
+            body: exactSubject,
+            senderRole: 'COMMUNICATION',
+            senderName: 'Commission Communication',
+            targetRole: 'ALL',
+            type: 'GENERAL',
+            rawTitle: true,
+            priority: 'high',
+            sound: 'default',
+            requireInteraction: true,
+            url: '/',
+          }).catch(console.warn);
         }
 
         // 3. BILAN :

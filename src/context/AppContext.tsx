@@ -2097,15 +2097,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         ? 'Règlement Totalité'
         : 'Acompte par tranche';
 
-      // Notification Push FCM (Événement 1 : Nouvelle Demande) -> Trésorier uniquement
+      // Notification Push FCM (Événement 1 : Soumission de cotisation) -> Trésorier Leger (role: 'tresorerie')
       dispatchPushNotification({
         title: 'E-ROUAMA - Trésorerie',
-        body: `Nouvelle demande de paiement reçue de ${activeMember.nickname || activeMember.firstName}.`,
+        body: `Nouvelle demande de cotisation reçue de ${activeMember.nickname || activeMember.firstName}.`,
         senderRole: 'MEMBRE',
         senderName: activeMember.nickname || activeMember.firstName,
         targetRole: 'TRESORIER',
+        targetDepartment: 'tresorerie',
+        targetUserId: '11',
         type: 'PAYMENT',
         rawTitle: true,
+        priority: 'high',
+        sound: 'default',
+        requireInteraction: true,
         url: '/',
       }).catch(console.warn);
 
@@ -2356,28 +2361,37 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const payerMember = members.find(m => m.id === payerId);
       const memberNickname = targetDecl.memberNickname || payerMember?.nickname || targetDecl.memberName || 'Un membre';
 
-      // Destinataire 1 (Membre concerné)
+      // Destinataire 1 (Membre concerné) : "✅ Cotisation validée !"
       dispatchPushNotification({
-        title: 'Paiement Validé !',
-        body: 'Votre demande a été validée, votre solde est actualisé.',
-        senderRole: 'TRÉSORIER',
-        senderName: 'Trésorerie E-ROUAMA',
+        title: '✅ Cotisation validée !',
+        body: 'Votre reçu de cotisation a été validé avec succès par la Trésorerie.',
+        senderRole: 'TRESORIER',
+        senderName: 'Léger (Trésorier)',
         targetUserId: payerId,
         type: 'PAYMENT',
         rawTitle: true,
+        priority: 'high',
+        sound: 'default',
+        requireInteraction: true,
         url: '/',
       }).catch(console.warn);
 
-      // Destinataire 2 (Tous les autres membres)
+      // Destinataire 2 (TOUS LES AUTRES MEMBRES) : "🎉 Nouveau Gbrairai disponible !"
       dispatchPushNotification({
-        title: 'E-ROUAMA - Fraternité',
-        body: `${memberNickname} vient de régulariser sa contribution ! 👏`,
-        senderRole: 'TRÉSORIER',
-        senderName: 'Trésorerie E-ROUAMA',
+        title: '🎉 Nouveau Gbrairai disponible !',
+        body: "Un gbrairai vient d'être validé. Connectez-vous pour voir l'information !",
+        senderRole: 'TRESORIER',
+        senderName: 'Léger (Trésorier)',
         targetRole: 'ALL',
         type: 'PAYMENT',
         rawTitle: true,
+        priority: 'high',
+        sound: 'default',
+        requireInteraction: true,
         url: '/',
+        metadata: {
+          excludedUserId: payerId,
+        },
       }).catch(console.warn);
     } catch (notifErr) {
       console.warn('Erreur notification validation paiement:', notifErr);
@@ -2405,20 +2419,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       );
     }
 
-    // NOTIFICATIONS PUSH FCM (ÉVÉNEMENT 2B : REJET PAIEMENT)
+    // NOTIFICATIONS PUSH FCM (ÉVÉNEMENT 2B : REJET PAIEMENT -> UNIQUEMENT LE MEMBRE CONCERNÉ)
     try {
       const targetDecl = declarations.find(d => d.id === targetId);
       const payerId = targetDecl?.memberId;
       if (payerId) {
-        // Destinataire : Membre concerné uniquement
         dispatchPushNotification({
-          title: 'Reçu non conforme',
-          body: `Votre reçu n'a pas pu être validé : ${finalReason}. Veuillez vérifier et renvoyer.`,
-          senderRole: 'TRÉSORIER',
-          senderName: 'Trésorerie E-ROUAMA',
+          title: '❌ Cotisation rejetée',
+          body: 'Votre reçu de cotisation a été refusé par la Trésorerie.',
+          senderRole: 'TRESORIER',
+          senderName: 'Léger (Trésorier)',
           targetUserId: payerId,
           type: 'PAYMENT',
           rawTitle: true,
+          priority: 'high',
+          sound: 'default',
+          requireInteraction: true,
           url: '/',
         }).catch(console.warn);
       }
@@ -2589,6 +2605,26 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     setDoc(doc(db, 'news', alertNews.id), sanitizeFirestore(alertNews)).catch(console.warn);
     setNewsItems(prev => [alertNews, ...prev]);
+
+    // Notification Push FCM Cerveau Alert (Ciblage spécifique ou TOUS LES MEMBRES)
+    const isTargetAll = !targetMemberIds || targetMemberIds.length === 0 || targetMemberIds.includes('ALL');
+    dispatchPushNotification({
+      title: alertTitle,
+      body: alertContent.substring(0, 150),
+      senderRole: 'CERVEAU',
+      senderName: 'Wilfried (CERVEAU)',
+      targetRole: isTargetAll ? 'ALL' : undefined,
+      targetUserIds: isTargetAll ? undefined : targetMemberIds,
+      type: 'GENERAL',
+      rawTitle: true,
+      priority: 'high',
+      sound: 'default',
+      requireInteraction: true,
+      url: '/',
+      metadata: {
+        excludedUserId: resolvedPayerId || undefined,
+      },
+    }).catch(console.warn);
   };
 
   // Décaissements (Sauvegarde addDoc avec identifiant unique Firestore)
@@ -2604,6 +2640,23 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         createdAt: Date.now(),
       }));
       await updateDoc(docRef, { id: docRef.id }).catch(() => {});
+
+      // Notification Push FCM : Trésorier (Leger) -> Wilfried (role: 'cerveau')
+      dispatchPushNotification({
+        title: "🚨 Demande de retrait d'argent",
+        body: "Le Trésorier a soumis une demande de retrait à valider.",
+        senderRole: 'TRESORIER',
+        senderName: 'Léger (Trésorier)',
+        targetRole: 'CERVEAU',
+        targetDepartment: 'cerveau',
+        targetUserId: '1',
+        type: 'GENERAL',
+        rawTitle: true,
+        priority: 'high',
+        sound: 'default',
+        requireInteraction: true,
+        url: '/',
+      }).catch(console.warn);
     } catch (e) {
       console.warn('Erreur addDoc createWithdrawalRequest:', e);
     }
@@ -2640,11 +2693,45 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     } catch (txErr) {
       console.warn('Erreur addDoc décaissement transaction:', txErr);
     }
+
+    // Notification Push FCM : Wilfried (CERVEAU) -> Trésorier (Leger)
+    dispatchPushNotification({
+      title: "💳 Décision Retrait",
+      body: "La demande de retrait a été Validée par le Cerveau.",
+      senderRole: 'CERVEAU',
+      senderName: 'Wilfried (CERVEAU)',
+      targetRole: 'TRESORIER',
+      targetDepartment: 'tresorerie',
+      targetUserId: '11',
+      type: 'GENERAL',
+      rawTitle: true,
+      priority: 'high',
+      sound: 'default',
+      requireInteraction: true,
+      url: '/',
+    }).catch(console.warn);
   };
 
   const rejectWithdrawal = (requestId: string) => {
     setDoc(doc(db, 'withdrawals', requestId), { status: 'REJECTED' }, { merge: true }).catch(console.warn);
     setWithdrawals(prev => prev.map(w => w.id === requestId ? { ...w, status: 'REJECTED' } : w));
+
+    // Notification Push FCM : Wilfried (CERVEAU) -> Trésorier (Leger)
+    dispatchPushNotification({
+      title: "💳 Décision Retrait",
+      body: "La demande de retrait a été Refusée par le Cerveau.",
+      senderRole: 'CERVEAU',
+      senderName: 'Wilfried (CERVEAU)',
+      targetRole: 'TRESORIER',
+      targetDepartment: 'tresorerie',
+      targetUserId: '11',
+      type: 'GENERAL',
+      rawTitle: true,
+      priority: 'high',
+      sound: 'default',
+      requireInteraction: true,
+      url: '/',
+    }).catch(console.warn);
   };
 
   // Publication d'actualités
@@ -2790,6 +2877,21 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       'TOUS',
       'COMMISSION ORGANISATION'
     );
+
+    // Notification Push FCM : TOUS LES MEMBRES
+    dispatchPushNotification({
+      title: '📢 Nouveauté Organisation',
+      body: newAct.title,
+      senderRole: 'ORGANISATION',
+      senderName: 'Commission Organisation',
+      targetRole: 'ALL',
+      type: 'GENERAL',
+      rawTitle: true,
+      priority: 'high',
+      sound: 'default',
+      requireInteraction: true,
+      url: '/',
+    }).catch(console.warn);
   };
 
   const updateActivity = async (activityId: string, updatedData: Partial<EventActivity>) => {
@@ -2829,6 +2931,21 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         'TOUS',
         'ORGANISATION / PAYOR'
       );
+
+      // Notification Push FCM : TOUS LES MEMBRES
+      dispatchPushNotification({
+        title: '📢 Nouveauté Organisation',
+        body: act.title,
+        senderRole: 'ORGANISATION',
+        senderName: 'Commission Organisation',
+        targetRole: 'ALL',
+        type: 'GENERAL',
+        rawTitle: true,
+        priority: 'high',
+        sound: 'default',
+        requireInteraction: true,
+        url: '/',
+      }).catch(console.warn);
     }
   };
 
@@ -2879,6 +2996,21 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       'APP',
       'FINANCES'
     );
+
+    // Notification Push FCM : TOUS LES MEMBRES
+    dispatchPushNotification({
+      title: '📢 Nouveauté Trésorerie',
+      body: newEvent.title,
+      senderRole: 'TRESORIER',
+      senderName: 'Trésorier Général',
+      targetRole: 'ALL',
+      type: 'GENERAL',
+      rawTitle: true,
+      priority: 'high',
+      sound: 'default',
+      requireInteraction: true,
+      url: '/',
+    }).catch(console.warn);
   };
 
   const archiveFinancialEvent = (eventId: string) => {
@@ -2917,6 +3049,21 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
     setDoc(doc(db, 'projects', newProj.id), sanitizeFirestore(newProj)).catch(console.warn);
     setProjects(prev => [newProj, ...prev]);
+
+    // Notification Push FCM : TOUS LES MEMBRES
+    dispatchPushNotification({
+      title: '📢 Nouveauté Projet',
+      body: newProj.title || 'Un nouveau projet est disponible.',
+      senderRole: 'PROJET',
+      senderName: 'Responsable Projets',
+      targetRole: 'ALL',
+      type: 'GENERAL',
+      rawTitle: true,
+      priority: 'high',
+      sound: 'default',
+      requireInteraction: true,
+      url: '/',
+    }).catch(console.warn);
   };
 
   const updateProject = (projectId: string, updates: Partial<AgrProject>) => {
@@ -3022,6 +3169,21 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         'APP',
         'FINANCES'
       );
+
+      // Notification Push FCM : TOUS LES MEMBRES
+      dispatchPushNotification({
+        title: '📢 Nouveauté Projet',
+        body: proj.title,
+        senderRole: 'PROJET',
+        senderName: 'Responsable Projets',
+        targetRole: 'ALL',
+        type: 'GENERAL',
+        rawTitle: true,
+        priority: 'high',
+        sound: 'default',
+        requireInteraction: true,
+        url: '/',
+      }).catch(console.warn);
     }
   };
 
@@ -3605,14 +3767,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       await setDoc(doc(db, 'info_requests', id), sanitizeFirestore(newReq));
       setInfoRequests(prev => [newReq, ...prev.filter(r => r.id !== id)]);
 
-      // Notification Push FCM envoyée au rôle destinataire
+      // Notification Push FCM envoyée au rôle / département destinataire
       dispatchPushNotification({
         title: `E-ROUAMA : ${req.senderRoleLabel || req.senderRole}`,
         body: `Demande d'information : "${req.subject}"\n${req.message.substring(0, 100)}...`,
         senderRole: req.senderRole,
         senderName: req.senderName,
         targetRole: req.recipientRole,
+        targetDepartment: req.recipientRole,
         type: 'INFO_REQUEST',
+        priority: 'high',
+        sound: 'default',
+        requireInteraction: true,
         url: '/',
       }).catch(console.warn);
 
@@ -3651,7 +3817,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         senderRole: replierName,
         senderName: replierName,
         targetRole: targetReq ? targetReq.senderRole : 'ALL',
+        targetDepartment: targetReq ? targetReq.senderRole : 'ALL',
         type: 'INFO_REQUEST',
+        priority: 'high',
+        sound: 'default',
+        requireInteraction: true,
         url: '/',
       }).catch(console.warn);
 
@@ -3695,6 +3865,21 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
     setDoc(doc(db, 'spiritual', 'verse'), sanitizeFirestore(updated)).catch(console.warn);
     setVerseOfTheDay(updated);
+
+    // Notification Push FCM : TOUS LES MEMBRES
+    dispatchPushNotification({
+      title: '📢 Nouveauté Spiritualité',
+      body: reference ? `${reference} : "${verse.substring(0, 80)}..."` : verse.substring(0, 80),
+      senderRole: 'SPIRITUALITE',
+      senderName: 'Commission Spiritualité',
+      targetRole: 'ALL',
+      type: 'GENERAL',
+      rawTitle: true,
+      priority: 'high',
+      sound: 'default',
+      requireInteraction: true,
+      url: '/',
+    }).catch(console.warn);
   };
 
   const addPrayerIntention = (intention: string, memberNickname?: string, isChain: boolean = false) => {
@@ -3724,6 +3909,21 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const title = `[ÉVÉNEMENT RELIGIEUX] ${eventData.title}`;
     const content = `Date: ${eventData.eventDate} à ${eventData.eventTime}\nLieu: ${eventData.location}${eventData.theme ? `\nThème: ${eventData.theme}` : ''}`;
     publishNews(title, content, 'ANNONCE', 'TOUS', 'SPIRITUALITÉ', dispatchChannel);
+
+    // Notification Push FCM : TOUS LES MEMBRES
+    dispatchPushNotification({
+      title: '📢 Nouveauté Spiritualité',
+      body: eventData.title,
+      senderRole: 'SPIRITUALITE',
+      senderName: 'Commission Spiritualité',
+      targetRole: 'ALL',
+      type: 'GENERAL',
+      rawTitle: true,
+      priority: 'high',
+      sound: 'default',
+      requireInteraction: true,
+      url: '/',
+    }).catch(console.warn);
   };
 
   return (

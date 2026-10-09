@@ -1,5 +1,13 @@
 import { initializeApp, getApps, getApp } from 'firebase/app';
-import { getFirestore, doc, getDocFromServer } from 'firebase/firestore';
+import {
+  initializeFirestore,
+  getFirestore,
+  doc,
+  collection,
+  getDocs,
+  limit,
+  query,
+} from 'firebase/firestore';
 import { getAuth, signInAnonymously } from 'firebase/auth';
 
 // Identifiants Firebase officiels du projet E-ROUAMA
@@ -15,8 +23,24 @@ export const firebaseConfig = {
 // Initialisation de Firebase avec les clés du projet
 const app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
 
-// Initialisation de Firestore
-export const db = getFirestore(app);
+// Initialisation de Firestore avec long-polling forcé (évite l'erreur de backend non joignable sous 10 secondes)
+let firestoreInstance;
+try {
+  firestoreInstance = initializeFirestore(app, {
+    experimentalForceLongPolling: true,
+    experimentalAutoDetectLongPolling: true,
+  });
+} catch {
+  try {
+    firestoreInstance = initializeFirestore(app, {
+      experimentalAutoDetectLongPolling: true,
+    });
+  } catch {
+    firestoreInstance = getFirestore(app);
+  }
+}
+
+export const db = firestoreInstance;
 
 // Initialisation du service d'authentification Firebase
 export const auth = getAuth(app);
@@ -29,17 +53,14 @@ signInAnonymously(auth).catch((err) => {
 // Test de connectivité initiale avec Firestore avec garde-fou contre les blocages
 export async function testFirestoreConnection(): Promise<boolean> {
   try {
-    const fetchPromise = getDocFromServer(doc(db, 'test', 'connection'));
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('connection timeout')), 5000)
-    );
-    await Promise.race([fetchPromise, timeoutPromise]);
-    console.log('✅ Connexion Firestore opérationnelle sur e-rouama-f735a');
-    return true;
-  } catch (error) {
-    if (error instanceof Error && (error.message.includes('the client is offline') || error.message.includes('timeout'))) {
-      console.warn('⚠️ Connexion Firestore en attente de synchronisation ou hors-ligne.');
+    const snap = await getDocs(query(collection(db, 'members'), limit(1)));
+    if (snap && snap.size >= 0) {
+      console.log('✅ Connexion Firestore opérationnelle sur e-rouama-f735a');
+      return true;
     }
+    return true;
+  } catch (error: any) {
+    console.warn('⚠️ Connexion Firestore en attente de synchronisation ou hors-ligne:', error?.message);
     return false;
   }
 }

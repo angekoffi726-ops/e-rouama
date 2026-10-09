@@ -35,8 +35,13 @@ try {
       tag: tag,
       vibrate: [300, 150, 300, 150, 400],
       requireInteraction: true,
+      priority: 'high',
+      sound: 'default',
       data: {
         url: payload.data?.url || payload.fcmOptions?.link || '/',
+        priority: 'high',
+        sound: 'default',
+        requireInteraction: true,
         ...payload.data
       },
       actions: [
@@ -67,8 +72,10 @@ self.addEventListener('push', (event) => {
         icon: icon,
         badge: '/LOGOPRO.png',
         tag: tag,
-        vibrate: [300, 150, 300],
+        vibrate: [300, 150, 300, 150, 400],
         requireInteraction: true,
+        priority: 'high',
+        sound: 'default',
         data: data.data || { url: '/' }
       })
     );

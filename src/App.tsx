@@ -44,8 +44,9 @@ function MainLayout() {
 
     const userRole = currentUser?.type === 'ADMIN' ? currentUser.adminRole : currentUser?.member?.assignedRole;
     const userId = currentUser?.type === 'MEMBER' ? currentUser.member?.id : currentUser?.adminRole;
+    const userDepts = currentUser?.departments || currentUser?.member?.departments || [];
 
-    const unsub = listenForIncomingPushNotifications(userRole, userId);
+    const unsub = listenForIncomingPushNotifications(userRole, userId, userDepts);
     return () => {
       unsub();
     };

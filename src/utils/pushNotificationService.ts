@@ -262,8 +262,16 @@ export const triggerDirectNotification = async (options: {
           icon: icon,
           badge: '/LOGOPRO.png',
           tag: tag,
-          vibrate: [300, 150, 300],
-          data: { url: options.url || '/', ...options.data },
+          vibrate: [300, 150, 300, 150, 400],
+          requireInteraction: true,
+          silent: false,
+          data: {
+            url: options.url || '/',
+            priority: 'high',
+            sound: 'default',
+            requireInteraction: true,
+            ...options.data,
+          },
         } as NotificationOptions);
         playWaveNotificationSound();
         return;
@@ -280,8 +288,14 @@ export const triggerDirectNotification = async (options: {
       icon: icon,
       badge: '/LOGOPRO.png',
       tag: tag,
-      data: { url: options.url || '/' },
-    });
+      requireInteraction: true,
+      data: {
+        url: options.url || '/',
+        priority: 'high',
+        sound: 'default',
+        requireInteraction: true,
+      },
+    } as NotificationOptions);
     playWaveNotificationSound();
     notif.onclick = () => {
       window.focus();
@@ -298,14 +312,131 @@ export interface PushDispatchOptions {
   body: string;
   senderRole?: string;
   senderName?: string;
-  targetRole?: string; // ex: "TRESORIER", "SECRETARIAT", "ALL", etc.
+  targetRole?: string; // ex: "TRESORIER", "CERVEAU", "ALL", etc.
   targetUserId?: string;
-  targetDepartment?: string; // ex: "communication", "projet", "organisation", etc.
+  targetUserIds?: string[];
+  targetDepartment?: string; // ex: "cerveau", "tresorerie", "communication", "projet", "organisation", "spiritualite", etc.
   type: 'INFO_REQUEST' | 'PV_PUBLISHED' | 'BILAN_PUBLISHED' | 'PAYMENT' | 'GENERAL';
   url?: string;
   metadata?: Record<string, any>;
   rawTitle?: boolean; // When true, does not prefix title with E-ROUAMA : [sender]
+  priority?: 'high' | 'normal';
+  sound?: string;
+  requireInteraction?: boolean;
 }
+
+/**
+ * Extrait tous les jetons FCM actifs des destinataires concernés dans Firestore
+ * (Prend en compte les rôles, départements, gestion partagée et diffusion globale)
+ */
+export const extractRecipientFcmTokens = async (options: {
+  targetRole?: string;
+  targetDepartment?: string;
+  targetUserId?: string;
+  targetUserIds?: string[];
+  excludedUserId?: string;
+  excludedUserIds?: string[];
+}): Promise<string[]> => {
+  const tokens: string[] = [];
+  const targetRoleClean = (options.targetRole || '').toUpperCase().trim();
+  const normalizedDept = options.targetDepartment
+    ? normalizeDepartmentKey(options.targetDepartment)
+    : options.targetRole
+    ? normalizeDepartmentKey(options.targetRole)
+    : '';
+
+  const isBroadcastAll = targetRoleClean === 'ALL' || targetRoleClean === 'TOUS' || normalizedDept === 'all';
+
+  const excludedIds = new Set<string>();
+  if (options.excludedUserId) excludedIds.add(String(options.excludedUserId).trim());
+  if (Array.isArray(options.excludedUserIds)) {
+    options.excludedUserIds.forEach(id => id && excludedIds.add(String(id).trim()));
+  }
+
+  try {
+    const usersRef = collection(db, 'users');
+    const membersRef = collection(db, 'members');
+
+    // Cas 2 : Utilisateur(s) ciblé(s) par ID
+    const directUserIds = new Set<string>();
+    if (options.targetUserId) {
+      directUserIds.add(String(options.targetUserId).trim());
+    }
+    if (Array.isArray(options.targetUserIds)) {
+      options.targetUserIds.forEach(id => id && directUserIds.add(String(id).trim()));
+    }
+
+    // Cas 3 : Ciblage par Département / Rôle administratif
+    const targetDeptManagers = new Set<string>();
+    if (normalizedDept && normalizedDept !== 'all') {
+      const deptConfig = OFFICIAL_DEPARTMENTS.find(d => 
+        d.key === normalizedDept || 
+        normalizeDepartmentKey(d.key) === normalizedDept ||
+        d.adminRole.toLowerCase() === normalizedDept
+      );
+      if (deptConfig) {
+        deptConfig.managerMemberIds.forEach(id => targetDeptManagers.add(String(id).trim()));
+      }
+    }
+
+    // Rôles spécifiques directs
+    if (normalizedDept === 'cerveau' || targetRoleClean === 'CERVEAU') {
+      targetDeptManagers.add('1'); // Wilfried (Cerveau)
+    }
+    if (normalizedDept === 'tresorerie' || targetRoleClean === 'TRESORIER' || targetRoleClean === 'TRESO') {
+      targetDeptManagers.add('11'); // Léger (Trésorier)
+    }
+
+    const collectTokensFromDoc = (docId: string, u: any) => {
+      const uId = String(u.id || '').trim();
+      if (excludedIds.has(docId) || (uId && excludedIds.has(uId))) {
+        return;
+      }
+
+      if (isBroadcastAll) {
+        if (Array.isArray(u.fcmTokens)) tokens.push(...u.fcmTokens.filter(Boolean));
+        if (u.fcmToken && typeof u.fcmToken === 'string') tokens.push(u.fcmToken);
+        return;
+      }
+
+      const uDepts = Array.isArray(u.departments) ? u.departments.map(x => normalizeDepartmentKey(x)) : [];
+      const uRoles = Array.isArray(u.roles) ? u.roles.map(x => normalizeDepartmentKey(x)) : [];
+      const uRole = normalizeDepartmentKey(u.role || u.adminRole || '');
+
+      const isDirectTarget = directUserIds.has(docId) || (uId && directUserIds.has(uId));
+      const isManagerTarget = targetDeptManagers.has(docId) || (uId && targetDeptManagers.has(uId));
+      const isDeptMatch = normalizedDept && (
+        uDepts.includes(normalizedDept) ||
+        uRoles.includes(normalizedDept) ||
+        uRole === normalizedDept ||
+        (normalizedDept === 'cerveau' && (uRoles.includes('cerveau') || uRole.includes('cerveau'))) ||
+        (normalizedDept === 'tresorerie' && (uRoles.includes('tresorerie') || uRole.includes('treso')))
+      );
+
+      if (isDirectTarget || isManagerTarget || isDeptMatch) {
+        if (Array.isArray(u.fcmTokens)) tokens.push(...u.fcmTokens.filter(Boolean));
+        if (u.fcmToken && typeof u.fcmToken === 'string') tokens.push(u.fcmToken);
+      }
+    };
+
+    // Extraction depuis 'users'
+    const [allUsersSnap, allMembersSnap] = await Promise.all([
+      getDocs(usersRef).catch(() => null),
+      getDocs(membersRef).catch(() => null),
+    ]);
+
+    if (allUsersSnap) {
+      allUsersSnap.forEach(d => collectTokensFromDoc(d.id, d.data()));
+    }
+    if (allMembersSnap) {
+      allMembersSnap.forEach(d => collectTokensFromDoc(d.id, d.data()));
+    }
+  } catch (err) {
+    console.warn('Erreur extraction fcmTokens Firestore:', err);
+  }
+
+  return Array.from(new Set(tokens.filter(t => typeof t === 'string' && t.trim().length > 10)));
+};
 
 export const dispatchPushNotification = async (options: PushDispatchOptions) => {
   try {
@@ -322,42 +453,69 @@ export const dispatchPushNotification = async (options: PushDispatchOptions) => 
       ? normalizeDepartmentKey(options.targetRole)
       : null;
 
-    // Récupération simultanée de tous les jetons FCM des responsables du département si ciblage par département
-    let departmentTokens: string[] = [];
-    if (normalizedDept && normalizedDept !== 'all') {
-      try {
-        const usersRef = collection(db, 'users');
-        const qDept = query(usersRef, where('departments', 'array-contains', normalizedDept));
-        const snap = await getDocs(qDept);
-        snap.forEach((docSnap) => {
-          const u = docSnap.data();
-          if (Array.isArray(u.fcmTokens)) {
-            departmentTokens.push(...u.fcmTokens.filter(Boolean));
-          }
-          if (u.fcmToken) {
-            departmentTokens.push(u.fcmToken);
-          }
-        });
-        departmentTokens = Array.from(new Set(departmentTokens));
-      } catch (deptErr) {
-        console.debug('Note recherche fcmTokens du département:', deptErr);
-      }
-    }
+    const excludedUserId = options.metadata?.excludedUserId ? String(options.metadata.excludedUserId).trim() : undefined;
+
+    // Récupération simultanée de tous les jetons FCM des destinataires concernés dans Firestore
+    const targetTokens = await extractRecipientFcmTokens({
+      targetRole: options.targetRole,
+      targetDepartment: normalizedDept || undefined,
+      targetUserId: options.targetUserId,
+      targetUserIds: options.targetUserIds,
+      excludedUserId,
+    });
 
     const payload = {
       title: formattedTitle,
       body: options.body,
       icon: '/LOGOPRO.png',
       badge: '/LOGOPRO.png',
+      priority: 'high',
+      sound: 'default',
+      requireInteraction: true,
+      vibrate: [300, 150, 300, 150, 400],
       senderRole: options.senderRole || '',
       senderName: options.senderName || '',
       targetRole: options.targetRole || 'ALL',
       targetDepartment: normalizedDept || options.targetRole || 'ALL',
       targetUserId: options.targetUserId || null,
-      targetTokens: departmentTokens,
+      targetUserIds: options.targetUserIds || (options.targetUserId ? [options.targetUserId] : []),
+      targetTokens,
+      fcmTokens: targetTokens,
       type: options.type,
       url: options.url || '/',
-      metadata: options.metadata || {},
+      notification: {
+        title: formattedTitle,
+        body: options.body,
+        icon: '/LOGOPRO.png',
+        badge: '/LOGOPRO.png',
+        sound: 'default',
+      },
+      android: {
+        priority: 'high',
+        notification: {
+          sound: 'default',
+          channelId: 'erouama_notifications',
+          priority: 'high',
+          defaultSound: true,
+          defaultVibrateTimings: true,
+        },
+      },
+      webpush: {
+        headers: {
+          Urgency: 'high',
+        },
+        notification: {
+          requireInteraction: true,
+          sound: 'default',
+          vibrate: [300, 150, 300, 150, 400],
+        },
+      },
+      metadata: {
+        priority: 'high',
+        sound: 'default',
+        requireInteraction: true,
+        ...(options.metadata || {}),
+      },
       createdAt: new Date().toISOString(),
       timestamp: Date.now(),
     };
@@ -365,8 +523,12 @@ export const dispatchPushNotification = async (options: PushDispatchOptions) => 
     // 1. Enregistre l'événement dans la collection Firestore 'push_notifications'
     await addDoc(collection(db, 'push_notifications'), payload);
 
-    // 2. Diffuse également en local si l'émetteur a besoin de retour
-    console.log('📢 Notification Push FCM émise vers Firestore:', payload.title, normalizedDept ? `[Département: ${normalizedDept}]` : '');
+    console.log(
+      '📢 Notification Push FCM émise vers Firestore:',
+      payload.title,
+      `[${targetTokens.length} jetons ciblés]`,
+      normalizedDept ? `[Département: ${normalizedDept}]` : ''
+    );
   } catch (err) {
     console.warn('Erreur émission notification push:', err);
   }
@@ -410,26 +572,36 @@ export const listenForIncomingPushNotifications = (
             return;
           }
 
+          // Ne pas notifier un utilisateur explicitement exclu dans les métadonnées (ex: payeur exclu du broadcast gbrairai)
+          if (data.metadata?.excludedUserId && cleanUserId && String(data.metadata.excludedUserId).trim() === cleanUserId) {
+            return;
+          }
+
           const roleMatches =
             targetRole === 'ALL' ||
             targetRole === 'TOUS' ||
             targetRole === cleanRole ||
-            (targetRole === 'SECRETARIAT' && (cleanRole.includes('SECRETA') || cleanRole === 'SECRETARIAT')) ||
-            (targetRole === 'TRESORIER' && (cleanRole.includes('TRESO') || cleanRole === 'TRESORIER')) ||
-            (targetRole === 'ORGANISATION' && (cleanRole.includes('ORGANI') || cleanRole === 'ORGANISATION')) ||
-            (targetRole === 'PROJET' && (cleanRole.includes('PROJET') || cleanRole === 'PROJET')) ||
-            (targetRole === 'PAYOR' && (cleanRole.includes('PAYOR') || cleanRole === 'PAYOR')) ||
-            (targetRole === 'COM' && (cleanRole.includes('COM') || cleanRole === 'COM')) ||
-            (targetRole === 'SPIRITUALITE' && (cleanRole.includes('SPIRIT') || cleanRole === 'SPIRITUALITE')) ||
-            (targetRole === 'SDP' && (cleanRole.includes('SDP') || cleanRole.includes('PROGRAMME')));
+            (targetRole === 'CERVEAU' && (cleanRole.includes('CERVEAU') || userDeptsNormalized.includes('cerveau'))) ||
+            (targetRole === 'TRESORIER' && (cleanRole.includes('TRESO') || userDeptsNormalized.includes('tresorerie'))) ||
+            (targetRole === 'SECRETARIAT' && (cleanRole.includes('SECRETA') || cleanRole === 'SECRETARIAT' || userDeptsNormalized.includes('secretariat'))) ||
+            (targetRole === 'ORGANISATION' && (cleanRole.includes('ORGANI') || cleanRole === 'ORGANISATION' || userDeptsNormalized.includes('organisation'))) ||
+            (targetRole === 'PROJET' && (cleanRole.includes('PROJET') || cleanRole === 'PROJET' || userDeptsNormalized.includes('projet'))) ||
+            (targetRole === 'PAYOR' && (cleanRole.includes('PAYOR') || cleanRole === 'PAYOR' || userDeptsNormalized.includes('payor'))) ||
+            (targetRole === 'COM' && (cleanRole.includes('COM') || cleanRole === 'COM' || userDeptsNormalized.includes('communication'))) ||
+            (targetRole === 'SPIRITUALITE' && (cleanRole.includes('SPIRIT') || cleanRole === 'SPIRITUALITE' || userDeptsNormalized.includes('spiritualite'))) ||
+            (targetRole === 'SDP' && (cleanRole.includes('SDP') || cleanRole.includes('PROGRAMME') || userDeptsNormalized.includes('suivi_programme')));
 
           // Vérification si le département cible correspond à un des départements de l'utilisateur (ex: communication pour Esther et Désiré)
           const deptMatches = targetDepartment && userDeptsNormalized.includes(targetDepartment);
 
-          // Si un targetUserId précis est spécifié (ex: notification directe au membre concerné)
-          const isDirectTargetUser = targetUserId && cleanUserId && targetUserId === cleanUserId;
+          // Si un targetUserId précis ou une liste de membres ciblés est spécifié(e)
+          const targetUserIds = Array.isArray(data.targetUserIds) ? data.targetUserIds.map((x: any) => String(x).trim()) : [];
+          const isDirectTargetUser =
+            Boolean(targetUserId && cleanUserId && targetUserId === cleanUserId) ||
+            Boolean(targetUserIds.length > 0 && cleanUserId && targetUserIds.includes(cleanUserId));
+
           // Si targetRole ou département est ciblé (et aucun targetUserId n'est requis ou targetUserId correspond)
-          const isRoleOrDeptTarget = !targetUserId && (roleMatches || deptMatches);
+          const isRoleOrDeptTarget = !targetUserId && targetUserIds.length === 0 && (roleMatches || deptMatches);
 
           if (isDirectTargetUser || isRoleOrDeptTarget) {
             // Déclencher la notification Push native
