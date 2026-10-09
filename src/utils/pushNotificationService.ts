@@ -385,7 +385,7 @@ export const refreshFcmTokenOnStartup = async (targetUserId?: string): Promise<s
   return null;
 };
 
-// Déclenchement direct d'une notification sur le système de l'appareil (arrière-plan uniquement)
+// Déclenchement direct d'une notification sur le système natif de l'appareil (Bannière / Volet Android)
 export const triggerDirectNotification = async (options: {
   title: string;
   body: string;
@@ -399,33 +399,19 @@ export const triggerDirectNotification = async (options: {
   }
 
   const icon = options.icon || '/icon-192.png';
-  const tag = options.tag || options.data?.messageId || options.data?.id || 'erouama-push';
+  const tag = options.tag || options.data?.messageId || options.data?.id || 'erouama-single-tag';
 
-  // Vérifier anti-doublon en mémoire
-  if (hasNotificationBeenHandled(tag)) {
-    console.log('[triggerDirectNotification] Notification déjà traitée (anti-doublon):', tag);
-    return;
-  }
-  markNotificationAsHandled(tag);
-
-  // Tenter via le Service Worker registration en premier pour un affichage système natif
+  // Tenter via le Service Worker registration en premier pour un affichage système natif dans le volet Android
   try {
     if ('serviceWorker' in navigator) {
       const reg = await navigator.serviceWorker.ready;
       if (reg && reg.showNotification) {
-        if (reg.getNotifications) {
-          const existing = await reg.getNotifications();
-          if (existing.some((n) => n.tag && n.tag === tag)) {
-            console.log('[triggerDirectNotification] Notification déjà affichée dans le centre système:', tag);
-            return;
-          }
-        }
-
         await reg.showNotification(options.title, {
           body: options.body,
           icon: icon,
           badge: '/icon-192.png',
           tag: tag,
+          renotify: true,
           vibrate: [200, 100, 200],
           requireInteraction: true,
           silent: false,
@@ -453,6 +439,7 @@ export const triggerDirectNotification = async (options: {
       icon: icon,
       badge: '/icon-192.png',
       tag: tag,
+      renotify: true,
       requireInteraction: true,
       data: {
         url: options.url || '/',
@@ -869,12 +856,20 @@ export const setupForegroundFCMListener = (onReceived?: (payload: any) => void) 
           markNotificationAsHandled(msgId);
           markNotificationAsHandled(tag);
 
-          playWaveNotificationSound();
+          triggerDirectNotification({
+            title: payload.notification?.title || payload.data?.title || 'E-ROUAMA',
+            body: payload.notification?.body || payload.data?.body || '',
+            icon: payload.notification?.icon || '/icon-192.png',
+            tag,
+            url: payload.data?.click_action || payload.data?.url || '/',
+            data: payload.data,
+          });
+
           if (onReceived) {
             onReceived({
               title: payload.notification?.title || payload.data?.title || 'E-ROUAMA',
               body: payload.notification?.body || payload.data?.body || '',
-              icon: payload.notification?.icon || '/LOGOPRO.png',
+              icon: payload.notification?.icon || '/icon-192.png',
               tag,
               url: payload.data?.click_action || payload.data?.url || '/',
               data: payload.data,
@@ -1015,40 +1010,30 @@ export const listenForIncomingPushNotifications = (
           const isRoleOrDeptTarget = !targetUserId && targetUserIds.length === 0 && (roleMatches || deptMatches);
 
           if (isDirectTargetUser || isRoleOrDeptTarget) {
-            // RÈGLE 2 CLIENT : Dédoublonnage premier plan vs arrière-plan
-            // Si l'application est active au premier plan, n'affiche qu'un toast in-app au lieu d'une notification système native duplicate
-            const isForeground = typeof document !== 'undefined' && document.visibilityState === 'visible';
-
-            if (isForeground) {
-              playWaveNotificationSound();
-              if (onReceived) {
-                onReceived({
-                  ...data,
-                  id: uniqueMsgId,
-                  messageId: uniqueMsgId,
-                  tag: uniqueTag,
-                  isForeground: true,
-                });
-              }
-            } else {
-              // Arrière-plan (app fermée ou réduite) : déclencher la notification système native
-              triggerDirectNotification({
-                title: data.title,
-                body: data.body,
-                icon: data.icon || '/LOGOPRO.png',
+            // 1. Toujours forcer l'affichage de la BANNIÈRE NATIVE ANDROID dans le volet supérieur
+            triggerDirectNotification({
+              title: data.title,
+              body: data.body,
+              icon: data.icon || '/icon-192.png',
+              tag: uniqueTag,
+              url: data.url || '/',
+              data: {
+                messageId: uniqueMsgId,
+                id: uniqueMsgId,
                 tag: uniqueTag,
-                url: data.url || '/',
-                data: {
-                  messageId: uniqueMsgId,
-                  id: uniqueMsgId,
-                  tag: uniqueTag,
-                  ...data,
-                },
-              });
+                ...data,
+              },
+            });
 
-              if (onReceived) {
-                onReceived(data);
-              }
+            // 2. Afficher également le toast interactif in-app
+            if (onReceived) {
+              onReceived({
+                ...data,
+                id: uniqueMsgId,
+                messageId: uniqueMsgId,
+                tag: uniqueTag,
+                isForeground: typeof document !== 'undefined' && document.visibilityState === 'visible',
+              });
             }
           }
         }

@@ -1,6 +1,6 @@
 /* eslint-disable no-undef */
 // Service Worker Firebase Cloud Messaging officiel E-ROUAMA
-// Notifications Push en arrière-plan (Background PWA / Android) avec Anti-Doublon et Filtrage des Messages Supprimés
+// Notifications Push Système Natives (Volet / Bannière Android) avec Anti-Doublon et Filtrage des Messages Supprimés
 
 importScripts('https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js');
 importScripts('https://www.gstatic.com/firebasejs/9.22.0/firebase-messaging-compat.js');
@@ -15,19 +15,21 @@ const firebaseConfig = {
   appId: "1:700309956720:web:5dc3242ea580b5f39fecb5"
 };
 
-// Cache mémoire des identifiants de notifications déjà traitées (anti-doublon)
-const processedMessageTags = new Set();
+// Cache d'horodatage pour éviter les doubles déclenchements simultanés (push + onBackgroundMessage dans la même seconde)
+const lastShownTimestamps = new Map();
 
-function isDuplicateMessage(tag) {
+function isImmediateDuplicate(tag) {
   if (!tag) return false;
-  if (processedMessageTags.has(tag)) {
+  const now = Date.now();
+  const lastTime = lastShownTimestamps.get(tag);
+  if (lastTime && now - lastTime < 1500) {
     return true;
   }
-  processedMessageTags.add(tag);
-  // Évite l'accumulation indéfinie en mémoire
-  if (processedMessageTags.size > 200) {
-    const oldest = processedMessageTags.values().next().value;
-    processedMessageTags.delete(oldest);
+  lastShownTimestamps.set(tag, now);
+  if (lastShownTimestamps.size > 200) {
+    for (const [k, t] of lastShownTimestamps.entries()) {
+      if (now - t > 30000) lastShownTimestamps.delete(k);
+    }
   }
   return false;
 }
@@ -36,11 +38,11 @@ try {
   firebase.initializeApp(firebaseConfig);
   const messaging = firebase.messaging();
 
-  // Écouteur de messages en arrière-plan FCM
-  messaging.onBackgroundMessage(async (payload) => {
+  // Écouteur FCM en arrière-plan : FORCER L'AFFICHAGE DU BANNER SYSTÈME ANDROID
+  messaging.onBackgroundMessage((payload) => {
     console.log('[firebase-messaging-sw.js] Push reçu en arrière-plan:', payload);
 
-    // 1. Ignorer explicitement les messages marqués comme supprimés
+    // 1. Ignorer explicitement les messages supprimés
     if (
       payload.data?.deleted === true ||
       payload.data?.deleted === 'true' ||
@@ -50,44 +52,32 @@ try {
       return;
     }
 
-    // 2. Tag spécifique lié à l'ID du message Firestore pour éviter le cumul
-    const uniqueTag =
+    const title = payload.notification?.title || payload.data?.title || 'E-ROUAMA';
+    const body = payload.notification?.body || payload.data?.body || '';
+
+    // ID unique basé sur l'ID du message pour écraser les doublons au lieu de les cumuler
+    const notificationTag =
       payload.data?.messageId ||
       payload.data?.id ||
       payload.notification?.tag ||
       payload.data?.tag ||
-      ('erouama-msg-' + Date.now());
+      'erouama-single-tag';
 
-    // 3. Vérification d'anti-doublon en mémoire SW
-    if (isDuplicateMessage(uniqueTag)) {
-      console.log('[firebase-messaging-sw.js] Notification en double ignorée (cache SW):', uniqueTag);
+    if (isImmediateDuplicate(notificationTag)) {
+      console.log('[firebase-messaging-sw.js] Doublon immédiat ignoré:', notificationTag);
       return;
     }
 
-    // 4. Empêche la réémission de notifications déjà traitées en vérifiant les notifications existantes
-    try {
-      const existingNotifications = await self.registration.getNotifications();
-      const isAlreadyShown = existingNotifications.some((n) => n.tag && n.tag === uniqueTag);
-      if (isAlreadyShown) {
-        console.log('[firebase-messaging-sw.js] Notification déjà affichée sur l’appareil:', uniqueTag);
-        return;
-      }
-    } catch (err) {
-      console.debug('[firebase-messaging-sw.js] getNotifications err:', err);
-    }
-
-    const title = payload.notification?.title || payload.data?.title || 'E-ROUAMA';
-    const options = {
-      body: payload.notification?.body || payload.data?.body || '',
+    return self.registration.showNotification(title, {
+      body: body,
       icon: payload.notification?.icon || '/icon-192.png',
       badge: payload.notification?.badge || '/icon-192.png',
-      vibrate: [200, 100, 200],
-      tag: uniqueTag,
+      tag: notificationTag,
+      renotify: true,
       requireInteraction: true,
-      data: payload.data || { click_action: '/' }
-    };
-
-    return self.registration.showNotification(title, options);
+      vibrate: [200, 100, 200],
+      data: payload.data || { click_action: payload.webpush?.fcm_options?.link || '/' }
+    });
   });
 } catch (err) {
   console.warn('[firebase-messaging-sw.js] Erreur initialisation Firebase Messaging:', err);
@@ -100,38 +90,34 @@ self.addEventListener('push', (event) => {
   event.waitUntil(
     (async () => {
       try {
-        const payload = event.data.json();
-        console.log('[firebase-messaging-sw.js] Événement push natif reçu:', payload);
+        let payload = null;
+        try {
+          payload = event.data.json();
+        } catch (_) {
+          const rawText = event.data.text();
+          payload = { notification: { title: 'E-ROUAMA', body: rawText } };
+        }
 
-        // 1. Ignorer explicitement les messages supprimés
+        console.log('[firebase-messaging-sw.js] Push natif reçu:', payload);
+
+        // Ignorer explicitement les messages supprimés
         if (
           payload.data?.deleted === true ||
           payload.data?.deleted === 'true' ||
           payload.data?.status === 'deleted'
         ) {
-          console.log('[firebase-messaging-sw.js] Push de message supprimé ignoré');
           return;
         }
 
-        // 2. Tag spécifique lié à l'ID du message Firestore
-        const uniqueTag =
+        const notificationTag =
           payload.data?.messageId ||
           payload.data?.id ||
           payload.notification?.tag ||
           payload.webpush?.notification?.tag ||
           payload.data?.tag ||
-          ('erouama-msg-' + Date.now());
+          'erouama-single-tag';
 
-        // 3. Vérification anti-doublon
-        if (isDuplicateMessage(uniqueTag)) {
-          console.log('[firebase-messaging-sw.js] Push natif déjà traité (anti-doublon):', uniqueTag);
-          return;
-        }
-
-        const existing = await self.registration.getNotifications();
-        const isAlreadyShown = existing.some((n) => n.tag && n.tag === uniqueTag);
-        if (isAlreadyShown) {
-          console.log('[firebase-messaging-sw.js] Notification push déjà affichée:', uniqueTag);
+        if (isImmediateDuplicate(notificationTag)) {
           return;
         }
 
@@ -141,16 +127,19 @@ self.addEventListener('push', (event) => {
           payload.data?.title ||
           payload.title ||
           'E-ROUAMA';
+
         const body =
           payload.notification?.body ||
           payload.webpush?.notification?.body ||
           payload.data?.body ||
           payload.body ||
           '';
+
         const icon =
           payload.notification?.icon ||
           payload.webpush?.notification?.icon ||
           '/icon-192.png';
+
         const badge =
           payload.notification?.badge ||
           payload.webpush?.notification?.badge ||
@@ -160,25 +149,14 @@ self.addEventListener('push', (event) => {
           body: body,
           icon: icon,
           badge: badge,
-          vibrate: [200, 100, 200],
-          tag: uniqueTag,
+          tag: notificationTag,
+          renotify: true,
           requireInteraction: true,
+          vibrate: [200, 100, 200],
           data: payload.data || { click_action: payload.webpush?.fcm_options?.link || '/' }
         });
       } catch (e) {
-        const rawText = event.data.text();
-        const fallbackTag = 'erouama-msg-' + Date.now();
-        if (!isDuplicateMessage(fallbackTag)) {
-          await self.registration.showNotification('E-ROUAMA', {
-            body: rawText,
-            icon: '/icon-192.png',
-            badge: '/icon-192.png',
-            vibrate: [200, 100, 200],
-            tag: fallbackTag,
-            requireInteraction: true,
-            data: { click_action: '/' }
-          });
-        }
+        console.warn('[firebase-messaging-sw.js] Erreur push natif:', e);
       }
     })()
   );
@@ -207,7 +185,7 @@ self.addEventListener('notificationclick', (event) => {
   );
 });
 
-// Écouteur SKIP_WAITING et messages inter-processus
+// Écouteur SKIP_WAITING et messages inter-processus depuis le client
 self.addEventListener('message', async (event) => {
   if (!event.data) return;
 
@@ -218,24 +196,18 @@ self.addEventListener('message', async (event) => {
 
   if (event.data.type === 'SHOW_NOTIFICATION') {
     const { title, body, icon, tag, data } = event.data;
-    const uniqueTag = tag || data?.messageId || data?.id || ('erouama-msg-' + Date.now());
+    const notificationTag = tag || data?.messageId || data?.id || 'erouama-single-tag';
 
-    if (isDuplicateMessage(uniqueTag)) {
+    if (isImmediateDuplicate(notificationTag)) {
       return;
     }
-
-    try {
-      const existing = await self.registration.getNotifications();
-      if (existing.some((n) => n.tag && n.tag === uniqueTag)) {
-        return;
-      }
-    } catch (_) {}
 
     self.registration.showNotification(title || 'E-ROUAMA', {
       body: body || '',
       icon: icon || '/icon-192.png',
       badge: '/icon-192.png',
-      tag: uniqueTag,
+      tag: notificationTag,
+      renotify: true,
       vibrate: [200, 100, 200],
       requireInteraction: true,
       data: data || { click_action: '/' }
@@ -244,7 +216,7 @@ self.addEventListener('message', async (event) => {
 });
 
 // Installation et activation immédiate
-self.addEventListener('install', (event) => {
+self.addEventListener('install', () => {
   self.skipWaiting();
 });
 
