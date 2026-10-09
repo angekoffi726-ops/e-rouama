@@ -1,49 +1,16 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { useApp } from '../context/AppContext';
-import { LogOut, Download, Shield, User, KeyRound } from 'lucide-react';
+import { LogOut, Shield, User, KeyRound } from 'lucide-react';
 import { ADMIN_USERS } from '../data/membersData';
 import { ChangePasswordModal } from './admin/ChangePasswordModal';
 import { RoleWorkspaceToggle } from './RoleWorkspaceToggle';
-import { InstallPwaBanner } from './InstallPwaBanner';
 
 export const Header: React.FC<{ onOpenAdminModal?: () => void }> = ({ onOpenAdminModal }) => {
   const { currentUser, logout, members, isFirebaseConnected } = useApp();
-  const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
-  const [isInstalled, setIsInstalled] = useState(false);
   const [isChangePasswordOpen, setIsChangePasswordOpen] = useState(false);
 
   const registeredCount = members ? members.filter(m => m.isRegistered).length : 1;
   const totalMembers = members && members.length > 0 ? members.length : 12;
-
-  useEffect(() => {
-    const handleBeforeInstall = (e: any) => {
-      e.preventDefault();
-      setDeferredPrompt(e);
-    };
-
-    window.addEventListener('beforeinstallprompt', handleBeforeInstall);
-
-    if (window.matchMedia('(display-mode: standalone)').matches) {
-      setIsInstalled(true);
-    }
-
-    return () => {
-      window.removeEventListener('beforeinstallprompt', handleBeforeInstall);
-    };
-  }, []);
-
-  const handleInstallClick = async () => {
-    if (deferredPrompt) {
-      deferredPrompt.prompt();
-      const choice = await deferredPrompt.userChoice;
-      if (choice.outcome === 'accepted') {
-        setIsInstalled(true);
-      }
-      setDeferredPrompt(null);
-    } else {
-      alert('Pour installer E-ROUAMA :\n- Sur Chrome/Android : Appuyez sur le menu (⋮) puis "Ajouter à l\'écran d\'accueil".\n- Sur Safari/iOS : Appuyez sur Partager (⎋) puis "Sur l\'écran d\'accueil".');
-    }
-  };
 
   if (!currentUser) return null;
 
@@ -135,10 +102,8 @@ export const Header: React.FC<{ onOpenAdminModal?: () => void }> = ({ onOpenAdmi
             {/* Workspace Toggle (Bascule instantanée Espace Membre <-> Espace Administration) */}
             <RoleWorkspaceToggle compact />
 
-            {/* Actions: Install PWA & Logout */}
+            {/* Actions: Admin Options & Logout */}
             <div className="flex items-center gap-1.5 sm:gap-2">
-              <InstallPwaBanner variant="button" />
-
               {isAdmin && onOpenAdminModal && (
                 <button
                   onClick={onOpenAdminModal}

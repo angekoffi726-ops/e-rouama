@@ -24,7 +24,6 @@ function MainLayout() {
   const { currentUser, logout, members, newsItems, gbairaiMessages, getMemberDuesStatus } = useApp();
   const [activeTab, setActiveTab] = useState<TabType>('DASHBOARD');
   const [targetDocId, setTargetDocId] = useState<string | undefined>(undefined);
-  const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
   const [isAdminChangePasswordOpen, setIsAdminChangePasswordOpen] = useState(false);
 
   const handleNavigateTab = (tab: TabType, docId?: string) => {
@@ -33,28 +32,10 @@ function MainLayout() {
       setTargetDocId(docId);
     }
   };
-  const [isInstalled, setIsInstalled] = useState(false);
 
   // Synchronisation dynamique du compteur de membres inscrits strictement via getRegisteredMembersCount
   const registeredCount = getRegisteredMembersCount(members);
   const totalMembers = members && members.length > 0 ? members.length : 12;
-
-  React.useEffect(() => {
-    const handleBeforeInstall = (e: any) => {
-      e.preventDefault();
-      setDeferredPrompt(e);
-    };
-
-    window.addEventListener('beforeinstallprompt', handleBeforeInstall);
-
-    if (window.matchMedia('(display-mode: standalone)').matches) {
-      setIsInstalled(true);
-    }
-
-    return () => {
-      window.removeEventListener('beforeinstallprompt', handleBeforeInstall);
-    };
-  }, []);
 
   // Initialisation du Service Worker et écoute des Push Notifications en temps réel
   useEffect(() => {
@@ -68,21 +49,6 @@ function MainLayout() {
       unsub();
     };
   }, [currentUser]);
-
-  const handleInstallClick = async () => {
-    if (deferredPrompt) {
-      deferredPrompt.prompt();
-      const choice = await deferredPrompt.userChoice;
-      if (choice.outcome === 'accepted') {
-        setIsInstalled(true);
-      }
-      setDeferredPrompt(null);
-    } else {
-      alert(
-        "Pour installer E-ROUAMA :\n- Sur Chrome/Android : Appuyez sur le menu (⋮) puis 'Ajouter à l'écran d'accueil'.\n- Sur Safari/iOS : Appuyez sur Partager (⎋) puis 'Sur l'écran d'accueil'."
-      );
-    }
-  };
 
   // RÈGLE D'OR : Total security at startup
   if (!currentUser) {
@@ -136,8 +102,6 @@ function MainLayout() {
               <span>MODIFIER MON MOT DE PASSE</span>
             </button>
 
-            <InstallPwaBanner variant="button" />
-
             <button
               onClick={() => logout()}
               className="flex items-center space-x-2 px-4 py-2 bg-rose-700 hover:bg-rose-800 text-white rounded-full text-xs font-bold transition-colors shadow-md border border-rose-500/30 active:scale-95"
@@ -150,6 +114,8 @@ function MainLayout() {
 
         {/* Admin Main Body */}
         <main className="flex-1 p-4 sm:p-6 lg:p-8 max-w-7xl w-full mx-auto">
+          {/* Bloc / Bannière verte d'installation PWA si l'app n'est pas encore installée */}
+          <InstallPwaBanner />
           <AdminPortal />
         </main>
 
@@ -346,8 +312,6 @@ function MainLayout() {
           {/* In-App Workspace Switcher Toggle */}
           <RoleWorkspaceToggle />
 
-          <InstallPwaBanner variant="button" />
-
           <button
             onClick={logout}
             className="flex items-center space-x-2 px-4 py-2.5 bg-rose-700 hover:bg-rose-800 text-white rounded-[2rem] text-xs sm:text-sm font-black transition-colors shadow-md border border-rose-500/30 active:scale-95"
@@ -390,8 +354,8 @@ function MainLayout() {
 
       {/* Tab Content */}
       <main className="flex-1 p-4 sm:p-6 lg:p-8 max-w-7xl w-full mx-auto">
-        {/* Bannière dynamique d'installation PWA si non installé */}
-        <InstallPwaBanner variant="banner" />
+        {/* Bloc / Bannière verte d'installation PWA si l'app n'est pas encore installée */}
+        <InstallPwaBanner />
 
         {activeTab === 'DASHBOARD' && <DashboardTab onNavigateTab={setActiveTab} />}
         {activeTab === 'PRIERE_ROUAMA' && <PriereRouamaTab />}

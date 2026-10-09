@@ -8,9 +8,25 @@ interface BeforeInstallPromptEvent extends Event {
   userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform: string }>;
 }
 
-export const InstallPwaBanner: React.FC<{ variant?: 'banner' | 'button' | 'compact' }> = ({ variant = 'banner' }) => {
+// Variable globale pour capturer l'événement beforeinstallprompt dès le chargement
+declare global {
+  interface Window {
+    __erouama_deferred_prompt?: BeforeInstallPromptEvent | null;
+  }
+}
+
+if (typeof window !== 'undefined' && !window.__erouama_deferred_prompt) {
+  window.addEventListener('beforeinstallprompt', (e: Event) => {
+    e.preventDefault();
+    window.__erouama_deferred_prompt = e as BeforeInstallPromptEvent;
+  });
+}
+
+export const InstallPwaBanner: React.FC = () => {
   const { currentUser } = useApp();
-  const [deferredPrompt, setDeferredPrompt] = useState<BeforeInstallPromptEvent | null>(null);
+  const [deferredPrompt, setDeferredPrompt] = useState<BeforeInstallPromptEvent | null>(
+    typeof window !== 'undefined' ? (window.__erouama_deferred_prompt || null) : null
+  );
   const [isStandalone, setIsStandalone] = useState<boolean>(false);
   const [isIos, setIsIos] = useState<boolean>(false);
   const [showIosGuide, setShowIosGuide] = useState<boolean>(false);
@@ -18,7 +34,7 @@ export const InstallPwaBanner: React.FC<{ variant?: 'banner' | 'button' | 'compa
   const [pushStatus, setPushStatus] = useState<string | null>(null);
 
   useEffect(() => {
-    // 1. Détection mode Standalone (déjà installé sur l'écran d'accueil)
+    // 1. Détection stricte mode PWA / Standalone / Écran d'accueil
     const checkStandalone = () => {
       const isStandaloneMode =
         window.matchMedia('(display-mode: standalone)').matches ||
@@ -30,20 +46,27 @@ export const InstallPwaBanner: React.FC<{ variant?: 'banner' | 'button' | 'compa
 
     const standalone = checkStandalone();
 
-    // 2. Détection iOS Safari
-    const ua = window.navigator.userAgent.toLowerCase();
-    const isAppleDevice = /iphone|ipad|ipod/.test(ua);
+    // 2. Différenciation stricte iPhone / iPad / iPod (Safari iOS)
+    const ua = window.navigator.userAgent || '';
+    const isAppleDevice = /iphone|ipad|ipod/i.test(ua);
     setIsIos(isAppleDevice);
 
-    // 3. Écoute de l'événement beforeinstallprompt (Android / Chrome)
+    // 3. Écoute de l'événement beforeinstallprompt du navigateur (Android / Chrome)
     const handleBeforeInstallPrompt = (e: Event) => {
       e.preventDefault();
-      setDeferredPrompt(e as BeforeInstallPromptEvent);
+      const promptEvent = e as BeforeInstallPromptEvent;
+      window.__erouama_deferred_prompt = promptEvent;
+      setDeferredPrompt(promptEvent);
     };
 
     window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
 
-    // 4. Si ouvert en mode PWA / Standalone, déclencher automatiquement la permission des notifications push
+    // Si un prompt a déjà été intercepté
+    if (window.__erouama_deferred_prompt) {
+      setDeferredPrompt(window.__erouama_deferred_prompt);
+    }
+
+    // 4. Si déjà en mode PWA standalone, demander la permission push si pas encore fait
     if (standalone && isPushNotificationSupported() && Notification.permission === 'default') {
       const timer = setTimeout(() => {
         const userId = currentUser?.id || currentUser?.member?.id || (currentUser?.adminRole as string) || 'member';
@@ -63,80 +86,69 @@ export const InstallPwaBanner: React.FC<{ variant?: 'banner' | 'button' | 'compa
     };
   }, [currentUser]);
 
-  // Si l'application est déjà installée et fonctionne en standalone, ne pas afficher la bannière d'installation
+  // RÈGLE 1 : Si l'application s'exécute déjà en mode PWA/Installé (standalone), le bloc NE DOIT PAS S'AFFICHER.
   if (isStandalone) {
     return null;
   }
 
   // Si l'utilisateur a fermé la bannière temporairement
-  if (isDismissed && variant === 'banner') {
+  if (isDismissed) {
     return null;
   }
 
+  // AU CLIC SUR LE BOUTON "Installer maintenant" :
   const handleInstallClick = async () => {
+    // CAS 2 : IPHONE / IPAD (Safari iOS)
+    // Si navigator.userAgent contient iPhone, iPad ou iPod, affiche la modale d'instructions étape par étape
     if (isIos) {
       setShowIosGuide(true);
       return;
     }
 
-    if (deferredPrompt) {
+    // CAS 1 : ANDROID / CHROME (Si deferredPrompt est disponible)
+    const activePrompt = deferredPrompt || window.__erouama_deferred_prompt;
+    if (activePrompt) {
       try {
-        await deferredPrompt.prompt();
-        const choice = await deferredPrompt.userChoice;
+        // 1. Exécute immédiatement deferredPrompt.prompt()
+        await activePrompt.prompt();
+        // 2. Attends le choix de l'utilisateur
+        const choice = await activePrompt.userChoice;
+        // 3. Re-initialise deferredPrompt = null et masque la bannière si l'installation est acceptée
+        window.__erouama_deferred_prompt = null;
+        setDeferredPrompt(null);
         if (choice.outcome === 'accepted') {
           setIsStandalone(true);
-          // Demande de permission push
           const userId = currentUser?.id || currentUser?.member?.id || 'member';
           requestPushPermissionAndSaveToken(userId, currentUser?.type || 'MEMBER', currentUser?.member?.id).catch(() => {});
         }
       } catch (err) {
-        console.warn('Erreur prompt PWA:', err);
-      } finally {
-        setDeferredPrompt(null);
+        console.warn('Erreur prompt installation native Android:', err);
       }
     } else {
-      // Fallback si pas de deferredPrompt disponible (ex: desktop ou Safari macOS)
+      // Si sur desktop ou si le navigateur n'a pas encore déclenché l'événement
       setShowIosGuide(true);
     }
   };
 
-  // Bouton compact (pour barre de navigation / header / profil)
-  if (variant === 'button' || variant === 'compact') {
-    return (
-      <>
-        <button
-          onClick={handleInstallClick}
-          className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-amber-500 to-[#E67E22] hover:from-amber-400 hover:to-[#D35400] text-slate-950 font-black text-xs rounded-xl shadow-md transition-all active:scale-95 border border-amber-300"
-          title="Installer l'application sur votre écran d'accueil"
-        >
-          <Download className="w-3.5 h-3.5" />
-          <span>Installer l'App</span>
-        </button>
-
-        {showIosGuide && <IosInstallModal onClose={() => setShowIosGuide(false)} />}
-      </>
-    );
-  }
-
-  // Bannière d'installation complète
+  // BLOC / BANNIÈRE VERT « INSTALLER L'APPLICATION E-ROUAMA »
   return (
     <>
-      <div className="bg-gradient-to-r from-emerald-900 via-forest-moss to-emerald-950 text-white border border-amber-400/40 rounded-2xl p-3.5 sm:p-4 shadow-xl mb-4 relative overflow-hidden">
+      <div className="bg-gradient-to-r from-emerald-900 via-forest-moss to-emerald-950 text-white border-2 border-amber-400/50 rounded-2xl p-4 sm:p-5 shadow-2xl mb-6 relative overflow-hidden">
         {/* Glow décoratif */}
-        <div className="absolute -top-12 -right-12 w-32 h-32 bg-amber-400/20 rounded-full blur-2xl pointer-events-none" />
+        <div className="absolute -top-12 -right-12 w-36 h-36 bg-amber-400/25 rounded-full blur-2xl pointer-events-none" />
 
-        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 relative z-10">
-          <div className="flex items-center gap-3">
-            <div className="w-11 h-11 rounded-2xl bg-amber-400 text-slate-950 flex items-center justify-center font-black shadow-md shrink-0 border border-amber-200">
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 relative z-10">
+          <div className="flex items-center gap-3.5">
+            <div className="w-12 h-12 rounded-2xl bg-amber-400 text-slate-950 flex items-center justify-center font-black shadow-lg shrink-0 border border-amber-200">
               <Smartphone className="w-6 h-6 text-slate-900" />
             </div>
             <div>
               <div className="flex items-center gap-2">
                 <h4 className="font-black text-sm sm:text-base text-amber-200 uppercase tracking-wide">
-                  Installer l'application E-ROUAMA
+                  INSTALLER L'APPLICATION E-ROUAMA
                 </h4>
-                <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-400/40">
-                  PWA Mobile
+                <span className="text-[10px] font-black uppercase px-2.5 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-400/40">
+                  {isIos ? 'Apple iOS' : 'Android / Web'}
                 </span>
               </div>
               <p className="text-xs text-emerald-100 font-medium mt-0.5 max-w-xl">
@@ -148,7 +160,7 @@ export const InstallPwaBanner: React.FC<{ variant?: 'banner' | 'button' | 'compa
           <div className="flex items-center gap-2 self-end sm:self-center shrink-0 w-full sm:w-auto justify-end">
             <button
               onClick={handleInstallClick}
-              className="inline-flex items-center justify-center gap-2 px-4 py-2 bg-gradient-to-r from-amber-400 to-[#E67E22] hover:from-amber-300 hover:to-[#D35400] text-slate-950 font-black text-xs sm:text-sm rounded-xl shadow-lg transition-transform active:scale-95 border border-amber-200"
+              className="inline-flex items-center justify-center gap-2 px-5 py-2.5 bg-gradient-to-r from-amber-400 to-[#E67E22] hover:from-amber-300 hover:to-[#D35400] text-slate-950 font-black text-xs sm:text-sm rounded-xl shadow-lg transition-transform active:scale-95 border border-amber-200"
             >
               <Download className="w-4 h-4" />
               <span>Installer maintenant</span>
@@ -156,7 +168,7 @@ export const InstallPwaBanner: React.FC<{ variant?: 'banner' | 'button' | 'compa
             <button
               onClick={() => setIsDismissed(true)}
               className="p-2 text-emerald-300 hover:text-white hover:bg-emerald-800/60 rounded-xl transition-colors"
-              title="Fermer"
+              title="Fermer temporairement"
             >
               <X className="w-4 h-4" />
             </button>
@@ -176,7 +188,7 @@ export const InstallPwaBanner: React.FC<{ variant?: 'banner' | 'button' | 'compa
   );
 };
 
-// Modale d'instructions détaillées pour iOS Safari & Android
+// Modale d'instructions étape par étape pour Safari iOS (iPhone / iPad)
 const IosInstallModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
   return (
     <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
@@ -184,6 +196,7 @@ const IosInstallModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
         <button
           onClick={onClose}
           className="absolute top-4 right-4 p-2 text-slate-400 hover:text-white rounded-full hover:bg-slate-800 transition-colors"
+          title="Fermer"
         >
           <X className="w-5 h-5" />
         </button>
@@ -196,7 +209,7 @@ const IosInstallModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
             <h3 className="text-lg font-black text-amber-300 uppercase tracking-wide">
               Installer sur iPhone / iPad
             </h3>
-            <p className="text-xs text-slate-300">Instructions simples Apple Safari</p>
+            <p className="text-xs text-slate-300">Instructions Safari étape par étape</p>
           </div>
         </div>
 
@@ -207,7 +220,7 @@ const IosInstallModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
             </span>
             <div>
               <p className="font-bold text-white flex items-center gap-1.5">
-                Appuyez sur l'icône de <span className="text-amber-300 inline-flex items-center gap-1"><Share className="w-4 h-4 inline" /> Partage</span>
+                Appuyez sur l'icône de <span className="text-amber-300 inline-flex items-center gap-1 font-black"><Share className="w-4 h-4 inline" /> Partage</span>
               </p>
               <p className="text-slate-300 text-[11px] mt-0.5">
                 Située dans la barre de navigation Safari (en bas sur iPhone, en haut sur iPad).
@@ -221,7 +234,7 @@ const IosInstallModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
             </span>
             <div>
               <p className="font-bold text-white flex items-center gap-1.5">
-                Sélectionnez <span className="text-amber-300 inline-flex items-center gap-1"><PlusSquare className="w-4 h-4 inline" /> « Sur l'écran d'accueil »</span>
+                Sélectionnez <span className="text-amber-300 inline-flex items-center gap-1 font-black"><PlusSquare className="w-4 h-4 inline" /> « Sur l'écran d'accueil »</span>
               </p>
               <p className="text-slate-300 text-[11px] mt-0.5">
                 Faites défiler le menu de partage vers le bas pour trouver l'option.
@@ -238,7 +251,7 @@ const IosInstallModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                 Appuyez sur <span className="text-amber-300 font-black">« Ajouter »</span> en haut à droite
               </p>
               <p className="text-slate-300 text-[11px] mt-0.5">
-                L'icône E-ROUAMA apparaîtra directement sur votre écran d'accueil avec vos applications favorites.
+                L'icône E-ROUAMA apparaîtra directement sur votre écran d'accueil comme une application native.
               </p>
             </div>
           </div>
