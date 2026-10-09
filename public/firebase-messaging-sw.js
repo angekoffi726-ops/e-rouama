@@ -1,6 +1,6 @@
 /* eslint-disable no-undef */
 // Service Worker Firebase Cloud Messaging officiel E-ROUAMA
-// Notifications Push en arrière-plan (Background PWA / Android)
+// Notifications Push Système Natives (Volet / Bannière Android) avec Anti-Doublon et Filtrage des Messages Supprimés
 
 importScripts('https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js');
 importScripts('https://www.gstatic.com/firebasejs/9.22.0/firebase-messaging-compat.js');
@@ -15,24 +15,69 @@ const firebaseConfig = {
   appId: "1:700309956720:web:5dc3242ea580b5f39fecb5"
 };
 
+// Cache d'horodatage pour éviter les doubles déclenchements simultanés (push + onBackgroundMessage dans la même seconde)
+const lastShownTimestamps = new Map();
+
+function isImmediateDuplicate(tag) {
+  if (!tag) return false;
+  const now = Date.now();
+  const lastTime = lastShownTimestamps.get(tag);
+  if (lastTime && now - lastTime < 1500) {
+    return true;
+  }
+  lastShownTimestamps.set(tag, now);
+  if (lastShownTimestamps.size > 200) {
+    for (const [k, t] of lastShownTimestamps.entries()) {
+      if (now - t > 30000) lastShownTimestamps.delete(k);
+    }
+  }
+  return false;
+}
+
 try {
   firebase.initializeApp(firebaseConfig);
   const messaging = firebase.messaging();
 
-// Écouteur de messages en arrière-plan FCM
+  // Écouteur FCM en arrière-plan : FORCER L'AFFICHAGE DU BANNER SYSTÈME ANDROID
   messaging.onBackgroundMessage((payload) => {
     console.log('[firebase-messaging-sw.js] Push reçu en arrière-plan:', payload);
+
+    // 1. Ignorer explicitement les messages supprimés
+    if (
+      payload.data?.deleted === true ||
+      payload.data?.deleted === 'true' ||
+      payload.data?.status === 'deleted'
+    ) {
+      console.log('[firebase-messaging-sw.js] Message supprimé ignoré');
+      return;
+    }
+
     const title = payload.notification?.title || payload.data?.title || 'E-ROUAMA';
-    const options = {
-      body: payload.notification?.body || payload.data?.body || '',
+    const body = payload.notification?.body || payload.data?.body || '';
+
+    // ID unique basé sur l'ID du message pour écraser les doublons au lieu de les cumuler
+    const notificationTag =
+      payload.data?.messageId ||
+      payload.data?.id ||
+      payload.notification?.tag ||
+      payload.data?.tag ||
+      'erouama-single-tag';
+
+    if (isImmediateDuplicate(notificationTag)) {
+      console.log('[firebase-messaging-sw.js] Doublon immédiat ignoré:', notificationTag);
+      return;
+    }
+
+    return self.registration.showNotification(title, {
+      body: body,
       icon: payload.notification?.icon || '/icon-192.png',
       badge: payload.notification?.badge || '/icon-192.png',
-      vibrate: [200, 100, 200],
-      tag: payload.notification?.tag || payload.data?.tag || 'erouama-push',
+      tag: notificationTag,
+      renotify: true,
       requireInteraction: true,
-      data: payload.data || { click_action: '/' }
-    };
-    return self.registration.showNotification(title, options);
+      vibrate: [200, 100, 200],
+      data: payload.data || { click_action: payload.webpush?.fcm_options?.link || '/' }
+    });
   });
 } catch (err) {
   console.warn('[firebase-messaging-sw.js] Erreur initialisation Firebase Messaging:', err);
@@ -42,40 +87,79 @@ try {
 self.addEventListener('push', (event) => {
   if (!event.data) return;
 
-  try {
-    const payload = event.data.json();
-    console.log('[firebase-messaging-sw.js] Push reçu:', payload);
-    const title = payload.notification?.title || payload.webpush?.notification?.title || payload.data?.title || payload.title || 'E-ROUAMA';
-    const body = payload.notification?.body || payload.webpush?.notification?.body || payload.data?.body || payload.body || '';
-    const icon = payload.notification?.icon || payload.webpush?.notification?.icon || '/icon-192.png';
-    const badge = payload.notification?.badge || payload.webpush?.notification?.badge || '/icon-192.png';
-    const tag = payload.notification?.tag || payload.webpush?.notification?.tag || payload.data?.tag || 'erouama-push';
+  event.waitUntil(
+    (async () => {
+      try {
+        let payload = null;
+        try {
+          payload = event.data.json();
+        } catch (_) {
+          const rawText = event.data.text();
+          payload = { notification: { title: 'E-ROUAMA', body: rawText } };
+        }
 
-    event.waitUntil(
-      self.registration.showNotification(title, {
-        body: body,
-        icon: icon,
-        badge: badge,
-        vibrate: [200, 100, 200],
-        tag: tag,
-        requireInteraction: true,
-        data: payload.data || { click_action: payload.webpush?.fcm_options?.link || '/' }
-      })
-    );
-  } catch (e) {
-    const rawText = event.data.text();
-    event.waitUntil(
-      self.registration.showNotification('E-ROUAMA', {
-        body: rawText,
-        icon: '/icon-192.png',
-        badge: '/icon-192.png',
-        vibrate: [200, 100, 200],
-        tag: 'erouama-push',
-        requireInteraction: true,
-        data: { click_action: '/' }
-      })
-    );
-  }
+        console.log('[firebase-messaging-sw.js] Push natif reçu:', payload);
+
+        // Ignorer explicitement les messages supprimés
+        if (
+          payload.data?.deleted === true ||
+          payload.data?.deleted === 'true' ||
+          payload.data?.status === 'deleted'
+        ) {
+          return;
+        }
+
+        const notificationTag =
+          payload.data?.messageId ||
+          payload.data?.id ||
+          payload.notification?.tag ||
+          payload.webpush?.notification?.tag ||
+          payload.data?.tag ||
+          'erouama-single-tag';
+
+        if (isImmediateDuplicate(notificationTag)) {
+          return;
+        }
+
+        const title =
+          payload.notification?.title ||
+          payload.webpush?.notification?.title ||
+          payload.data?.title ||
+          payload.title ||
+          'E-ROUAMA';
+
+        const body =
+          payload.notification?.body ||
+          payload.webpush?.notification?.body ||
+          payload.data?.body ||
+          payload.body ||
+          '';
+
+        const icon =
+          payload.notification?.icon ||
+          payload.webpush?.notification?.icon ||
+          '/icon-192.png';
+
+        const badge =
+          payload.notification?.badge ||
+          payload.webpush?.notification?.badge ||
+          '/icon-192.png';
+
+        await self.registration.showNotification(title, {
+          body: body,
+          icon: icon,
+          badge: badge,
+          tag: notificationTag,
+          renotify: true,
+          requireInteraction: true,
+          vibrate: [200, 100, 200],
+          data: payload.data || { click_action: payload.webpush?.fcm_options?.link || '/' }
+        });
+      } catch (e) {
+        console.warn('[firebase-messaging-sw.js] Erreur push natif:', e);
+      }
+    })()
+  );
 });
 
 // Écouteur de clic sur la notification (redirige l'utilisateur vers la PWA)
@@ -101,8 +185,8 @@ self.addEventListener('notificationclick', (event) => {
   );
 });
 
-// Écouteur SKIP_WAITING et messages inter-processus
-self.addEventListener('message', (event) => {
+// Écouteur SKIP_WAITING et messages inter-processus depuis le client
+self.addEventListener('message', async (event) => {
   if (!event.data) return;
 
   if (event.data.type === 'SKIP_WAITING') {
@@ -112,11 +196,18 @@ self.addEventListener('message', (event) => {
 
   if (event.data.type === 'SHOW_NOTIFICATION') {
     const { title, body, icon, tag, data } = event.data;
+    const notificationTag = tag || data?.messageId || data?.id || 'erouama-single-tag';
+
+    if (isImmediateDuplicate(notificationTag)) {
+      return;
+    }
+
     self.registration.showNotification(title || 'E-ROUAMA', {
       body: body || '',
       icon: icon || '/icon-192.png',
       badge: '/icon-192.png',
-      tag: tag || 'erouama-push',
+      tag: notificationTag,
+      renotify: true,
       vibrate: [200, 100, 200],
       requireInteraction: true,
       data: data || { click_action: '/' }
@@ -125,7 +216,7 @@ self.addEventListener('message', (event) => {
 });
 
 // Installation et activation immédiate
-self.addEventListener('install', (event) => {
+self.addEventListener('install', () => {
   self.skipWaiting();
 });
 

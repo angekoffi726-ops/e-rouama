@@ -59,6 +59,23 @@ export const playWaveNotificationSound = () => {
   }
 };
 
+// Cache en mémoire pour le dédoublonnage strict des notifications
+const handledNotificationIds = new Set<string>();
+
+export const hasNotificationBeenHandled = (id: string): boolean => {
+  if (!id) return false;
+  return handledNotificationIds.has(id);
+};
+
+export const markNotificationAsHandled = (id: string): void => {
+  if (!id) return;
+  handledNotificationIds.add(id);
+  if (handledNotificationIds.size > 300) {
+    const oldest = handledNotificationIds.values().next().value;
+    if (oldest) handledNotificationIds.delete(oldest);
+  }
+};
+
 // Enregistrement du Service Worker
 export const registerPushServiceWorker = async (): Promise<ServiceWorkerRegistration | null> => {
   if (typeof window === 'undefined' || !('serviceWorker' in navigator)) {
@@ -218,6 +235,15 @@ export const requestPushPermissionAndSaveToken = async (
     // Sauvegarde locale
     localStorage.setItem('erouama_fcm_token', fcmToken);
     localStorage.setItem('erouama_push_enabled', 'true');
+    if (targetUserId) {
+      localStorage.setItem('erouama_last_auth_user_id', targetUserId);
+    }
+    if (memberRolesMeta.adminRole) {
+      localStorage.setItem('erouama_last_auth_role', memberRolesMeta.adminRole);
+    }
+    if (memberRolesMeta.departments && memberRolesMeta.departments.length > 0) {
+      localStorage.setItem('erouama_last_auth_depts', JSON.stringify(memberRolesMeta.departments));
+    }
 
     // 5. Affiche une notification de bienvenue test style Wave
     triggerDirectNotification({
@@ -244,7 +270,122 @@ export const requestPushPermissionAndSaveToken = async (
   }
 };
 
-// Déclenchement direct d'une notification sur le système de l'appareil
+/**
+ * Reconstitution et rafraîchissement automatique du token FCM au démarrage de l'appli.
+ * Exécuté dès le chargement (y compris sur la page de connexion / Login ou hors session).
+ * Vérifie l'état de la permission, rafraîchit le token via le SDK Firebase et s'assure
+ * qu'il est synchronisé dans LocalStorage et Firestore pour l'appareil.
+ */
+export const refreshFcmTokenOnStartup = async (targetUserId?: string): Promise<string | null> => {
+  if (typeof window === 'undefined' || !isPushNotificationSupported()) return null;
+
+  try {
+    // 1. Enregistre ou récupère le Service Worker
+    const registration = await registerPushServiceWorker();
+    if (!registration) return null;
+
+    // 2. Détermine l'ID utilisateur cible (session active ou dernier utilisateur authentifié sur ce terminal)
+    const effectiveUserId =
+      targetUserId ||
+      localStorage.getItem('erouama_last_auth_user_id') ||
+      localStorage.getItem('erouama_current_user_id') ||
+      '';
+
+    let fcmToken = '';
+
+    // Si permission accordée, obtenir ou rafraîchir le jeton FCM
+    if (Notification.permission === 'granted') {
+      try {
+        const { getMessaging, getToken, isSupported } = await import('firebase/messaging');
+        const supported = await isSupported().catch(() => false);
+        if (supported && registration) {
+          const messaging = getMessaging(app);
+          const vapidKey = (import.meta as any).env?.VITE_FIREBASE_VAPID_KEY;
+          const getTokenOptions: { serviceWorkerRegistration: ServiceWorkerRegistration; vapidKey?: string } = {
+            serviceWorkerRegistration: registration,
+          };
+          if (vapidKey && typeof vapidKey === 'string' && vapidKey.trim()) {
+            getTokenOptions.vapidKey = vapidKey.trim();
+          }
+          const token = await getToken(messaging, getTokenOptions).catch((err) => {
+            console.debug('FCM startup getToken note:', err);
+            return null;
+          });
+          if (token) {
+            fcmToken = token;
+          }
+        }
+      } catch (fcmErr) {
+        console.debug('FCM startup import note:', fcmErr);
+      }
+    }
+
+    // Si pas de jeton réseau direct, utiliser le jeton persisté localement
+    if (!fcmToken) {
+      fcmToken = localStorage.getItem('erouama_fcm_token') || '';
+    }
+
+    if (fcmToken) {
+      localStorage.setItem('erouama_fcm_token', fcmToken);
+      localStorage.setItem('erouama_push_enabled', 'true');
+
+      // Mettre à jour dans Firestore pour que les notifications continuent à atteindre l'appareil même après déconnexion
+      if (effectiveUserId) {
+        const nowIso = new Date().toISOString();
+        const memberRolesMeta = getDefaultRolesForMember(effectiveUserId);
+
+        try {
+          await updateDoc(doc(db, 'users', effectiveUserId), {
+            fcmToken: fcmToken,
+            fcmTokens: arrayUnion(fcmToken),
+            roles: memberRolesMeta.roles,
+            departments: memberRolesMeta.departments,
+            pushNotificationsEnabled: true,
+            pushTokenUpdatedAt: nowIso,
+            devicePlatform: navigator.userAgent.includes('Mobile') ? 'mobile' : 'desktop',
+          });
+        } catch {
+          await setDoc(
+            doc(db, 'users', effectiveUserId),
+            {
+              id: effectiveUserId,
+              fcmToken: fcmToken,
+              fcmTokens: [fcmToken],
+              roles: memberRolesMeta.roles,
+              departments: memberRolesMeta.departments,
+              pushNotificationsEnabled: true,
+              pushTokenUpdatedAt: nowIso,
+              devicePlatform: navigator.userAgent.includes('Mobile') ? 'mobile' : 'desktop',
+            },
+            { merge: true }
+          );
+        }
+
+        try {
+          await setDoc(
+            doc(db, 'members', effectiveUserId),
+            {
+              id: effectiveUserId,
+              fcmToken: fcmToken,
+              fcmTokens: arrayUnion(fcmToken),
+              pushNotificationsEnabled: true,
+              pushTokenUpdatedAt: nowIso,
+            },
+            { merge: true }
+          );
+        } catch {
+          // Ignorer si non-membre
+        }
+      }
+      return fcmToken;
+    }
+  } catch (err) {
+    console.debug('Erreur rafraîchissement token au démarrage:', err);
+  }
+  return null;
+};
+
+// Déclenchement direct d'une notification sur le système natif de l'appareil (Bannière / Volet Android)
 export const triggerDirectNotification = async (options: {
   title: string;
   body: string;
@@ -258,9 +399,9 @@ export const triggerDirectNotification = async (options: {
   }
 
   const icon = options.icon || '/icon-192.png';
-  const tag = options.tag || 'erouama-notification';
+  const tag = options.tag || options.data?.messageId || options.data?.id || 'erouama-single-tag';
 
-  // Tenter via le Service Worker registration en premier pour un affichage système natif
+  // Tenter via le Service Worker registration en premier pour un affichage système natif dans le volet Android
   try {
     if ('serviceWorker' in navigator) {
       const reg = await navigator.serviceWorker.ready;
@@ -270,6 +411,7 @@ export const triggerDirectNotification = async (options: {
           icon: icon,
           badge: '/icon-192.png',
           tag: tag,
+          renotify: true,
           vibrate: [200, 100, 200],
           requireInteraction: true,
           silent: false,
@@ -297,6 +439,7 @@ export const triggerDirectNotification = async (options: {
       icon: icon,
       badge: '/icon-192.png',
       tag: tag,
+      renotify: true,
       requireInteraction: true,
       data: {
         url: options.url || '/',
@@ -313,6 +456,36 @@ export const triggerDirectNotification = async (options: {
     };
   } catch (e) {
     console.warn('Direct notification error:', e);
+  }
+};
+
+/**
+ * Marque explicitement une notification push comme supprimée (deleted: true)
+ * dans Firestore afin d'empêcher toute réémission ultérieure par les fonctions d'arrière-plan.
+ */
+export const markPushNotificationAsDeleted = async (messageOrNewsId: string): Promise<void> => {
+  if (!messageOrNewsId) return;
+  try {
+    const notifsRef = collection(db, 'push_notifications');
+    const q1 = query(notifsRef, where('messageId', '==', messageOrNewsId));
+    const q2 = query(notifsRef, where('id', '==', messageOrNewsId));
+    const [snap1, snap2] = await Promise.all([
+      getDocs(q1).catch(() => ({ docs: [] } as any)),
+      getDocs(q2).catch(() => ({ docs: [] } as any)),
+    ]);
+
+    const docsToUpdate = new Map();
+    snap1.docs?.forEach((d: any) => docsToUpdate.set(d.id, d.ref));
+    snap2.docs?.forEach((d: any) => docsToUpdate.set(d.id, d.ref));
+
+    const promises: Promise<any>[] = [];
+    docsToUpdate.forEach((ref) => {
+      promises.push(updateDoc(ref, { deleted: true, status: 'deleted' }).catch(() => {}));
+    });
+    await Promise.allSettled(promises);
+    console.log(`[pushNotificationService] Notification(s) ${messageOrNewsId} marquée(s) comme supprimée(s) (deleted: true)`);
+  } catch (err) {
+    console.warn('Erreur marquage notification supprimée:', err);
   }
 };
 
@@ -392,9 +565,15 @@ export const extractRecipientFcmTokens = async (options: {
     // Rôles spécifiques directs
     if (normalizedDept === 'cerveau' || targetRoleClean === 'CERVEAU') {
       targetDeptManagers.add('1'); // Wilfried (Cerveau)
+      targetDeptManagers.add('CERVEAU');
+      targetDeptManagers.add('cerveau');
+      targetDeptManagers.add('admin_cerveau');
     }
     if (normalizedDept === 'tresorerie' || targetRoleClean === 'TRESORIER' || targetRoleClean === 'TRESO') {
       targetDeptManagers.add('11'); // Léger (Trésorier)
+      targetDeptManagers.add('TRESORIER');
+      targetDeptManagers.add('tresorerie');
+      targetDeptManagers.add('admin_tresorier');
     }
 
     const collectTokensFromDoc = (docId: string, u: any) => {
@@ -402,10 +581,10 @@ export const extractRecipientFcmTokens = async (options: {
 
       // RÈGLE STRICTE BROADCAST / COMMUNAUTAIRE :
       // Pour toute diffusion collective (ALL / TOUS / broadcast général), inclure ABSOLUMENT TOUS les jetons
-      // de la collection users/members sans exception, Y COMPRIS l'administrateur/Cerveau qui a exécuté l'action.
+      // de la collection users/members sans exception, INDÉPENDAMMENT du statut de connexion en temps réel (isLoggedIn/Auth).
       if (isBroadcastAll) {
         if (Array.isArray(u.fcmTokens)) tokens.push(...u.fcmTokens.filter(Boolean));
-        if (u.fcmToken && typeof u.fcmToken === 'string') tokens.push(u.fcmToken);
+        if (u.fcmToken && typeof u.fcmToken === 'string' && u.fcmToken.trim()) tokens.push(u.fcmToken.trim());
         return;
       }
 
@@ -418,8 +597,18 @@ export const extractRecipientFcmTokens = async (options: {
       const uRoles = Array.isArray(u.roles) ? u.roles.map(x => normalizeDepartmentKey(x)) : [];
       const uRole = normalizeDepartmentKey(u.role || u.adminRole || '');
 
-      const isDirectTarget = directUserIds.has(docId) || (uId && directUserIds.has(uId));
-      const isManagerTarget = targetDeptManagers.has(docId) || (uId && targetDeptManagers.has(uId));
+      const isDirectTarget =
+        directUserIds.has(docId) ||
+        (uId && directUserIds.has(uId)) ||
+        directUserIds.has(docId.toUpperCase()) ||
+        (uId && directUserIds.has(uId.toUpperCase()));
+
+      const isManagerTarget =
+        targetDeptManagers.has(docId) ||
+        (uId && targetDeptManagers.has(uId)) ||
+        targetDeptManagers.has(docId.toUpperCase()) ||
+        (uId && targetDeptManagers.has(uId.toUpperCase()));
+
       const isDeptMatch = normalizedDept && (
         uDepts.includes(normalizedDept) ||
         uRoles.includes(normalizedDept) ||
@@ -428,9 +617,11 @@ export const extractRecipientFcmTokens = async (options: {
         (normalizedDept === 'tresorerie' && (uRoles.includes('tresorerie') || uRole.includes('treso')))
       );
 
+      // CIBLAGE SANS CONDITION DE CONNEXION :
+      // Les requêtes lisent les jetons FCM même si l'utilisateur s'est déconnecté (session inactive)
       if (isDirectTarget || isManagerTarget || isDeptMatch) {
         if (Array.isArray(u.fcmTokens)) tokens.push(...u.fcmTokens.filter(Boolean));
-        if (u.fcmToken && typeof u.fcmToken === 'string') tokens.push(u.fcmToken);
+        if (u.fcmToken && typeof u.fcmToken === 'string' && u.fcmToken.trim()) tokens.push(u.fcmToken.trim());
       }
     };
 
@@ -489,6 +680,17 @@ export const dispatchPushNotification = async (options: PushDispatchOptions) => 
       excludedUserId,
     });
 
+    const messageId =
+      options.metadata?.messageId ||
+      options.metadata?.id ||
+      options.metadata?.newsId ||
+      `msg_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+    const notificationTag = options.metadata?.tag || `erouama-msg-${messageId}`;
+
+    // Marquer l'ID comme déjà émis par ce client pour éviter les doubles échos
+    markNotificationAsHandled(messageId);
+    markNotificationAsHandled(notificationTag);
+
     // Construction du format natif FCM HTTP v1 haute priorité Android / WebPush
     const buildFcmHttpV1Envelope = (token?: string) => ({
       message: {
@@ -517,7 +719,7 @@ export const dispatchPushNotification = async (options: PushDispatchOptions) => 
             badge: '/icon-192.png',
             requireInteraction: true,
             vibrate: [200, 100, 200],
-            tag: 'erouama-push',
+            tag: notificationTag,
           },
           fcm_options: {
             link: options.url || '/',
@@ -527,6 +729,9 @@ export const dispatchPushNotification = async (options: PushDispatchOptions) => 
           title: formattedTitle,
           body: options.body,
           click_action: options.url || '/',
+          messageId: messageId,
+          id: messageId,
+          tag: notificationTag,
         },
       },
     });
@@ -534,6 +739,8 @@ export const dispatchPushNotification = async (options: PushDispatchOptions) => 
     const primaryMessageObj = buildFcmHttpV1Envelope(targetTokens[0] || '').message;
 
     const payload = {
+      id: messageId,
+      messageId: messageId,
       title: formattedTitle,
       body: options.body,
       icon: '/icon-192.png',
@@ -542,7 +749,9 @@ export const dispatchPushNotification = async (options: PushDispatchOptions) => 
       sound: 'default',
       requireInteraction: true,
       vibrate: [200, 100, 200],
-      tag: 'erouama-push',
+      tag: notificationTag,
+      deleted: false,
+      status: 'active',
       senderRole: options.senderRole || '',
       senderName: options.senderName || '',
       targetRole: options.targetRole || 'ALL',
@@ -582,7 +791,7 @@ export const dispatchPushNotification = async (options: PushDispatchOptions) => 
           badge: '/icon-192.png',
           requireInteraction: true,
           vibrate: [200, 100, 200],
-          tag: 'erouama-push',
+          tag: notificationTag,
         },
         fcm_options: {
           link: options.url || '/',
@@ -593,11 +802,15 @@ export const dispatchPushNotification = async (options: PushDispatchOptions) => 
         title: formattedTitle,
         body: options.body,
         url: options.url || '/',
+        messageId: messageId,
+        id: messageId,
+        tag: notificationTag,
       },
       metadata: {
         priority: 'high',
         sound: 'default',
         requireInteraction: true,
+        messageId: messageId,
         ...(options.metadata || {}),
       },
       createdAt: new Date().toISOString(),
@@ -618,6 +831,63 @@ export const dispatchPushNotification = async (options: PushDispatchOptions) => 
   }
 };
 
+/**
+ * Écouteur FCM de premier plan (Foreground SDK)
+ * Reçoit les pushs FCM quand l'application est ouverte et active,
+ * et déclenche uniquement le son et le toast in-app sans créer de bannière système duplicate.
+ */
+export const setupForegroundFCMListener = (onReceived?: (payload: any) => void) => {
+  if (typeof window === 'undefined') return () => {};
+  let unsubscribeFcm: (() => void) | null = null;
+
+  import('firebase/messaging')
+    .then(({ getMessaging, onMessage, isSupported }) => {
+      isSupported().then((supported) => {
+        if (!supported) return;
+        const messaging = getMessaging(app);
+        unsubscribeFcm = onMessage(messaging, (payload) => {
+          console.log('[FCM] Message reçu au premier plan (foreground):', payload);
+          const msgId = payload.data?.messageId || payload.data?.id || `fcm-${Date.now()}`;
+          const tag = payload.data?.tag || `erouama-msg-${msgId}`;
+
+          if (hasNotificationBeenHandled(msgId) || hasNotificationBeenHandled(tag)) {
+            return;
+          }
+          markNotificationAsHandled(msgId);
+          markNotificationAsHandled(tag);
+
+          triggerDirectNotification({
+            title: payload.notification?.title || payload.data?.title || 'E-ROUAMA',
+            body: payload.notification?.body || payload.data?.body || '',
+            icon: payload.notification?.icon || '/icon-192.png',
+            tag,
+            url: payload.data?.click_action || payload.data?.url || '/',
+            data: payload.data,
+          });
+
+          if (onReceived) {
+            onReceived({
+              title: payload.notification?.title || payload.data?.title || 'E-ROUAMA',
+              body: payload.notification?.body || payload.data?.body || '',
+              icon: payload.notification?.icon || '/icon-192.png',
+              tag,
+              url: payload.data?.click_action || payload.data?.url || '/',
+              data: payload.data,
+              isForeground: true,
+            });
+          }
+        });
+      }).catch(() => {});
+    })
+    .catch(() => {});
+
+  return () => {
+    if (unsubscribeFcm) {
+      unsubscribeFcm();
+    }
+  };
+};
+
 // Écouteur en temps réel (onSnapshot) pour intercepter les notifications push et les afficher à l'utilisateur
 export const listenForIncomingPushNotifications = (
   currentUserRole?: string,
@@ -627,23 +897,66 @@ export const listenForIncomingPushNotifications = (
 ) => {
   if (typeof window === 'undefined') return () => {};
 
-  const cleanRole = (currentUserRole || '').toUpperCase().trim();
-  const cleanUserId = (currentUserId || '').trim();
-  const userDeptsNormalized = (userDepartments || []).map(d => normalizeDepartmentKey(d));
-  const sessionStartTime = Date.now() - 30000; // Prendre les notifs des 30 dernières secondes maximum au chargement
+  // Récupération de l'identité terminal persistée pour maintenir la réception même après déconnexion (logout)
+  const storedLastUserId = localStorage.getItem('erouama_last_auth_user_id') || '';
+  const storedLastRole = localStorage.getItem('erouama_last_auth_role') || '';
+  let storedLastDepts: string[] = [];
+  try {
+    const raw = localStorage.getItem('erouama_last_auth_depts');
+    if (raw) storedLastDepts = JSON.parse(raw);
+  } catch {}
+
+  const cleanRole = (currentUserRole || storedLastRole || '').toUpperCase().trim();
+  const cleanUserId = (currentUserId || storedLastUserId || '').trim();
+  const userDeptsNormalized = (
+    userDepartments && userDepartments.length > 0 ? userDepartments : storedLastDepts
+  ).map(d => normalizeDepartmentKey(d));
 
   try {
     const notifsRef = collection(db, 'push_notifications');
-    const q = query(notifsRef, orderBy('createdAt', 'desc'), limit(10));
+    const q = query(notifsRef, orderBy('createdAt', 'desc'), limit(15));
+
+    // Drapeaux d'initialisation pour ne jamais réémettre les messages du passé
+    let isInitialSnapshot = true;
 
     const unsubscribe = onSnapshot(q, (snapshot) => {
+      // 1. Snapshot initial : enregistrer tous les anciens messages comme déjà traités
+      // pour éviter de les rejouer lors d'un montage de composant, reconnexion ou suppression d'un item.
+      if (isInitialSnapshot) {
+        snapshot.docs.forEach((docSnap) => {
+          const docData = docSnap.data() as any;
+          const initialMsgId = docData.messageId || docData.id || docSnap.id;
+          const initialTag = docData.tag || `erouama-msg-${initialMsgId}`;
+          markNotificationAsHandled(initialMsgId);
+          markNotificationAsHandled(initialTag);
+          markNotificationAsHandled(docSnap.id);
+        });
+        isInitialSnapshot = false;
+        return;
+      }
+
+      // 2. Traitement strict des NOUVEAUX ajouts en temps réel uniquement
       snapshot.docChanges().forEach((change) => {
         if (change.type === 'added') {
           const data = change.doc.data() as any;
-          const notifTime = data.timestamp || new Date(data.createdAt).getTime();
 
-          // Ignorer les vieilles notifications historiques
-          if (notifTime < sessionStartTime) return;
+          // RÈGLE 3 : Ignorer explicitement les messages marqués comme supprimés
+          if (data.deleted === true || data.status === 'deleted') {
+            console.log('[pushNotificationService] Notification supprimée ignorée:', change.doc.id);
+            return;
+          }
+
+          // RÈGLE 1 & 2 ANTI-DOUBLON : Vérification du messageId et du tag
+          const uniqueMsgId = data.messageId || data.id || change.doc.id;
+          const uniqueTag = data.tag || `erouama-msg-${uniqueMsgId}`;
+
+          if (hasNotificationBeenHandled(uniqueMsgId) || hasNotificationBeenHandled(uniqueTag) || hasNotificationBeenHandled(change.doc.id)) {
+            console.log('[pushNotificationService] Notification déjà traitée (anti-doublon):', uniqueMsgId);
+            return;
+          }
+          markNotificationAsHandled(uniqueMsgId);
+          markNotificationAsHandled(uniqueTag);
+          markNotificationAsHandled(change.doc.id);
 
           // Vérifier si cette notification s'adresse à ce rôle, cet utilisateur ou l'un de ses départements
           const targetRole = (data.targetRole || '').toUpperCase().trim();
@@ -684,7 +997,7 @@ export const listenForIncomingPushNotifications = (
             (targetRole === 'SPIRITUALITE' && (cleanRole.includes('SPIRIT') || cleanRole === 'SPIRITUALITE' || userDeptsNormalized.includes('spiritualite'))) ||
             (targetRole === 'SDP' && (cleanRole.includes('SDP') || cleanRole.includes('PROGRAMME') || userDeptsNormalized.includes('suivi_programme')));
 
-          // Vérification si le département cible correspond à un des départements de l'utilisateur (ex: communication pour Esther et Désiré)
+          // Vérification si le département cible correspond à un des départements de l'utilisateur
           const deptMatches = targetDepartment && userDeptsNormalized.includes(targetDepartment);
 
           // Si un targetUserId précis ou une liste de membres ciblés est spécifié(e)
@@ -697,17 +1010,30 @@ export const listenForIncomingPushNotifications = (
           const isRoleOrDeptTarget = !targetUserId && targetUserIds.length === 0 && (roleMatches || deptMatches);
 
           if (isDirectTargetUser || isRoleOrDeptTarget) {
-            // Déclencher la notification Push native
+            // 1. Toujours forcer l'affichage de la BANNIÈRE NATIVE ANDROID dans le volet supérieur
             triggerDirectNotification({
               title: data.title,
               body: data.body,
-              icon: data.icon || '/LOGOPRO.png',
-              tag: 'push-' + change.doc.id,
+              icon: data.icon || '/icon-192.png',
+              tag: uniqueTag,
               url: data.url || '/',
+              data: {
+                messageId: uniqueMsgId,
+                id: uniqueMsgId,
+                tag: uniqueTag,
+                ...data,
+              },
             });
 
+            // 2. Afficher également le toast interactif in-app
             if (onReceived) {
-              onReceived(data);
+              onReceived({
+                ...data,
+                id: uniqueMsgId,
+                messageId: uniqueMsgId,
+                tag: uniqueTag,
+                isForeground: typeof document !== 'undefined' && document.visibilityState === 'visible',
+              });
             }
           }
         }

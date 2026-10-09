@@ -16,16 +16,18 @@ import { AdminRole, RouamaMember } from './types';
 import { LayoutDashboard, Church, CreditCard, Newspaper, Tent, Rocket, FileText, Shield, LogOut, Download, User, Sparkles, KeyRound } from 'lucide-react';
 import { ADMIN_USERS, getRegisteredMembersCount } from './data/membersData';
 import { ChangePasswordModal } from './components/admin/ChangePasswordModal';
-import { registerPushServiceWorker, listenForIncomingPushNotifications } from './utils/pushNotificationService';
+import { registerPushServiceWorker, listenForIncomingPushNotifications, refreshFcmTokenOnStartup, setupForegroundFCMListener } from './utils/pushNotificationService';
 import { RoleWorkspaceToggle } from './components/RoleWorkspaceToggle';
 import { InstallPwaBanner } from './components/InstallPwaBanner';
 import { UpdatePrompt } from './components/UpdatePrompt';
+import { InAppNotificationToast, ForegroundNotification } from './components/InAppNotificationToast';
 
 function MainLayout() {
   const { currentUser, logout, members, newsItems, gbairaiMessages, getMemberDuesStatus } = useApp();
   const [activeTab, setActiveTab] = useState<TabType>('DASHBOARD');
   const [targetDocId, setTargetDocId] = useState<string | undefined>(undefined);
   const [isAdminChangePasswordOpen, setIsAdminChangePasswordOpen] = useState(false);
+  const [foregroundToast, setForegroundToast] = useState<ForegroundNotification | null>(null);
 
   const handleNavigateTab = (tab: TabType, docId?: string) => {
     setActiveTab(tab);
@@ -38,17 +40,41 @@ function MainLayout() {
   const registeredCount = getRegisteredMembersCount(members);
   const totalMembers = members && members.length > 0 ? members.length : 12;
 
-  // Initialisation du Service Worker et écoute des Push Notifications en temps réel
+  // Initialisation du Service Worker et écoute des Push Notifications en temps réel avec anti-doublon strict
   useEffect(() => {
     registerPushServiceWorker();
 
-    const userRole = currentUser?.type === 'ADMIN' ? currentUser.adminRole : currentUser?.member?.assignedRole;
-    const userId = currentUser?.type === 'MEMBER' ? currentUser.member?.id : currentUser?.adminRole;
-    const userDepts = currentUser?.departments || currentUser?.member?.departments || [];
+    const storedLastUserId = localStorage.getItem('erouama_last_auth_user_id') || undefined;
+    const storedLastRole = localStorage.getItem('erouama_last_auth_role') || undefined;
+    let storedLastDepts: string[] = [];
+    try {
+      const raw = localStorage.getItem('erouama_last_auth_depts');
+      if (raw) storedLastDepts = JSON.parse(raw);
+    } catch {}
 
-    const unsub = listenForIncomingPushNotifications(userRole, userId, userDepts);
+    const userRole = (currentUser?.type === 'ADMIN' ? currentUser.adminRole : currentUser?.member?.assignedRole) || storedLastRole;
+    const userId = (currentUser?.type === 'MEMBER' ? currentUser.member?.id : currentUser?.adminRole) || storedLastUserId;
+    const userDepts = (currentUser?.departments || currentUser?.member?.departments || (storedLastDepts.length ? storedLastDepts : []));
+
+    // Reconstitution et rafraîchissement automatique du token FCM au démarrage (même si déconnecté)
+    refreshFcmTokenOnStartup(userId);
+
+    const handleReceivedPush = (notif: any) => {
+      setForegroundToast({
+        id: notif.id || notif.messageId || String(Date.now()),
+        title: notif.title || 'E-ROUAMA',
+        body: notif.body || '',
+        icon: notif.icon || '/icon-192.png',
+        url: notif.url || '/',
+      });
+    };
+
+    const unsubPush = listenForIncomingPushNotifications(userRole, userId, userDepts, handleReceivedPush);
+    const unsubFcm = setupForegroundFCMListener(handleReceivedPush);
+
     return () => {
-      unsub();
+      unsubPush();
+      unsubFcm();
     };
   }, [currentUser]);
 
@@ -58,6 +84,10 @@ function MainLayout() {
       <>
         <AuthScreen />
         <UpdatePrompt />
+        <InAppNotificationToast
+          notification={foregroundToast}
+          onClose={() => setForegroundToast(null)}
+        />
       </>
     );
   }
@@ -150,6 +180,12 @@ function MainLayout() {
 
         {/* Toast / Bannière flottante de mise à jour automatique PWA */}
         <UpdatePrompt />
+
+        {/* Toast in-app pour les notifications push reçues au premier plan */}
+        <InAppNotificationToast
+          notification={foregroundToast}
+          onClose={() => setForegroundToast(null)}
+        />
       </div>
     );
   }
@@ -393,6 +429,21 @@ function MainLayout() {
 
       {/* Toast / Bannière flottante de mise à jour automatique PWA */}
       <UpdatePrompt />
+
+      {/* Toast in-app pour les notifications push reçues au premier plan */}
+      <InAppNotificationToast
+        notification={foregroundToast}
+        onClose={() => setForegroundToast(null)}
+        onNavigate={(url) => {
+          if (url.includes('news') || url.includes('gbairai') || url.includes('NOUVELLES')) {
+            setActiveTab('NOUVELLES');
+          } else if (url.includes('finances') || url.includes('cotisation')) {
+            setActiveTab('FINANCES');
+          } else if (url.includes('priere') || url.includes('rouama')) {
+            setActiveTab('PRIERE_ROUAMA');
+          }
+        }}
+      />
     </div>
   );
 }

@@ -1660,6 +1660,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const logout = () => {
+    // RÈGLE STRICTE PERSISTANCE DU JETON FCM (LOGOUT / DÉCONNEXION) :
+    // Lors de la déconnexion, NE JAMAIS supprimer le jeton fcmToken du navigateur (localStorage)
+    // ni du document utilisateur dans Firestore. L'appareil conserve son fcmToken enregistré
+    // pour continuer à recevoir les notifications Push même hors session et application fermée.
     setCurrentUser(null);
   };
 
