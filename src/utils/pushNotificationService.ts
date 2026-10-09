@@ -218,6 +218,15 @@ export const requestPushPermissionAndSaveToken = async (
     // Sauvegarde locale
     localStorage.setItem('erouama_fcm_token', fcmToken);
     localStorage.setItem('erouama_push_enabled', 'true');
+    if (targetUserId) {
+      localStorage.setItem('erouama_last_auth_user_id', targetUserId);
+    }
+    if (memberRolesMeta.adminRole) {
+      localStorage.setItem('erouama_last_auth_role', memberRolesMeta.adminRole);
+    }
+    if (memberRolesMeta.departments && memberRolesMeta.departments.length > 0) {
+      localStorage.setItem('erouama_last_auth_depts', JSON.stringify(memberRolesMeta.departments));
+    }
 
     // 5. Affiche une notification de bienvenue test style Wave
     triggerDirectNotification({
@@ -242,6 +251,121 @@ export const requestPushPermissionAndSaveToken = async (
       permission: Notification.permission || 'denied',
     };
   }
+};
+
+/**
+ * Reconstitution et rafraîchissement automatique du token FCM au démarrage de l'appli.
+ * Exécuté dès le chargement (y compris sur la page de connexion / Login ou hors session).
+ * Vérifie l'état de la permission, rafraîchit le token via le SDK Firebase et s'assure
+ * qu'il est synchronisé dans LocalStorage et Firestore pour l'appareil.
+ */
+export const refreshFcmTokenOnStartup = async (targetUserId?: string): Promise<string | null> => {
+  if (typeof window === 'undefined' || !isPushNotificationSupported()) return null;
+
+  try {
+    // 1. Enregistre ou récupère le Service Worker
+    const registration = await registerPushServiceWorker();
+    if (!registration) return null;
+
+    // 2. Détermine l'ID utilisateur cible (session active ou dernier utilisateur authentifié sur ce terminal)
+    const effectiveUserId =
+      targetUserId ||
+      localStorage.getItem('erouama_last_auth_user_id') ||
+      localStorage.getItem('erouama_current_user_id') ||
+      '';
+
+    let fcmToken = '';
+
+    // Si permission accordée, obtenir ou rafraîchir le jeton FCM
+    if (Notification.permission === 'granted') {
+      try {
+        const { getMessaging, getToken, isSupported } = await import('firebase/messaging');
+        const supported = await isSupported().catch(() => false);
+        if (supported && registration) {
+          const messaging = getMessaging(app);
+          const vapidKey = (import.meta as any).env?.VITE_FIREBASE_VAPID_KEY;
+          const getTokenOptions: { serviceWorkerRegistration: ServiceWorkerRegistration; vapidKey?: string } = {
+            serviceWorkerRegistration: registration,
+          };
+          if (vapidKey && typeof vapidKey === 'string' && vapidKey.trim()) {
+            getTokenOptions.vapidKey = vapidKey.trim();
+          }
+          const token = await getToken(messaging, getTokenOptions).catch((err) => {
+            console.debug('FCM startup getToken note:', err);
+            return null;
+          });
+          if (token) {
+            fcmToken = token;
+          }
+        }
+      } catch (fcmErr) {
+        console.debug('FCM startup import note:', fcmErr);
+      }
+    }
+
+    // Si pas de jeton réseau direct, utiliser le jeton persisté localement
+    if (!fcmToken) {
+      fcmToken = localStorage.getItem('erouama_fcm_token') || '';
+    }
+
+    if (fcmToken) {
+      localStorage.setItem('erouama_fcm_token', fcmToken);
+      localStorage.setItem('erouama_push_enabled', 'true');
+
+      // Mettre à jour dans Firestore pour que les notifications continuent à atteindre l'appareil même après déconnexion
+      if (effectiveUserId) {
+        const nowIso = new Date().toISOString();
+        const memberRolesMeta = getDefaultRolesForMember(effectiveUserId);
+
+        try {
+          await updateDoc(doc(db, 'users', effectiveUserId), {
+            fcmToken: fcmToken,
+            fcmTokens: arrayUnion(fcmToken),
+            roles: memberRolesMeta.roles,
+            departments: memberRolesMeta.departments,
+            pushNotificationsEnabled: true,
+            pushTokenUpdatedAt: nowIso,
+            devicePlatform: navigator.userAgent.includes('Mobile') ? 'mobile' : 'desktop',
+          });
+        } catch {
+          await setDoc(
+            doc(db, 'users', effectiveUserId),
+            {
+              id: effectiveUserId,
+              fcmToken: fcmToken,
+              fcmTokens: [fcmToken],
+              roles: memberRolesMeta.roles,
+              departments: memberRolesMeta.departments,
+              pushNotificationsEnabled: true,
+              pushTokenUpdatedAt: nowIso,
+              devicePlatform: navigator.userAgent.includes('Mobile') ? 'mobile' : 'desktop',
+            },
+            { merge: true }
+          );
+        }
+
+        try {
+          await setDoc(
+            doc(db, 'members', effectiveUserId),
+            {
+              id: effectiveUserId,
+              fcmToken: fcmToken,
+              fcmTokens: arrayUnion(fcmToken),
+              pushNotificationsEnabled: true,
+              pushTokenUpdatedAt: nowIso,
+            },
+            { merge: true }
+          );
+        } catch {
+          // Ignorer si non-membre
+        }
+      }
+      return fcmToken;
+    }
+  } catch (err) {
+    console.debug('Erreur rafraîchissement token au démarrage:', err);
+  }
+  return null;
 };
 
 // Déclenchement direct d'une notification sur le système de l'appareil
@@ -392,9 +516,15 @@ export const extractRecipientFcmTokens = async (options: {
     // Rôles spécifiques directs
     if (normalizedDept === 'cerveau' || targetRoleClean === 'CERVEAU') {
       targetDeptManagers.add('1'); // Wilfried (Cerveau)
+      targetDeptManagers.add('CERVEAU');
+      targetDeptManagers.add('cerveau');
+      targetDeptManagers.add('admin_cerveau');
     }
     if (normalizedDept === 'tresorerie' || targetRoleClean === 'TRESORIER' || targetRoleClean === 'TRESO') {
       targetDeptManagers.add('11'); // Léger (Trésorier)
+      targetDeptManagers.add('TRESORIER');
+      targetDeptManagers.add('tresorerie');
+      targetDeptManagers.add('admin_tresorier');
     }
 
     const collectTokensFromDoc = (docId: string, u: any) => {
@@ -402,10 +532,10 @@ export const extractRecipientFcmTokens = async (options: {
 
       // RÈGLE STRICTE BROADCAST / COMMUNAUTAIRE :
       // Pour toute diffusion collective (ALL / TOUS / broadcast général), inclure ABSOLUMENT TOUS les jetons
-      // de la collection users/members sans exception, Y COMPRIS l'administrateur/Cerveau qui a exécuté l'action.
+      // de la collection users/members sans exception, INDÉPENDAMMENT du statut de connexion en temps réel (isLoggedIn/Auth).
       if (isBroadcastAll) {
         if (Array.isArray(u.fcmTokens)) tokens.push(...u.fcmTokens.filter(Boolean));
-        if (u.fcmToken && typeof u.fcmToken === 'string') tokens.push(u.fcmToken);
+        if (u.fcmToken && typeof u.fcmToken === 'string' && u.fcmToken.trim()) tokens.push(u.fcmToken.trim());
         return;
       }
 
@@ -418,8 +548,18 @@ export const extractRecipientFcmTokens = async (options: {
       const uRoles = Array.isArray(u.roles) ? u.roles.map(x => normalizeDepartmentKey(x)) : [];
       const uRole = normalizeDepartmentKey(u.role || u.adminRole || '');
 
-      const isDirectTarget = directUserIds.has(docId) || (uId && directUserIds.has(uId));
-      const isManagerTarget = targetDeptManagers.has(docId) || (uId && targetDeptManagers.has(uId));
+      const isDirectTarget =
+        directUserIds.has(docId) ||
+        (uId && directUserIds.has(uId)) ||
+        directUserIds.has(docId.toUpperCase()) ||
+        (uId && directUserIds.has(uId.toUpperCase()));
+
+      const isManagerTarget =
+        targetDeptManagers.has(docId) ||
+        (uId && targetDeptManagers.has(uId)) ||
+        targetDeptManagers.has(docId.toUpperCase()) ||
+        (uId && targetDeptManagers.has(uId.toUpperCase()));
+
       const isDeptMatch = normalizedDept && (
         uDepts.includes(normalizedDept) ||
         uRoles.includes(normalizedDept) ||
@@ -428,9 +568,11 @@ export const extractRecipientFcmTokens = async (options: {
         (normalizedDept === 'tresorerie' && (uRoles.includes('tresorerie') || uRole.includes('treso')))
       );
 
+      // CIBLAGE SANS CONDITION DE CONNEXION :
+      // Les requêtes lisent les jetons FCM même si l'utilisateur s'est déconnecté (session inactive)
       if (isDirectTarget || isManagerTarget || isDeptMatch) {
         if (Array.isArray(u.fcmTokens)) tokens.push(...u.fcmTokens.filter(Boolean));
-        if (u.fcmToken && typeof u.fcmToken === 'string') tokens.push(u.fcmToken);
+        if (u.fcmToken && typeof u.fcmToken === 'string' && u.fcmToken.trim()) tokens.push(u.fcmToken.trim());
       }
     };
 
@@ -627,9 +769,20 @@ export const listenForIncomingPushNotifications = (
 ) => {
   if (typeof window === 'undefined') return () => {};
 
-  const cleanRole = (currentUserRole || '').toUpperCase().trim();
-  const cleanUserId = (currentUserId || '').trim();
-  const userDeptsNormalized = (userDepartments || []).map(d => normalizeDepartmentKey(d));
+  // Récupération de l'identité terminal persistée pour maintenir la réception même après déconnexion (logout)
+  const storedLastUserId = localStorage.getItem('erouama_last_auth_user_id') || '';
+  const storedLastRole = localStorage.getItem('erouama_last_auth_role') || '';
+  let storedLastDepts: string[] = [];
+  try {
+    const raw = localStorage.getItem('erouama_last_auth_depts');
+    if (raw) storedLastDepts = JSON.parse(raw);
+  } catch {}
+
+  const cleanRole = (currentUserRole || storedLastRole || '').toUpperCase().trim();
+  const cleanUserId = (currentUserId || storedLastUserId || '').trim();
+  const userDeptsNormalized = (
+    userDepartments && userDepartments.length > 0 ? userDepartments : storedLastDepts
+  ).map(d => normalizeDepartmentKey(d));
   const sessionStartTime = Date.now() - 30000; // Prendre les notifs des 30 dernières secondes maximum au chargement
 
   try {

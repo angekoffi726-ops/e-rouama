@@ -439,6 +439,25 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           }
         }
       }
+
+      // Persistance de l'identité terminal pour garantir la réception continue des push après déconnexion
+      try {
+        const targetUserId = userObj.id || userObj.member?.id || userObj.adminRole || '';
+        const targetRole = userObj.type === 'ADMIN' ? userObj.adminRole : (userObj.adminRole || userObj.member?.assignedRole);
+        const targetDepts = userObj.departments || userObj.member?.departments || [];
+        if (targetUserId) {
+          localStorage.setItem('erouama_last_auth_user_id', String(targetUserId));
+        }
+        if (targetRole) {
+          localStorage.setItem('erouama_last_auth_role', String(targetRole));
+        }
+        if (targetDepts && targetDepts.length > 0) {
+          localStorage.setItem('erouama_last_auth_depts', JSON.stringify(targetDepts));
+        }
+      } catch (err) {
+        console.debug('Terminal identity save note:', err);
+      }
+
       return userObj;
     });
   };
@@ -1660,7 +1679,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const logout = () => {
-    setCurrentUser(null);
+    // RÈGLE STRICTE DE NON-RÉGRESSION FCM :
+    // 1. NE SUPPRIME PAS et N'EFFACE PAS le fcmToken du document utilisateur dans Firestore.
+    // 2. Ne désinscris pas le Service Worker et n'appelle JAMAIS deleteToken().
+    // 3. Conserve le dernier fcmToken et les identifiants du terminal dans Firestore et LocalStorage
+    //    afin que le serveur FCM/WebPush puisse continuer à lui envoyer des notifications même hors session active.
+    localStorage.removeItem(EROUAMA_ACTIVE_SESSION_KEY);
+    localStorage.removeItem('rouama_user');
+    setCurrentUserState(null);
   };
 
   // Bascule instantanée In-App entre l'Espace Membre et l'Espace Administration / Département

@@ -16,7 +16,7 @@ import { AdminRole, RouamaMember } from './types';
 import { LayoutDashboard, Church, CreditCard, Newspaper, Tent, Rocket, FileText, Shield, LogOut, Download, User, Sparkles, KeyRound } from 'lucide-react';
 import { ADMIN_USERS, getRegisteredMembersCount } from './data/membersData';
 import { ChangePasswordModal } from './components/admin/ChangePasswordModal';
-import { registerPushServiceWorker, listenForIncomingPushNotifications } from './utils/pushNotificationService';
+import { registerPushServiceWorker, listenForIncomingPushNotifications, refreshFcmTokenOnStartup } from './utils/pushNotificationService';
 import { RoleWorkspaceToggle } from './components/RoleWorkspaceToggle';
 import { InstallPwaBanner } from './components/InstallPwaBanner';
 import { UpdatePrompt } from './components/UpdatePrompt';
@@ -42,9 +42,20 @@ function MainLayout() {
   useEffect(() => {
     registerPushServiceWorker();
 
-    const userRole = currentUser?.type === 'ADMIN' ? currentUser.adminRole : currentUser?.member?.assignedRole;
-    const userId = currentUser?.type === 'MEMBER' ? currentUser.member?.id : currentUser?.adminRole;
-    const userDepts = currentUser?.departments || currentUser?.member?.departments || [];
+    const storedLastUserId = localStorage.getItem('erouama_last_auth_user_id') || undefined;
+    const storedLastRole = localStorage.getItem('erouama_last_auth_role') || undefined;
+    let storedLastDepts: string[] = [];
+    try {
+      const raw = localStorage.getItem('erouama_last_auth_depts');
+      if (raw) storedLastDepts = JSON.parse(raw);
+    } catch {}
+
+    const userRole = (currentUser?.type === 'ADMIN' ? currentUser.adminRole : currentUser?.member?.assignedRole) || storedLastRole;
+    const userId = (currentUser?.type === 'MEMBER' ? currentUser.member?.id : currentUser?.adminRole) || storedLastUserId;
+    const userDepts = (currentUser?.departments || currentUser?.member?.departments || (storedLastDepts.length ? storedLastDepts : []));
+
+    // Reconstitution et rafraîchissement automatique du token FCM au démarrage (même si déconnecté)
+    refreshFcmTokenOnStartup(userId);
 
     const unsub = listenForIncomingPushNotifications(userRole, userId, userDepts);
     return () => {
