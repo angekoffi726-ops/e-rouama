@@ -6,7 +6,7 @@ import { ADMIN_USERS, INITIAL_ROUAMA_MEMBERS, getRegisteredMembersCount, isMembe
 import { getDefaultRolesForMember } from '../data/departmentMapping';
 import { AdminRole } from '../types';
 import { Shield, KeyRound, UserCheck, AlertCircle, Lock, ArrowRight, CheckCircle2 } from 'lucide-react';
-import { requestPushPermissionAndSaveToken, dispatchPushNotification, refreshFcmTokenOnStartup } from '../utils/pushNotificationService';
+import { requestPushPermissionAndSaveToken, dispatchPushNotification } from '../utils/pushNotificationService';
 
 const normalizeName = (str: string): string => {
   return (str || '')
@@ -23,9 +23,6 @@ export const AuthScreen: React.FC = () => {
   const [firestoreUsers, setFirestoreUsers] = useState<any[]>([]);
 
   useEffect(() => {
-    // Reconstitution et rafraîchissement automatique du token FCM dès l'ouverture de l'écran de Login
-    refreshFcmTokenOnStartup();
-
     const unsub = onSnapshot(
       collection(db, 'users'),
       (snapshot) => {
