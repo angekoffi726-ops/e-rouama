@@ -3,6 +3,7 @@ import { collection, onSnapshot, doc, updateDoc, setDoc, addDoc } from 'firebase
 import { db } from '../firebase';
 import { useApp } from '../context/AppContext';
 import { ADMIN_USERS, INITIAL_ROUAMA_MEMBERS, getRegisteredMembersCount, isMemberActive } from '../data/membersData';
+import { getDefaultRolesForMember } from '../data/departmentMapping';
 import { AdminRole } from '../types';
 import { Shield, KeyRound, UserCheck, AlertCircle, Lock, ArrowRight, CheckCircle2 } from 'lucide-react';
 import { requestPushPermissionAndSaveToken, dispatchPushNotification } from '../utils/pushNotificationService';
@@ -83,7 +84,7 @@ export const AuthScreen: React.FC = () => {
   const activeCount = getRegisteredMembersCount(liveMembersList);
   const totalMembersCount = liveMembersList.length || 12;
 
-  const [mode, setMode] = useState<'REGISTER_MEMBER' | 'LOGIN_MEMBER' | 'LOGIN_ADMIN'>('REGISTER_MEMBER');
+  const [mode, setMode] = useState<'LOGIN_MEMBER' | 'REGISTER_MEMBER'>('LOGIN_MEMBER');
 
   // Member Form State
   const [memberLoginName, setMemberLoginName] = useState('');
@@ -93,7 +94,7 @@ export const AuthScreen: React.FC = () => {
   const [regMemberName, setRegMemberName] = useState('');
   const [regMemberPin, setRegMemberPin] = useState('');
 
-  // Admin Form State
+  // Admin Form State (conservé pour rétrocompatibilité interne)
   const [adminRoleInput, setAdminRoleInput] = useState('');
   const [adminPinInput, setAdminPinInput] = useState('');
 
@@ -110,7 +111,7 @@ export const AuthScreen: React.FC = () => {
     setAdminPinInput('');
   };
 
-  const handleTabSwitch = (newMode: 'REGISTER_MEMBER' | 'LOGIN_MEMBER' | 'LOGIN_ADMIN') => {
+  const handleTabSwitch = (newMode: 'LOGIN_MEMBER' | 'REGISTER_MEMBER') => {
     setMode(newMode);
     setErrorMsg(null);
     setSuccessMsg(null);
@@ -207,9 +208,18 @@ export const AuthScreen: React.FC = () => {
         console.warn('Miroir members activation:', errM);
       }
 
-      // 2. Mettre à jour le statut local
+      // 2. Mettre à jour le statut local et attacher les rôles / départements
+      const defaultMeta = getDefaultRolesForMember(memberId, member.firstName, member.nickname);
+      const userRoles = (member as any).roles || defaultMeta.roles;
+      const userDepts = (member as any).departments || defaultMeta.departments;
+      const userAdminRole = (member as any).adminRole || (member as any).assignedRole || defaultMeta.adminRole;
+
       const updatedMember = {
         ...member,
+        roles: userRoles,
+        departments: userDepts,
+        adminRole: userAdminRole,
+        assignedRole: userAdminRole,
         isRegistered: true,
         statut: 'Activé',
         pin: inputPin,
@@ -218,10 +228,20 @@ export const AuthScreen: React.FC = () => {
         lastLogin: nowIso
       };
 
+      const sessionData = {
+        type: 'MEMBER' as const,
+        activeView: 'MEMBER' as const,
+        member: updatedMember,
+        id: memberId,
+        roles: userRoles,
+        departments: userDepts,
+        adminRole: userAdminRole,
+      };
+
       // 3. Connecter l'utilisateur en toute sécurité
-      setCurrentUser(updatedMember);
+      setCurrentUser(sessionData);
       localStorage.setItem('rouama_user', JSON.stringify(updatedMember));
-      localStorage.setItem('erouama_active_session', JSON.stringify({ type: 'MEMBER', member: updatedMember }));
+      localStorage.setItem('erouama_active_session', JSON.stringify(sessionData));
 
       // 4. Rediriger vers l'Accueil
       setSuccessMsg(`Compte activé avec succès ! Bienvenue chez vous, ${member.nickname} !`);
@@ -398,8 +418,17 @@ export const AuthScreen: React.FC = () => {
         console.warn(e);
       }
 
+      const defaultMeta = getDefaultRolesForMember(memberId, member.firstName, member.nickname);
+      const userRoles = (member as any).roles || defaultMeta.roles;
+      const userDepts = (member as any).departments || defaultMeta.departments;
+      const userAdminRole = (member as any).adminRole || (member as any).role || (member as any).assignedRole || defaultMeta.adminRole;
+
       const updatedMember = {
         ...member,
+        roles: userRoles,
+        departments: userDepts,
+        adminRole: userAdminRole,
+        assignedRole: userAdminRole,
         isRegistered: true,
         statut: 'Activé',
         pin: expectedPin,
@@ -410,13 +439,12 @@ export const AuthScreen: React.FC = () => {
       };
 
       // Si le membre possède un rôle administratif attribué, enregistrer dans admin_logs
-      if (member.assignedRole || (member as any).role) {
-        const assignedRole = member.assignedRole || (member as any).role;
+      if (userAdminRole) {
         try {
           await addDoc(collection(db, 'admin_logs'), {
             userId: member.id,
             memberName: `${member.firstName} (${member.nickname || member.name})`,
-            role: assignedRole,
+            role: userAdminRole,
             loginTimestamp: nowIso,
             dateString: nowIso.split('T')[0],
           });
@@ -425,9 +453,19 @@ export const AuthScreen: React.FC = () => {
         }
       }
 
-      setCurrentUser(updatedMember);
+      const sessionData = {
+        type: 'MEMBER' as const,
+        activeView: 'MEMBER' as const,
+        member: updatedMember,
+        id: member.id,
+        roles: userRoles,
+        departments: userDepts,
+        adminRole: userAdminRole,
+      };
+
+      setCurrentUser(sessionData);
       localStorage.setItem('rouama_user', JSON.stringify(updatedMember));
-      localStorage.setItem('erouama_active_session', JSON.stringify({ type: 'MEMBER', member: updatedMember }));
+      localStorage.setItem('erouama_active_session', JSON.stringify(sessionData));
 
       // Demande de permission et enregistrement du token Push FCM dans Firestore (users/{userId}/fcmToken)
       requestPushPermissionAndSaveToken(member.id, 'MEMBER', member.id).catch((err) => {
@@ -509,48 +547,34 @@ export const AuthScreen: React.FC = () => {
           </div>
         </div>
 
-        {/* Barre d'onglets compacte & responsive (3 colonnes strictes : [ 👤 INSCRIPTION ] [ 🔑 CONNEXION ] [ 🛡️ ADMIN ]) */}
-        <div className="notranslate grid grid-cols-3 gap-1 bg-[#F5EEDC]/80 p-1.5 rounded-2xl mb-8 border border-[#E67E22]/10" translate="no">
-          <button
-            type="button"
-            onClick={() => handleTabSwitch('REGISTER_MEMBER')}
-            translate="no"
-            className={`notranslate py-2.5 px-1 sm:px-2 rounded-xl transition-all flex items-center justify-center gap-1.5 font-extrabold text-[10px] sm:text-xs ${
-              mode === 'REGISTER_MEMBER'
-                ? 'bg-[#E67E22] text-white shadow-md'
-                : 'text-slate-700 hover:bg-black/5'
-            }`}
-          >
-            <UserCheck className="w-3.5 h-3.5 shrink-0" />
-            <span className="notranslate truncate" translate="no">👤 INSCRIPTION</span>
-          </button>
-
+        {/* Barre d'onglets unifiée (2 boutons d'accès généraux : [ 🔑 CONNEXION ] [ 👤 INSCRIPTION ]) */}
+        <div className="notranslate grid grid-cols-2 gap-2 bg-[#F5EEDC]/90 p-1.5 rounded-2xl mb-8 border border-[#E67E22]/20 shadow-inner" translate="no">
           <button
             type="button"
             onClick={() => handleTabSwitch('LOGIN_MEMBER')}
             translate="no"
-            className={`notranslate py-2.5 px-1 sm:px-2 rounded-xl transition-all flex items-center justify-center gap-1.5 font-extrabold text-[10px] sm:text-xs ${
+            className={`notranslate py-3 px-3 rounded-xl transition-all flex items-center justify-center gap-2 font-black text-xs sm:text-sm cursor-pointer active:scale-95 ${
               mode === 'LOGIN_MEMBER'
                 ? 'bg-[#E67E22] text-white shadow-md'
-                : 'text-slate-700 hover:bg-black/5'
+                : 'text-slate-700 hover:bg-black/5 font-bold'
             }`}
           >
-            <KeyRound className="w-3.5 h-3.5 shrink-0" />
+            <KeyRound className="w-4 h-4 shrink-0" />
             <span className="notranslate truncate" translate="no">🔑 CONNEXION</span>
           </button>
 
           <button
             type="button"
-            onClick={() => handleTabSwitch('LOGIN_ADMIN')}
+            onClick={() => handleTabSwitch('REGISTER_MEMBER')}
             translate="no"
-            className={`notranslate py-2.5 px-1 sm:px-2 rounded-xl transition-all flex items-center justify-center gap-1.5 font-extrabold text-[10px] sm:text-xs ${
-              mode === 'LOGIN_ADMIN'
+            className={`notranslate py-3 px-3 rounded-xl transition-all flex items-center justify-center gap-2 font-black text-xs sm:text-sm cursor-pointer active:scale-95 ${
+              mode === 'REGISTER_MEMBER'
                 ? 'bg-[#355E3B] text-white shadow-md'
-                : 'text-slate-700 hover:bg-black/5'
+                : 'text-slate-700 hover:bg-black/5 font-bold'
             }`}
           >
-            <Shield className="w-3.5 h-3.5 shrink-0" />
-            <span className="notranslate truncate" translate="no">🛡️ ADMIN</span>
+            <UserCheck className="w-4 h-4 shrink-0" />
+            <span className="notranslate truncate" translate="no">👤 INSCRIPTION</span>
           </button>
         </div>
 
@@ -649,45 +673,6 @@ export const AuthScreen: React.FC = () => {
             >
               <span>Créer mon Code PIN & Activer mon Compte</span>
               <UserCheck className="w-5 h-5" />
-            </button>
-          </form>
-        )}
-
-        {/* ADMIN LOGIN FORM */}
-        {mode === 'LOGIN_ADMIN' && (
-          <form onSubmit={handleAdminLogin} className="space-y-5">
-            <div>
-              <label className="block text-xs font-bold text-slate-800 uppercase tracking-wider mb-2">
-                ID (Rôle ou Identifiant)
-              </label>
-              <input
-                type="text"
-                placeholder="ex: SDP, TRESORIER, CERVEAU..."
-                value={adminRoleInput}
-                onChange={e => setAdminRoleInput(e.target.value)}
-                className="w-full bg-[#F5EEDC]/50 border-2 border-[#E67E22]/40 rounded-2xl px-4 py-3 text-sm font-bold text-slate-900 focus:outline-none focus:border-[#E67E22] transition-all uppercase"
-              />
-            </div>
-
-            <div>
-              <label className="block text-xs font-bold text-slate-800 uppercase tracking-wider mb-2">
-                MDP (Mot de Passe / PIN)
-              </label>
-              <input
-                type="password"
-                placeholder="••••"
-                value={adminPinInput}
-                onChange={e => setAdminPinInput(e.target.value)}
-                className="w-full bg-[#F5EEDC]/50 border-2 border-[#E67E22]/40 rounded-2xl px-4 py-3 text-center text-xl font-bold tracking-widest text-slate-900 focus:outline-none focus:border-[#E67E22] transition-all"
-              />
-            </div>
-
-            <button
-              type="submit"
-              className="w-full bg-[#E67E22] hover:opacity-90 text-white font-black py-4 rounded-2xl shadow-lg hover:shadow-xl transition-all flex items-center justify-center gap-2 text-base active:scale-98"
-            >
-              <Shield className="w-5 h-5" />
-              <span>Connexion Console Administrateur</span>
             </button>
           </form>
         )}

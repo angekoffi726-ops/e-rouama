@@ -5,6 +5,7 @@ import { db } from '../../firebase';
 import { useApp } from '../../context/AppContext';
 import { AdminRole, FundType, FUND_LABELS, TargetAudience, Committee, AgrProject, FinancialBilan, SecretaryPV, NewsItem, AdHocCommitteeRoles, EventActivity, RouamaMember } from '../../types';
 import { ADMIN_USERS } from '../../data/membersData';
+import { getDefaultRolesForMember } from '../../data/departmentMapping';
 import { sendEmailBroadcastAsync } from '../../utils/emailService';
 import { fetchAELFDailyReadings, AELFDayData } from '../../utils/aelfService';
 import { getDailyVerseForDate, PRAYER_ROUAMA } from '../../utils/versesData';
@@ -131,6 +132,21 @@ const CONSOLE_CONFIG: Record<AdminRole, { label: string; icon: string; shortName
     shortName: 'Super Admin',
     description: 'Présidence & Supervision Générale : accès souverain à l’ensemble des consoles décisionnelles',
   },
+};
+
+// Configuration spécifique des onglets de sélection pour les départements
+export const DEPARTMENT_TAB_CONFIG: Record<AdminRole, { label: string; icon: string }> = {
+  SDP: { label: 'Console Suivi du Programme', icon: '📊' },
+  CERVEAU: { label: 'Console Cerveau (Validations Retraits)', icon: '🧠' },
+  TRESORIER: { label: 'Console Trésorerie', icon: '💰' },
+  PROJET: { label: 'Console Projets (AGR)', icon: '🚀' },
+  SECRETARIAT: { label: 'Console Secrétariat', icon: '📝' },
+  SPIRITUALITE: { label: 'Console Spiritualité', icon: '🕊️' },
+  ORGANISATION: { label: 'Console Organisation', icon: '🎪' },
+  COM: { label: 'Console Communication (BIC)', icon: '📢' },
+  PAYOR: { label: 'Console Payor', icon: '⚖️' },
+  RESP_PROGRAMME: { label: 'Console Suivi du Programme', icon: '📊' },
+  SUPER_ADMIN: { label: 'Super Administration', icon: '👑' },
 };
 
 // Normalisation infaillible du rôle utilisateur (insensible à la casse, espaces, tirets et alias)
@@ -430,10 +446,81 @@ export const AdminPortal: React.FC = () => {
     return normalizeAdminRole(currentUser?.adminRole);
   }, [currentUser?.adminRole]);
 
-  // Consoles autorisées selon le RBAC strict
+  // Consoles autorisées selon le RBAC strict et les départements attribués dans Firestore
   const allowedConsoles: AdminRole[] = useMemo(() => {
-    return getAllowedConsolesForRole(userNativeRole);
-  }, [userNativeRole]);
+    // 1. Super Admin : accès souverain à l'ensemble des consoles
+    if (userNativeRole === 'SUPER_ADMIN') {
+      return ['CERVEAU', 'TRESORIER', 'PAYOR', 'SECRETARIAT', 'COM', 'ORGANISATION', 'PROJET', 'SPIRITUALITE', 'SDP'];
+    }
+
+    // 2. Extraire les départements et rôles enregistrés dans le profil utilisateur Firestore
+    const memberObj = currentUser?.member;
+    const memberId = memberObj?.id || currentUser?.id;
+    const defaultMeta = memberId
+      ? getDefaultRolesForMember(memberId, memberObj?.firstName || currentUser?.firstName, memberObj?.nickname || currentUser?.nickname)
+      : { roles: [], departments: [], adminRole: undefined };
+
+    const rawDepts: string[] = [
+      ...(Array.isArray(currentUser?.departments) ? currentUser.departments : []),
+      ...(Array.isArray(memberObj?.departments) ? memberObj.departments : []),
+      ...(Array.isArray(defaultMeta.departments) ? defaultMeta.departments : []),
+    ];
+
+    const rawRoles: string[] = [
+      ...(Array.isArray(currentUser?.roles) ? currentUser.roles : []),
+      ...(Array.isArray(memberObj?.roles) ? memberObj.roles : []),
+      ...(Array.isArray(defaultMeta.roles) ? defaultMeta.roles : []),
+    ];
+
+    const detectedRoles = new Set<AdminRole>();
+
+    // Rôle direct de la session admin
+    if (currentUser?.adminRole) {
+      detectedRoles.add(normalizeAdminRole(currentUser.adminRole));
+    }
+    if (defaultMeta.adminRole) {
+      detectedRoles.add(normalizeAdminRole(defaultMeta.adminRole));
+    }
+
+    const allStrings = [...rawDepts, ...rawRoles].map(s => String(s).toLowerCase().trim());
+
+    if (allStrings.some(s => s.includes('programme') || s.includes('suivi') || s === 'sdp')) {
+      detectedRoles.add('SDP');
+    }
+    if (allStrings.some(s => s.includes('cerveau') || s.includes('president'))) {
+      detectedRoles.add('CERVEAU');
+    }
+    if (allStrings.some(s => s.includes('tresor') || s.includes('caisse'))) {
+      detectedRoles.add('TRESORIER');
+    }
+    if (allStrings.some(s => s.includes('projet'))) {
+      detectedRoles.add('PROJET');
+    }
+    if (allStrings.some(s => s.includes('secret'))) {
+      detectedRoles.add('SECRETARIAT');
+    }
+    if (allStrings.some(s => s.includes('spirit'))) {
+      detectedRoles.add('SPIRITUALITE');
+    }
+    if (allStrings.some(s => s.includes('organi'))) {
+      detectedRoles.add('ORGANISATION');
+    }
+    if (allStrings.some(s => s.includes('com') || s.includes('bic'))) {
+      detectedRoles.add('COM');
+    }
+    if (allStrings.some(s => s.includes('payor'))) {
+      detectedRoles.add('PAYOR');
+    }
+
+    if (detectedRoles.size === 0) {
+      detectedRoles.add(userNativeRole);
+    }
+
+    // Ordre harmonieux des consoles
+    const ORDER: AdminRole[] = ['SDP', 'CERVEAU', 'TRESORIER', 'PAYOR', 'SECRETARIAT', 'COM', 'ORGANISATION', 'PROJET', 'SPIRITUALITE'];
+    const result = ORDER.filter(r => detectedRoles.has(r));
+    return result.length > 0 ? result : [userNativeRole];
+  }, [userNativeRole, currentUser]);
 
   // Console active sélectionnée (par défaut la 1ère console autorisée)
   const [selectedRole, setSelectedRole] = useState<AdminRole>(() => {
@@ -2802,6 +2889,53 @@ export const AdminPortal: React.FC = () => {
 
   return (
     <div className="space-y-8 animate-fadeIn text-slate-100">
+      {/* ========================================================= */}
+      {/* SÉLECTEUR DE DÉPARTEMENTS DANS L'ESPACE ADMIN (SUB-NAVIGATION) */}
+      {/* Affiché si l'utilisateur possède plusieurs départements / rôles */}
+      {/* ========================================================= */}
+      {allowedConsoles.length > 1 && (
+        <div className="bg-slate-900/95 border-2 border-amber-400/80 rounded-3xl p-4 sm:p-5 shadow-2xl backdrop-blur-md">
+          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 mb-3 pb-3 border-b border-slate-800">
+            <div className="flex items-center gap-2.5">
+              <span className="text-xl">🛡️</span>
+              <div>
+                <h2 className="text-sm sm:text-base font-black text-amber-300 uppercase tracking-wide">
+                  Sélecteur de Départements & Consoles Métiers
+                </h2>
+                <p className="text-[11px] text-slate-400">
+                  Naviguez distinctement entre vos différentes consoles d'administration
+                </p>
+              </div>
+            </div>
+            <span className="text-[10px] bg-amber-500/20 text-amber-300 font-extrabold px-3 py-1 rounded-full border border-amber-400/40 uppercase tracking-wider">
+              {allowedConsoles.length} Départements Attribués
+            </span>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2 sm:gap-2.5">
+            {allowedConsoles.map(r => {
+              const tabDef = DEPARTMENT_TAB_CONFIG[r] || { label: CONSOLE_CONFIG[r]?.label || r, icon: '🛡️' };
+              const isSelected = activeRole === r;
+              return (
+                <button
+                  key={r}
+                  type="button"
+                  onClick={() => setSelectedRole(r)}
+                  className={`flex items-center gap-2 px-4 py-2.5 rounded-2xl text-xs sm:text-sm font-black transition-all cursor-pointer shadow-md active:scale-95 border ${
+                    isSelected
+                      ? 'bg-gradient-to-r from-amber-400 to-[#E67E22] text-slate-950 border-amber-300 ring-2 ring-amber-400/50 scale-102 font-black shadow-amber-500/20'
+                      : 'bg-slate-950/80 text-slate-300 hover:text-white hover:bg-slate-800 border-slate-700/80 hover:border-amber-400/50'
+                  }`}
+                >
+                  <span className="text-base">{tabDef.icon}</span>
+                  <span>[ {tabDef.icon} {tabDef.label} ]</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       {/* ========================================================= */}
       {/* COCKPIT HEADER - DARK SLATE PROFESSIONAL STYLE */}
       {/* ========================================================= */}

@@ -19,6 +19,7 @@ import { ChangePasswordModal } from './components/admin/ChangePasswordModal';
 import { registerPushServiceWorker, listenForIncomingPushNotifications } from './utils/pushNotificationService';
 import { RoleWorkspaceToggle } from './components/RoleWorkspaceToggle';
 import { InstallPwaBanner } from './components/InstallPwaBanner';
+import { UpdatePrompt } from './components/UpdatePrompt';
 
 function MainLayout() {
   const { currentUser, logout, members, newsItems, gbairaiMessages, getMemberDuesStatus } = useApp();
@@ -52,7 +53,12 @@ function MainLayout() {
 
   // RÈGLE D'OR : Total security at startup
   if (!currentUser) {
-    return <AuthScreen />;
+    return (
+      <>
+        <AuthScreen />
+        <UpdatePrompt />
+      </>
+    );
   }
 
   const rawMember = currentUser?.member || (currentUser?.id ? (currentUser as unknown as RouamaMember) : undefined);
@@ -140,6 +146,9 @@ function MainLayout() {
             <span>Console Administrateur Privée & Sécurisée</span>
           </div>
         </footer>
+
+        {/* Toast / Bannière flottante de mise à jour automatique PWA */}
+        <UpdatePrompt />
       </div>
     );
   }
@@ -380,6 +389,9 @@ function MainLayout() {
           <span>Espace Fraternel d'Échanges & d'Entraide</span>
         </div>
       </footer>
+
+      {/* Toast / Bannière flottante de mise à jour automatique PWA */}
+      <UpdatePrompt />
     </div>
   );
 }

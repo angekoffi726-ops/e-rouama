@@ -110,9 +110,16 @@ self.addEventListener('notificationclick', (event) => {
   );
 });
 
-// Écouteur de messages inter-fenêtres / foreground trigger
+// Écouteur de messages inter-fenêtres / foreground trigger et SKIP_WAITING
 self.addEventListener('message', (event) => {
-  if (event.data && event.data.type === 'SHOW_NOTIFICATION') {
+  if (!event.data) return;
+
+  if (event.data.type === 'SKIP_WAITING') {
+    self.skipWaiting();
+    return;
+  }
+
+  if (event.data.type === 'SHOW_NOTIFICATION') {
     const { title, body, icon, tag, data } = event.data;
     self.registration.showNotification(title || 'E-ROUAMA', {
       body: body || '',
@@ -123,4 +130,9 @@ self.addEventListener('message', (event) => {
       data: data || { url: '/' }
     });
   }
+});
+
+// Activation et prise de contrôle immédiate
+self.addEventListener('activate', (event) => {
+  event.waitUntil(clients.claim());
 });

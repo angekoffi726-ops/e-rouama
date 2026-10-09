@@ -405,11 +405,38 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
       let userObj: CurrentUser;
       if (!('type' in resolved)) {
-        userObj = { type: 'MEMBER', id: (resolved as RouamaMember).id, member: resolved as RouamaMember };
+        const mem = resolved as RouamaMember;
+        const defaultRoles = getDefaultRolesForMember(mem.id, mem.firstName, mem.nickname);
+        userObj = {
+          type: 'MEMBER',
+          activeView: 'MEMBER',
+          id: mem.id,
+          member: mem,
+          roles: mem.roles || defaultRoles.roles,
+          departments: mem.departments || defaultRoles.departments,
+          adminRole: mem.assignedRole || defaultRoles.adminRole,
+        };
       } else {
         userObj = { ...resolved };
         if (userObj.type === 'MEMBER' && userObj.member?.id && !userObj.id) {
           userObj.id = userObj.member.id;
+        }
+        const memberId = userObj.member?.id || userObj.id;
+        if (memberId) {
+          const defaultRoles = getDefaultRolesForMember(
+            memberId,
+            userObj.member?.firstName || userObj.firstName,
+            userObj.member?.nickname || userObj.nickname
+          );
+          if (!userObj.roles) {
+            userObj.roles = userObj.member?.roles || defaultRoles.roles;
+          }
+          if (!userObj.departments) {
+            userObj.departments = userObj.member?.departments || defaultRoles.departments;
+          }
+          if (!userObj.adminRole) {
+            userObj.adminRole = userObj.member?.assignedRole || defaultRoles.adminRole;
+          }
         }
       }
       return userObj;
