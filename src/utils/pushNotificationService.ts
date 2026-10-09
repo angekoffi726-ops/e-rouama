@@ -113,8 +113,11 @@ export const requestPushPermissionAndSaveToken = async (
       };
     }
 
-    // 2. Enregistrement / récupération du Service Worker
-    const swReg = await registerPushServiceWorker();
+    // 2. Enregistrement / récupération explicite du Service Worker (garantit la réception en arrière-plan)
+    const registration = await navigator.serviceWorker.register('/firebase-messaging-sw.js', {
+      scope: '/',
+    });
+    await navigator.serviceWorker.ready;
 
     // 3. Récupération du Token FCM officiel via SDK Firebase Messaging
     let fcmToken = '';
@@ -122,12 +125,17 @@ export const requestPushPermissionAndSaveToken = async (
       const { getMessaging, getToken, isSupported } = await import('firebase/messaging');
       const supported = await isSupported().catch(() => false);
 
-      if (supported && swReg) {
+      if (supported && registration) {
         const messaging = getMessaging(app);
-        // Tente de récupérer le token FCM
-        const token = await getToken(messaging, {
-          serviceWorkerRegistration: swReg,
-        }).catch((err) => {
+        const vapidKey = (import.meta as any).env?.VITE_FIREBASE_VAPID_KEY;
+        const getTokenOptions: { serviceWorkerRegistration: ServiceWorkerRegistration; vapidKey?: string } = {
+          serviceWorkerRegistration: registration,
+        };
+        if (vapidKey && typeof vapidKey === 'string' && vapidKey.trim()) {
+          getTokenOptions.vapidKey = vapidKey.trim();
+        }
+
+        const token = await getToken(messaging, getTokenOptions).catch((err) => {
           console.warn('FCM getToken note (fallback client token):', err);
           return null;
         });
@@ -249,8 +257,8 @@ export const triggerDirectNotification = async (options: {
     return;
   }
 
-  const icon = options.icon || '/LOGOPRO.png';
-  const tag = options.tag || ('erouama-notif-' + Date.now());
+  const icon = options.icon || '/icon-192.png';
+  const tag = options.tag || 'erouama-notification';
 
   // Tenter via le Service Worker registration en premier pour un affichage système natif
   try {
@@ -260,13 +268,14 @@ export const triggerDirectNotification = async (options: {
         await reg.showNotification(options.title, {
           body: options.body,
           icon: icon,
-          badge: '/LOGOPRO.png',
+          badge: '/icon-192.png',
           tag: tag,
-          vibrate: [300, 150, 300, 150, 400],
+          vibrate: [200, 100, 200],
           requireInteraction: true,
           silent: false,
           data: {
             url: options.url || '/',
+            click_action: options.url || '/',
             priority: 'high',
             sound: 'default',
             requireInteraction: true,
@@ -286,11 +295,12 @@ export const triggerDirectNotification = async (options: {
     const notif = new Notification(options.title, {
       body: options.body,
       icon: icon,
-      badge: '/LOGOPRO.png',
+      badge: '/icon-192.png',
       tag: tag,
       requireInteraction: true,
       data: {
         url: options.url || '/',
+        click_action: options.url || '/',
         priority: 'high',
         sound: 'default',
         requireInteraction: true,
@@ -479,15 +489,48 @@ export const dispatchPushNotification = async (options: PushDispatchOptions) => 
       excludedUserId,
     });
 
+    // Construction du format natif FCM HTTP v1 haute priorité Android / WebPush
+    const buildFcmHttpV1Message = (token?: string) => ({
+      ...(token ? { token } : {}),
+      notification: {
+        title: formattedTitle,
+        body: options.body,
+      },
+      android: {
+        priority: 'high',
+        notification: {
+          channel_id: 'default',
+          sound: 'default',
+          default_vibrate_timings: true,
+        },
+      },
+      webpush: {
+        headers: {
+          Urgency: 'high',
+        },
+        notification: {
+          requireInteraction: true,
+        },
+      },
+      data: {
+        click_action: options.url || '/',
+        title: formattedTitle,
+        body: options.body,
+        url: options.url || '/',
+        senderRole: options.senderRole || '',
+        senderName: options.senderName || '',
+      },
+    });
+
     const payload = {
       title: formattedTitle,
       body: options.body,
-      icon: '/LOGOPRO.png',
-      badge: '/LOGOPRO.png',
+      icon: '/icon-192.png',
+      badge: '/icon-192.png',
       priority: 'high',
       sound: 'default',
       requireInteraction: true,
-      vibrate: [300, 150, 300, 150, 400],
+      vibrate: [200, 100, 200],
       senderRole: options.senderRole || '',
       senderName: options.senderName || '',
       targetRole: options.targetRole || 'ALL',
@@ -498,21 +541,21 @@ export const dispatchPushNotification = async (options: PushDispatchOptions) => 
       fcmTokens: targetTokens,
       type: options.type,
       url: options.url || '/',
+      message: buildFcmHttpV1Message(targetTokens[0] || ''),
+      messages: targetTokens.map(token => buildFcmHttpV1Message(token)),
       notification: {
         title: formattedTitle,
         body: options.body,
-        icon: '/LOGOPRO.png',
-        badge: '/LOGOPRO.png',
+        icon: '/icon-192.png',
+        badge: '/icon-192.png',
         sound: 'default',
       },
       android: {
         priority: 'high',
         notification: {
+          channel_id: 'default',
           sound: 'default',
-          channelId: 'erouama_notifications',
-          priority: 'high',
-          defaultSound: true,
-          defaultVibrateTimings: true,
+          default_vibrate_timings: true,
         },
       },
       webpush: {
@@ -521,9 +564,13 @@ export const dispatchPushNotification = async (options: PushDispatchOptions) => 
         },
         notification: {
           requireInteraction: true,
-          sound: 'default',
-          vibrate: [300, 150, 300, 150, 400],
         },
+      },
+      data: {
+        click_action: options.url || '/',
+        title: formattedTitle,
+        body: options.body,
+        url: options.url || '/',
       },
       metadata: {
         priority: 'high',

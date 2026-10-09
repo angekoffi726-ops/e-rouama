@@ -1,8 +1,9 @@
 /* eslint-disable no-undef */
-// Service Worker Firebase Cloud Messaging officiel E-ROUAMA (Web Push style Wave / WhatsApp)
+// Service Worker Firebase Cloud Messaging officiel E-ROUAMA
+// Notifications Push en arrière-plan (Background PWA / Android)
 
-importScripts('https://www.gstatic.com/firebasejs/10.14.0/firebase-app-compat.js');
-importScripts('https://www.gstatic.com/firebasejs/10.14.0/firebase-messaging-compat.js');
+importScripts('https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js');
+importScripts('https://www.gstatic.com/firebasejs/9.22.0/firebase-messaging-compat.js');
 
 // Configuration Firebase E-ROUAMA
 const firebaseConfig = {
@@ -18,65 +19,46 @@ try {
   firebase.initializeApp(firebaseConfig);
   const messaging = firebase.messaging();
 
-  // Écouteur des notifications en arrière-plan lorsque l'application est fermée ou minimisée
+  // Écouteur de messages en arrière-plan FCM
   messaging.onBackgroundMessage((payload) => {
-    console.log('[E-ROUAMA SW] Notification reçue en arrière-plan:', payload);
-
-    const title = payload.notification?.title || payload.data?.title || 'E-ROUAMA : Nouvelle Notification';
-    const body = payload.notification?.body || payload.data?.body || 'Vous avez reçu un nouveau message sur E-ROUAMA.';
-    const icon = payload.notification?.icon || payload.data?.icon || '/LOGOPRO.png';
-    const badge = '/LOGOPRO.png';
-    const tag = payload.data?.tag || ('erouama-push-' + Date.now());
-
+    console.log('[E-ROUAMA SW] Message reçu en arrière-plan:', payload);
+    const notificationTitle = payload.notification?.title || payload.data?.title || 'E-ROUAMA';
     const notificationOptions = {
-      body: body,
-      icon: icon,
-      badge: badge,
-      tag: tag,
-      vibrate: [300, 150, 300, 150, 400],
+      body: payload.notification?.body || payload.data?.body || '',
+      icon: '/icon-192.png',
+      badge: '/icon-192.png',
+      vibrate: [200, 100, 200],
+      tag: 'erouama-notification',
       requireInteraction: true,
-      priority: 'high',
-      sound: 'default',
-      data: {
-        url: payload.data?.url || payload.fcmOptions?.link || '/',
-        priority: 'high',
-        sound: 'default',
-        requireInteraction: true,
-        ...payload.data
-      },
-      actions: [
-        { action: 'open', title: 'Ouvrir E-ROUAMA' }
-      ]
+      data: payload.data || { url: '/' }
     };
-
-    return self.registration.showNotification(title, notificationOptions);
+    return self.registration.showNotification(notificationTitle, notificationOptions);
   });
 } catch (err) {
-  console.warn('[E-ROUAMA SW] Initialisation Firebase Messaging compat non supportée:', err);
+  console.warn('[E-ROUAMA SW] Erreur initialisation Firebase Messaging:', err);
 }
 
-// Écouteur natif d'événements Push (Web Push standard)
+// Écouteur natif d'événements Push (Web Push standard / Android background fallback)
 self.addEventListener('push', (event) => {
   if (!event.data) return;
 
   try {
-    const data = event.data.json();
-    const title = data.title || data.notification?.title || 'E-ROUAMA';
-    const body = data.body || data.notification?.body || 'Nouvelle mise à jour disponible.';
-    const icon = data.icon || data.notification?.icon || '/LOGOPRO.png';
-    const tag = data.tag || ('erouama-webpush-' + Date.now());
+    const payload = event.data.json();
+    const title = payload.notification?.title || payload.data?.title || payload.title || 'E-ROUAMA';
+    const body = payload.notification?.body || payload.data?.body || payload.body || '';
+    const icon = '/icon-192.png';
+    const badge = '/icon-192.png';
+    const tag = payload.data?.tag || payload.tag || 'erouama-notification';
 
     event.waitUntil(
       self.registration.showNotification(title, {
         body: body,
         icon: icon,
-        badge: '/LOGOPRO.png',
+        badge: badge,
+        vibrate: [200, 100, 200],
         tag: tag,
-        vibrate: [300, 150, 300, 150, 400],
         requireInteraction: true,
-        priority: 'high',
-        sound: 'default',
-        data: data.data || { url: '/' }
+        data: payload.data || { url: '/' }
       })
     );
   } catch (e) {
@@ -84,22 +66,22 @@ self.addEventListener('push', (event) => {
     event.waitUntil(
       self.registration.showNotification('E-ROUAMA', {
         body: rawText,
-        icon: '/LOGOPRO.png',
-        badge: '/LOGOPRO.png',
-        vibrate: [200, 100, 200]
+        icon: '/icon-192.png',
+        badge: '/icon-192.png',
+        vibrate: [200, 100, 200],
+        tag: 'erouama-notification'
       })
     );
   }
 });
 
-// Écouteur de clic sur la notification
+// Écouteur de clic sur la notification (redirige l'utilisateur vers la PWA)
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
-  const targetUrl = event.notification.data?.url || '/';
+  const targetUrl = event.notification.data?.url || event.notification.data?.click_action || '/';
 
   event.waitUntil(
     clients.matchAll({ type: 'window', includeUncontrolled: true }).then((windowClients) => {
-      // Si une fenêtre est déjà ouverte, la focaliser
       for (const client of windowClients) {
         if ('focus' in client) {
           client.focus();
@@ -109,7 +91,6 @@ self.addEventListener('notificationclick', (event) => {
           return;
         }
       }
-      // Sinon, ouvrir une nouvelle fenêtre
       if (clients.openWindow) {
         return clients.openWindow(targetUrl);
       }
@@ -117,7 +98,7 @@ self.addEventListener('notificationclick', (event) => {
   );
 });
 
-// Écouteur de messages inter-fenêtres / foreground trigger et SKIP_WAITING
+// Écouteur SKIP_WAITING et messages inter-processus
 self.addEventListener('message', (event) => {
   if (!event.data) return;
 
@@ -130,16 +111,21 @@ self.addEventListener('message', (event) => {
     const { title, body, icon, tag, data } = event.data;
     self.registration.showNotification(title || 'E-ROUAMA', {
       body: body || '',
-      icon: icon || '/LOGOPRO.png',
-      badge: '/LOGOPRO.png',
-      tag: tag || ('erouama-msg-' + Date.now()),
-      vibrate: [300, 150, 300],
+      icon: icon || '/icon-192.png',
+      badge: '/icon-192.png',
+      tag: tag || 'erouama-notification',
+      vibrate: [200, 100, 200],
+      requireInteraction: true,
       data: data || { url: '/' }
     });
   }
 });
 
-// Activation et prise de contrôle immédiate
+// Installation et activation immédiate
+self.addEventListener('install', (event) => {
+  self.skipWaiting();
+});
+
 self.addEventListener('activate', (event) => {
   event.waitUntil(clients.claim());
 });
