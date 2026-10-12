@@ -17,8 +17,14 @@ service cloud.firestore {
       allow read, write: if true;
     }
 
-    // 3. Membres de l'association
+    // 3. Membres de l'association & sous-collection cotisations
     match /members/{memberId} {
+      allow read, write: if true;
+      match /cotisations/{cotId} {
+        allow read, write: if true;
+      }
+    }
+    match /cotisations/{cotId} {
       allow read, write: if true;
     }
 
@@ -99,6 +105,9 @@ service cloud.firestore {
     }
     match /users/{userId} {
       allow read, write: if true;
+      match /cotisations/{cotId} {
+        allow read, write: if true;
+      }
     }
 
     // 18. Suivi du Programme & Alertes Auditeur (SDP)

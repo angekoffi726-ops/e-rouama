@@ -1555,12 +1555,16 @@ export const AdminPortal: React.FC = () => {
         }
       }
 
-      // EXIGENCE 3 : NORMALISATION DU STATUT LORS DE LA VALIDATION :
-      // { status: 'validated', isValidated: true, validatedAt: new Date() }
+      // EXIGENCE 1 : NORMALISATION DU STATUT LORS DE LA VALIDATION (de 'en_attente' à 'valide') :
       const validationPayload = {
-        status: 'validated',
+        status: 'valide',
+        statut: 'valide',
+        statutDemande: 'valide',
+        statusLabel: 'Validé',
         isValidated: true,
-        validatedAt: new Date(),
+        isApproved: true,
+        validatedAt: new Date().toISOString(),
+        approvedAt: new Date().toISOString(),
       };
 
       // 1. Enregistrement direct et persistant dans 'payments'

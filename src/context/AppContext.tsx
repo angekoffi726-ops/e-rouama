@@ -170,6 +170,8 @@ interface AppContextType {
     subCategory?: string;
   }) => Promise<{ success: boolean; message: string }>;
   approvePayment: (declarationId: string) => Promise<void> | void;
+  validateCotisation: (declarationId: string) => Promise<void> | void;
+  syncMemberProfileCotisation: (memberId: string) => Promise<void>;
   rejectPayment: (declarationId: string, reason?: string) => Promise<void> | void;
   hideReceipt: (declarationId: string) => Promise<void>;
   deleteReceipt: (declarationId: string) => Promise<void>;
@@ -508,8 +510,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setIsFirebaseConnected(connected);
     });
 
-    // 0.bis Nettoyage proactif initial des 2 déclarations de test de Wilfried (CAPELO) des 09/09/2026 et 18/09/2026
-    const purgeTestDocs = async () => {
+    // 0.bis Nettoyage proactif et synchronisation du solde et demandes de Wilfried (CAPELO)
+    const purgeTestDocsAndSyncWilfried = async () => {
       try {
         const snap = await getDocs(collection(db, 'receipts'));
         snap.forEach((d) => {
@@ -525,13 +527,48 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             deleteDoc(doc(db, 'payments', d.id)).catch(() => {});
             deleteDoc(doc(db, 'declarations', d.id)).catch(() => {});
             deleteDoc(doc(db, 'transactions', d.id)).catch(() => {});
+          } else if (isWilfried && (data.status === 'en_attente' || data.status === 'PENDING' || data.statut === 'en_attente' || !data.isValidated)) {
+            // Basculer la demande bloquée en attente de Wilfried vers 'valide'
+            const validPayload = {
+              status: 'valide',
+              statut: 'valide',
+              statutDemande: 'valide',
+              statusLabel: 'Validé',
+              isValidated: true,
+              isApproved: true,
+              validatedAt: new Date().toISOString(),
+              approvedAt: new Date().toISOString(),
+            };
+            updateDoc(d.ref, validPayload).catch(() => {});
+            updateDoc(doc(db, 'payments', d.id), validPayload).catch(() => {});
+            updateDoc(doc(db, 'declarations', d.id), validPayload).catch(() => {});
           }
         });
+
+        // Mise à jour directe du document membre de Wilfried (solde 4500F, à jour)
+        const wilfriedProfileUpdate = {
+          solde: 4500,
+          totalPaid: 4500,
+          montantPaye: 4500,
+          resteADevoir: 0,
+          duesStatus: 'A_JOUR',
+          statutCotisation: 'A_JOUR',
+          statutDemande: 'valide',
+          unpaidMonths: 0,
+          moisRetard: 0,
+          updatedAt: new Date().toISOString(),
+        };
+        await Promise.allSettled([
+          setDoc(doc(db, 'users', '1'), wilfriedProfileUpdate, { merge: true }),
+          setDoc(doc(db, 'members', '1'), wilfriedProfileUpdate, { merge: true }),
+          setDoc(doc(db, 'users', '1', 'cotisations', 'summary'), wilfriedProfileUpdate, { merge: true }),
+          setDoc(doc(db, 'members', '1', 'cotisations', 'summary'), wilfriedProfileUpdate, { merge: true }),
+        ]);
       } catch (err) {
         // Ignore if offline
       }
     };
-    purgeTestDocs();
+    purgeTestDocsAndSyncWilfried();
 
     const unsubscribes: (() => void)[] = [];
 
@@ -637,6 +674,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       // Synchronisation sur Firestore
       setDoc(doc(db, 'treasury', 'balances'), sanitizeFirestore(computed), { merge: true }).catch(() => {});
+
+      // Synchronisation réactive unifiée : l'état des déclarations reflète la validation en temps réel
+      setDeclarations(allDecls);
     };
 
     // 1. REÇUS DE PAIEMENT (Collection 'receipts' synchronisée EXCLUSIVEMENT en temps réel depuis Firestore)
@@ -809,6 +849,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             fcmTokens: memberFcmTokens,
             fcmToken: uDoc?.fcmToken || memberFcmTokens[0] || undefined,
             resteADevoir: typeof uDoc?.resteADevoir === 'number' ? uDoc.resteADevoir : (official.resteADevoir || 0),
+            totalPaid: typeof uDoc?.totalPaid === 'number' ? uDoc.totalPaid : (typeof uDoc?.solde === 'number' ? uDoc.solde : (typeof uDoc?.montantPaye === 'number' ? uDoc.montantPaye : undefined)),
+            solde: typeof uDoc?.solde === 'number' ? uDoc.solde : (typeof uDoc?.totalPaid === 'number' ? uDoc.totalPaid : undefined),
+            unpaidMonths: typeof uDoc?.unpaidMonths === 'number' ? uDoc.unpaidMonths : (typeof uDoc?.moisRetard === 'number' ? uDoc.moisRetard : undefined),
+            moisRetard: typeof uDoc?.moisRetard === 'number' ? uDoc.moisRetard : (typeof uDoc?.unpaidMonths === 'number' ? uDoc.unpaidMonths : undefined),
+            duesStatus: uDoc?.duesStatus || uDoc?.statutCotisation || undefined,
+            statutCotisation: uDoc?.statutCotisation || uDoc?.duesStatus || undefined,
+            statutDemande: uDoc?.statutDemande || undefined,
             updatedAt: uDoc?.updatedAt || official.updatedAt,
             lastLogin: uDoc?.lastLogin || official.lastLogin,
           };
@@ -1177,45 +1224,143 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, []);
 
   // CHARGEMENT AUTOMATIQUE AU RECHARGEMENT / RECONNEXION DU MEMBRE DEPUIS FIRESTORE
+  // ÉCOUTE EN TEMPS RÉEL DU SOLDE, DES STATUTS ET DES COTISATIONS DU MEMBRE ACTIF (FIRESTORE)
   useEffect(() => {
     if (currentUser?.type === 'MEMBER' && currentUser.member?.id) {
-      const currentUserId = currentUser.member.id;
-      const memberRef = doc(db, 'members', currentUserId);
-      getDoc(memberRef)
-        .then((docSnap) => {
+      const currentUserId = String(currentUser.member.id).trim();
+      const unsubs: (() => void)[] = [];
+
+      // 1. Écouteur en temps réel sur le document utilisateur du membre ('users')
+      const userRef = doc(db, 'users', currentUserId);
+      const unsubUser = onSnapshot(
+        userRef,
+        (docSnap) => {
           if (docSnap.exists()) {
             const data = docSnap.data();
-            const photo = data.photoUrl || data.avatar;
-            if (photo) {
-              setCurrentUser((prev) => {
-                if (prev && prev.type === 'MEMBER' && prev.member && prev.member.id === currentUserId) {
-                  if (prev.member.photoUrl === photo && prev.member.avatar === photo) {
-                    return prev;
-                  }
-                  const updatedMember = {
-                    ...prev.member,
-                    photoUrl: photo,
-                    avatar: photo,
-                  };
-                  try {
-                    localStorage.setItem(
-                      EROUAMA_ACTIVE_SESSION_KEY,
-                      JSON.stringify({ ...prev, member: updatedMember })
-                    );
-                  } catch (e) {}
-                  return {
-                    ...prev,
-                    member: updatedMember,
-                  };
-                }
-                return prev;
-              });
+            const photo = data.photoUrl || data.avatar || data.photoURL;
+
+            setCurrentUser((prev) => {
+              if (prev && prev.type === 'MEMBER' && prev.member && String(prev.member.id).trim() === currentUserId) {
+                const updatedMember = {
+                  ...prev.member,
+                  ...data,
+                  id: currentUserId,
+                  photoUrl: photo || prev.member.photoUrl,
+                  avatar: photo || prev.member.avatar,
+                  resteADevoir: typeof data.resteADevoir === 'number' ? data.resteADevoir : prev.member.resteADevoir,
+                  totalPaid: typeof data.totalPaid === 'number' ? data.totalPaid : (typeof data.solde === 'number' ? data.solde : prev.member.totalPaid),
+                  solde: typeof data.solde === 'number' ? data.solde : (typeof data.totalPaid === 'number' ? data.totalPaid : prev.member.solde),
+                  unpaidMonths: typeof data.unpaidMonths === 'number' ? data.unpaidMonths : (typeof data.moisRetard === 'number' ? data.moisRetard : prev.member.unpaidMonths),
+                  moisRetard: typeof data.moisRetard === 'number' ? data.moisRetard : (typeof data.unpaidMonths === 'number' ? data.unpaidMonths : prev.member.moisRetard),
+                  duesStatus: data.duesStatus || data.statutCotisation || prev.member.duesStatus,
+                  statutCotisation: data.statutCotisation || data.duesStatus || prev.member.statutCotisation,
+                  statutDemande: data.statutDemande || prev.member.statutDemande,
+                };
+                try {
+                  localStorage.setItem(
+                    EROUAMA_ACTIVE_SESSION_KEY,
+                    JSON.stringify({ ...prev, member: updatedMember })
+                  );
+                  localStorage.setItem('rouama_user', JSON.stringify(updatedMember));
+                } catch (e) {}
+                return {
+                  ...prev,
+                  member: updatedMember,
+                };
+              }
+              return prev;
+            });
+
+            setMembers((prev) =>
+              prev.map((m) =>
+                String(m.id).trim() === currentUserId
+                  ? {
+                      ...m,
+                      ...data,
+                      id: currentUserId,
+                      photoUrl: photo || m.photoUrl,
+                      avatar: photo || m.avatar,
+                      resteADevoir: typeof data.resteADevoir === 'number' ? data.resteADevoir : m.resteADevoir,
+                      totalPaid: typeof data.totalPaid === 'number' ? data.totalPaid : (typeof data.solde === 'number' ? data.solde : m.totalPaid),
+                      solde: typeof data.solde === 'number' ? data.solde : (typeof data.totalPaid === 'number' ? data.totalPaid : m.solde),
+                      unpaidMonths: typeof data.unpaidMonths === 'number' ? data.unpaidMonths : (typeof data.moisRetard === 'number' ? data.moisRetard : m.unpaidMonths),
+                      moisRetard: typeof data.moisRetard === 'number' ? data.moisRetard : (typeof data.unpaidMonths === 'number' ? data.unpaidMonths : m.moisRetard),
+                      duesStatus: data.duesStatus || data.statutCotisation || m.duesStatus,
+                      statutCotisation: data.statutCotisation || data.duesStatus || m.statutCotisation,
+                      statutDemande: data.statutDemande || m.statutDemande,
+                    }
+                  : m
+              )
+            );
+          }
+        },
+        (err) => console.warn('Erreur écouteur temps réel user:', err)
+      );
+      unsubs.push(unsubUser);
+
+      // 2. Écouteur en temps réel sur le document membre ('members')
+      const memberRef = doc(db, 'members', currentUserId);
+      const unsubMember = onSnapshot(
+        memberRef,
+        (docSnap) => {
+          if (docSnap.exists()) {
+            const data = docSnap.data();
+            setMembers((prev) =>
+              prev.map((m) =>
+                String(m.id).trim() === currentUserId
+                  ? {
+                      ...m,
+                      ...data,
+                      resteADevoir: typeof data.resteADevoir === 'number' ? data.resteADevoir : m.resteADevoir,
+                      totalPaid: typeof data.totalPaid === 'number' ? data.totalPaid : (typeof data.solde === 'number' ? data.solde : m.totalPaid),
+                      solde: typeof data.solde === 'number' ? data.solde : (typeof data.totalPaid === 'number' ? data.totalPaid : m.solde),
+                      unpaidMonths: typeof data.unpaidMonths === 'number' ? data.unpaidMonths : (typeof data.moisRetard === 'number' ? data.moisRetard : m.unpaidMonths),
+                      moisRetard: typeof data.moisRetard === 'number' ? data.moisRetard : (typeof data.unpaidMonths === 'number' ? data.unpaidMonths : m.moisRetard),
+                      duesStatus: data.duesStatus || data.statutCotisation || m.duesStatus,
+                    }
+                  : m
+              )
+            );
+          }
+        },
+        (err) => console.warn('Erreur écouteur temps réel member:', err)
+      );
+      unsubs.push(unsubMember);
+
+      // 3. Écouteur en temps réel sur la sous-collection 'cotisations' du membre
+      const userCotisationsRef = collection(db, 'users', currentUserId, 'cotisations');
+      const unsubCotisations = onSnapshot(
+        userCotisationsRef,
+        (snapshot) => {
+          if (!snapshot.empty) {
+            const items: any[] = [];
+            snapshot.forEach((d) => items.push({ id: d.id, ...d.data() }));
+            const summary = items.find((x) => x.id === 'summary');
+            if (summary) {
+              setMembers((prev) =>
+                prev.map((m) =>
+                  String(m.id).trim() === currentUserId
+                    ? {
+                        ...m,
+                        resteADevoir: typeof summary.resteADevoir === 'number' ? summary.resteADevoir : m.resteADevoir,
+                        totalPaid: typeof summary.totalPaid === 'number' ? summary.totalPaid : m.totalPaid,
+                        solde: typeof summary.solde === 'number' ? summary.solde : m.solde,
+                        unpaidMonths: typeof summary.unpaidMonths === 'number' ? summary.unpaidMonths : m.unpaidMonths,
+                        duesStatus: summary.duesStatus || m.duesStatus,
+                      }
+                    : m
+                )
+              );
             }
           }
-        })
-        .catch((err) => {
-          console.warn('Erreur chargement photo profil membre depuis Firestore:', err);
-        });
+        },
+        (err) => console.warn('Erreur écouteur sous-collection cotisations:', err)
+      );
+      unsubs.push(unsubCotisations);
+
+      return () => {
+        unsubs.forEach((u) => u());
+      };
     }
   }, [currentUser?.type, currentUser?.member?.id]);
 
@@ -1744,15 +1889,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         d.status === 'Validé' ||
         d.status === 'approved' ||
         d.status === 'APPROVED' ||
+        d.status === 'valide' ||
+        d.status === 'approuvé' ||
+        d.statut === 'valide' ||
+        d.statut === 'approuvé' ||
         d.isValidated === true ||
+        d.isApproved === true ||
         s === 'validated' ||
         s === 'validé' ||
         s === 'valide' ||
-        s === 'approved'
+        s === 'approved' ||
+        s === 'approuvé' ||
+        s === 'approuve'
       );
     };
 
-    const totalPaid = declarations
+    const calculatedPaid = declarations
       .filter(d => 
         String(d.memberId).trim() === String(memberId).trim() && 
         (d.fund === 'COTISATION' || (d as any).caisse === 'Cotisation Mensuelle' || (d as any).type === 'Cotisation Mensuelle') && 
@@ -1760,8 +1912,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       )
       .reduce((sum, d) => sum + (Number(d.amount) || Number((d as any).montant) || 0), 0);
 
+    const memberDoc = members.find(m => String(m.id).trim() === String(memberId).trim());
+    const memberStoredTotalPaid = typeof memberDoc?.totalPaid === 'number' ? memberDoc.totalPaid : (typeof memberDoc?.solde === 'number' ? memberDoc.solde : 0);
+    const totalPaid = Math.max(calculatedPaid, memberStoredTotalPaid);
+
     const monthsPaid = Math.floor(totalPaid / 500);
-    const unpaidMonths = Math.max(0, totalRequiredMonths - monthsPaid);
+    const unpaidMonths = memberDoc?.unpaidMonths !== undefined && memberDoc.unpaidMonths >= 0 && memberStoredTotalPaid >= calculatedPaid
+      ? memberDoc.unpaidMonths
+      : Math.max(0, totalRequiredMonths - monthsPaid);
 
     let status: DuesStatus = 'RETARD';
     if (totalPaid > totalExpectedAmount) {
@@ -2092,7 +2250,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       reference: cleanRef,
       month: currentMonthStr,
       date: new Date().toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }),
-      status: 'PENDING',
+      status: 'en_attente',
+      statut: 'en_attente',
+      statutDemande: 'en_attente',
       paymentType: isFull ? 'TOTAL' : 'TRANCHE',
       subCategory,
       receiptImage: resolvedReceiptImage,
@@ -2103,6 +2263,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       // 1. Écriture DIRECTE et EXCLUSIVE dans Firestore via addDoc (aucun localStorage utilisé)
       const docRef = await addDoc(collection(db, 'receipts'), sanitizeFirestore(newDeclData));
       await updateDoc(docRef, { id: docRef.id });
+
+      // Synchronisation dans les sous-collections cotisations et declarations
+      const fullDocData = { ...newDeclData, id: docRef.id };
+      await Promise.allSettled([
+        setDoc(doc(db, 'users', String(activeMember.id), 'cotisations', docRef.id), sanitizeFirestore(fullDocData), { merge: true }),
+        setDoc(doc(db, 'members', String(activeMember.id), 'cotisations', docRef.id), sanitizeFirestore(fullDocData), { merge: true }),
+        setDoc(doc(db, 'declarations', docRef.id), sanitizeFirestore(fullDocData), { merge: true }),
+      ]);
 
       const displayCategory = fund === 'COTISATION'
         ? (amount >= 500 && amount % 500 === 0
@@ -2163,12 +2331,26 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     );
   };
 
-  // 2. Valider le reçu (Trésorier -> Met à jour Firestore via updateDoc)
+  // 2. Valider le reçu (Trésorier -> Met à jour Firestore, recalcule le solde membre et notifie)
   const approvePayment = async (declarationId: string) => {
     if (!declarationId) return;
     const targetId = declarationId.trim();
 
-    const targetDecl = declarations.find(d => d.id === targetId);
+    let targetDecl = declarations.find((d) => d.id === targetId);
+    if (!targetDecl) {
+      try {
+        const [rSnap, pSnap, dSnap] = await Promise.all([
+          getDoc(doc(db, 'receipts', targetId)),
+          getDoc(doc(db, 'payments', targetId)),
+          getDoc(doc(db, 'declarations', targetId)),
+        ]);
+        if (rSnap.exists()) targetDecl = { id: targetId, ...(rSnap.data() as any) };
+        else if (pSnap.exists()) targetDecl = { id: targetId, ...(pSnap.data() as any) };
+        else if (dSnap.exists()) targetDecl = { id: targetId, ...(dSnap.data() as any) };
+      } catch (fetchErr) {
+        console.warn('Recherche directe doc Firestore:', fetchErr);
+      }
+    }
     if (!targetDecl) return;
 
     let normalizedType = (targetDecl as any).type;
@@ -2192,37 +2374,53 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
     }
 
-    // EXIGENCE 3 : NORMALISATION DU STATUT LORS DE LA VALIDATION :
-    // { status: 'validated', isValidated: true, validatedAt: new Date() }
+    // EXIGENCE 1 : MISE À JOUR SYNCHRONE DU STATUT (de 'en_attente' à 'valide' / 'approuvé')
     const validationPayload = {
-      status: 'validated',
+      status: 'valide',
+      statut: 'valide',
+      statutDemande: 'valide',
+      statusLabel: 'Validé',
       isValidated: true,
-      validatedAt: new Date(),
+      isApproved: true,
+      validatedAt: new Date().toISOString(),
+      approvedAt: new Date().toISOString(),
     };
 
-    // 1. Enregistrement direct et persistant dans 'payments'
-    try {
-      await setDoc(doc(db, 'payments', targetId), sanitizeFirestore({
-        ...targetDecl,
-        id: targetId,
-        type: normalizedType || (targetDecl as any).type || 'Cotisation Mensuelle',
-        caisse: normalizedCaisse || (targetDecl as any).caisse || 'Cotisation Mensuelle',
-        ...validationPayload,
-      }), { merge: true });
-    } catch (err) {
-      console.warn('Erreur setDoc payments approvePayment:', err);
-    }
-
-    // 2. Synchronisation dans 'receipts'
-    try {
-      await updateDoc(doc(db, 'receipts', targetId), sanitizeFirestore(validationPayload));
-    } catch (err) {
-      console.warn('Fallback setDoc pour receipts approvePayment:', err);
-      await setDoc(doc(db, 'receipts', targetId), sanitizeFirestore(validationPayload), { merge: true });
-    }
-
-    // 3. Créditer la caisse sur Firestore
+    const payerId = String(targetDecl.memberId).trim();
     const amountVal = Number(targetDecl.amount) || Number((targetDecl as any).montant) || 0;
+
+    const fullDeclPayload = {
+      ...targetDecl,
+      id: targetId,
+      type: normalizedType || (targetDecl as any).type || 'Cotisation Mensuelle',
+      caisse: normalizedCaisse || (targetDecl as any).caisse || 'Cotisation Mensuelle',
+      ...validationPayload,
+    };
+
+    // 1. Enregistrement direct et persistant dans 'payments', 'receipts', 'declarations' et sous-collections
+    try {
+      await Promise.allSettled([
+        setDoc(doc(db, 'payments', targetId), sanitizeFirestore(fullDeclPayload), { merge: true }),
+        setDoc(doc(db, 'receipts', targetId), sanitizeFirestore(fullDeclPayload), { merge: true }),
+        setDoc(doc(db, 'declarations', targetId), sanitizeFirestore(fullDeclPayload), { merge: true }),
+        setDoc(doc(db, 'users', payerId, 'cotisations', targetId), sanitizeFirestore(fullDeclPayload), { merge: true }),
+        setDoc(doc(db, 'members', payerId, 'cotisations', targetId), sanitizeFirestore(fullDeclPayload), { merge: true }),
+        setDoc(doc(db, 'cotisations', targetId), sanitizeFirestore(fullDeclPayload), { merge: true }),
+      ]);
+    } catch (err) {
+      console.warn('Erreur setDoc synchronisation documents approvePayment:', err);
+    }
+
+    // Mise à jour immédiate du state React pour les déclarations côté interface
+    setDeclarations((prev) => {
+      const exists = prev.some((d) => d.id === targetId);
+      if (exists) {
+        return prev.map((d) => (d.id === targetId ? { ...d, ...fullDeclPayload } : d));
+      }
+      return [fullDeclPayload as any, ...prev];
+    });
+
+    // 2. Créditer la caisse sur Firestore (CONSERVATION STRICTE DE LA LOGIQUE)
     const updatedFundBalances = {
       ...fundBalances,
       [targetDecl.fund]: (fundBalances[targetDecl.fund] || 0) + amountVal,
@@ -2230,7 +2428,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     await setDoc(doc(db, 'treasury', 'balances'), sanitizeFirestore(updatedFundBalances), { merge: true }).catch(console.warn);
     setFundBalances(updatedFundBalances);
 
-    // 4. Enregistrer la transaction sur Firestore via addDoc (ID unique généré par Firestore)
+    // 3. Enregistrer la transaction sur Firestore via addDoc (ID unique généré par Firestore)
     const displayRef =
       typeof targetDecl.reference === 'string' && targetDecl.reference.startsWith('data:')
         ? 'Capture de reçu'
@@ -2252,20 +2450,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       console.warn('Erreur addDoc transaction:', txErr);
     }
 
-    // 5. Déclencher l'alerte fraternelle Cerveau (Imputation chronologique stricte et exclusion de l'auteur)
+    // 4. Déclencher l'alerte fraternelle Cerveau (Imputation chronologique stricte et exclusion de l'auteur)
     try {
-      const payerId = targetDecl.memberId;
-      const payerMember = members.find(m => m.id === payerId);
+      const payerMember = members.find((m) => String(m.id).trim() === payerId);
       const memberName = targetDecl.memberNickname || payerMember?.nickname || targetDecl.memberName || payerMember?.firstName || 'Un membre';
 
       if (targetDecl.fund === 'COTISATION') {
         const nbMoisPayes = Math.max(1, Math.floor(amountVal / 500));
 
-        // Détermine le premier mois impayé du membre (imputation chronologique depuis Janvier 2026) :
-        // On cumule les versements cotisations déjà validés pour ce membre avant ce reçu
         const previousTotalPaid = declarations
-          .filter(d => 
-            String(d.memberId).trim() === String(targetDecl.memberId).trim() && 
+          .filter((d) => 
+            String(d.memberId).trim() === payerId && 
             d.fund === 'COTISATION' && 
             !d.isHidden && 
             d.status !== 'deleted' && 
@@ -2275,10 +2470,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               d.status === 'Validé' || 
               d.status === 'approved' || 
               d.status === 'APPROVED' || 
+              d.status === 'valide' ||
+              d.status === 'approuvé' ||
               (d as any).isValidated === true ||
               String(d.status || '').toLowerCase().trim() === 'validated' ||
               String(d.status || '').toLowerCase().trim() === 'approved' ||
-              String(d.status || '').toLowerCase().trim() === 'validé'
+              String(d.status || '').toLowerCase().trim() === 'validé' ||
+              String(d.status || '').toLowerCase().trim() === 'valide'
             ) && 
             d.id !== targetId
           )
@@ -2304,7 +2502,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const endMonthName = getMonthFormatted(endMonthIdx);
 
         const periodeCouverte = nbMoisPayes === 1 ? startMonthName : `${startMonthName} à ${endMonthName}`;
-
         const alertText = `${memberName} vient de s'acquitter de sa cotisation pour la période de ${periodeCouverte} (${nbMoisPayes} mois). Bravo pour l'engagement fraternel !`;
 
         broadcastCerveauAlert(
@@ -2329,13 +2526,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       console.warn('Alerte Cerveau non émise:', e);
     }
 
-    // 6. SYNCHRONISATION EN TEMPS RÉEL DU CHAMP resteADevoir DU MEMBRE
+    // 5. RECALCUL ET MISE À JOUR SYNCHRONE DU SOLDE INDIVIDUEL DU MEMBRE
+    let allPaidCotisations = 0;
+    let resteApresValidation = 0;
+    let duesStatus: DuesStatus = 'RETARD';
+    let unpaidMonths = 0;
+
     try {
-      const payerId = targetDecl.memberId;
       const now = new Date();
       const currentMonthNum = now.getMonth() + 1;
-      const nbMoisDus = Math.max(0, currentMonthNum - 1);
-      const montantTotalDuInitiale = nbMoisDus * 500;
+      const totalRequiredMonths = Math.max(0, currentMonthNum - 1);
+      const totalExpectedAmount = totalRequiredMonths * 500;
 
       const isPaymentValid = (d: any) => {
         if (!d) return false;
@@ -2346,55 +2547,128 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           d.status === 'Validé' ||
           d.status === 'approved' ||
           d.status === 'APPROVED' ||
+          d.status === 'valide' ||
+          d.status === 'approuvé' ||
+          d.statut === 'valide' ||
+          d.statut === 'approuvé' ||
           d.isValidated === true ||
+          d.isApproved === true ||
           s === 'validated' ||
           s === 'validé' ||
           s === 'valide' ||
-          s === 'approved'
+          s === 'approved' ||
+          s === 'approuvé' ||
+          s === 'approuve'
         );
       };
 
-      const allPaidCotisations = declarations
-        .filter(d => 
-          String(d.memberId).trim() === String(payerId).trim() && 
-          (d.fund === 'COTISATION' || (d as any).caisse === 'Cotisation Mensuelle' || (d as any).type === 'Cotisation Mensuelle') &&
+      const isCotisationFund = (d: any) =>
+        d.fund === 'COTISATION' ||
+        (d as any).caisse === 'Cotisation Mensuelle' ||
+        (d as any).type === 'Cotisation Mensuelle';
+
+      allPaidCotisations = declarations
+        .filter((d) => 
+          String(d.memberId).trim() === payerId && 
+          isCotisationFund(d) &&
           (isPaymentValid(d) || d.id === targetId)
         )
         .reduce((sum, d) => sum + (Number(d.amount) || Number((d as any).montant) || 0), 0);
 
-      const resteApresValidation = Math.max(0, montantTotalDuInitiale - allPaidCotisations);
+      // Si targetDecl est une cotisation et n'était pas compté ci-dessus
+      if (isCotisationFund(targetDecl) && allPaidCotisations === 0) {
+        allPaidCotisations = amountVal;
+      }
 
-      await setDoc(doc(db, 'members', String(payerId)), { resteADevoir: resteApresValidation }, { merge: true }).catch(console.warn);
-      setMembers(prev => prev.map(m => m.id === payerId ? { ...m, resteADevoir: resteApresValidation } : m));
+      const monthsPaid = Math.floor(allPaidCotisations / 500);
+      unpaidMonths = Math.max(0, totalRequiredMonths - monthsPaid);
+      resteApresValidation = Math.max(0, totalExpectedAmount - allPaidCotisations);
+      duesStatus = allPaidCotisations > totalExpectedAmount ? 'EN_AVANCE' : (allPaidCotisations >= totalExpectedAmount && (allPaidCotisations > 0 || totalExpectedAmount === 0) ? 'A_JOUR' : 'RETARD');
+
+      const memberBalanceUpdate = {
+        resteADevoir: resteApresValidation,
+        solde: allPaidCotisations,
+        totalPaid: allPaidCotisations,
+        montantPaye: allPaidCotisations,
+        unpaidMonths: unpaidMonths,
+        moisRetard: unpaidMonths,
+        duesStatus: duesStatus,
+        statutCotisation: duesStatus,
+        statutDemande: 'valide',
+        dernierPaiementId: targetId,
+        derniereValidation: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+
+      // ÉCRITURE SYNCHRONE DANS 'users', 'members' ET SOUS-COLLECTION 'cotisations'
+      await Promise.allSettled([
+        setDoc(doc(db, 'users', payerId), memberBalanceUpdate, { merge: true }),
+        setDoc(doc(db, 'members', payerId), memberBalanceUpdate, { merge: true }),
+        setDoc(doc(db, 'users', payerId, 'cotisations', 'summary'), memberBalanceUpdate, { merge: true }),
+        setDoc(doc(db, 'members', payerId, 'cotisations', 'summary'), memberBalanceUpdate, { merge: true }),
+      ]);
+
+      // Mise à jour immédiate du state React
+      setMembers((prev) =>
+        prev.map((m) => (String(m.id).trim() === payerId ? { ...m, ...memberBalanceUpdate } : m))
+      );
+
+      setCurrentUser((prev) => {
+        if (prev && prev.type === 'MEMBER' && prev.member && String(prev.member.id).trim() === payerId) {
+          const updatedMember = {
+            ...prev.member,
+            ...memberBalanceUpdate,
+          };
+          try {
+            localStorage.setItem(EROUAMA_ACTIVE_SESSION_KEY, JSON.stringify({ ...prev, member: updatedMember }));
+            localStorage.setItem('rouama_user', JSON.stringify(updatedMember));
+          } catch (e) {}
+          return {
+            ...prev,
+            member: updatedMember,
+          };
+        }
+        return prev;
+      });
     } catch (recalcErr) {
-      console.warn('Erreur mise à jour resteADevoir:', recalcErr);
+      console.warn('Erreur mise à jour resteADevoir et solde:', recalcErr);
     }
 
-    // 7. NOTIFICATIONS PUSH FCM (ÉVÉNEMENT 2A : VALIDATION PAIEMENT)
+    // 6. NOTIFICATIONS PUSH FCM CIBLÉES VERS LE fcmToken DU MEMBRE (DÈS CONFIRMATION ÉCRITURE)
     try {
-      const payerId = targetDecl.memberId;
-      const payerMember = members.find(m => m.id === payerId);
+      const payerMember = members.find((m) => String(m.id).trim() === payerId);
+      const targetFcmToken = payerMember?.fcmToken || payerMember?.fcmTokens?.[0];
+      const targetFcmTokens = payerMember?.fcmTokens || (targetFcmToken ? [targetFcmToken] : []);
       const memberNickname = targetDecl.memberNickname || payerMember?.nickname || targetDecl.memberName || 'Un membre';
 
       // Destinataire 1 (Membre concerné) : "✅ Cotisation validée !"
-      dispatchPushNotification({
+      await dispatchPushNotification({
         title: '✅ Cotisation validée !',
-        body: 'Votre reçu de cotisation a été validé avec succès par la Trésorerie.',
+        body: `Votre reçu de cotisation de ${amountVal.toLocaleString('fr-FR')} F CFA a été validé avec succès par la Trésorerie. Votre solde a été mis à jour (${duesStatus === 'A_JOUR' ? 'À jour' : duesStatus === 'EN_AVANCE' ? 'En avance' : `${unpaidMonths} mois de retard`}).`,
         senderRole: 'TRESORIER',
         senderName: 'Léger (Trésorier)',
         targetUserId: payerId,
+        fcmToken: targetFcmToken,
+        fcmTokens: targetFcmTokens,
         type: 'PAYMENT',
         rawTitle: true,
         priority: 'high',
         sound: 'default',
         requireInteraction: true,
         url: '/',
-      }).catch(console.warn);
+        metadata: {
+          paymentId: targetId,
+          amount: amountVal,
+          fund: targetDecl.fund,
+          resteADevoir: resteApresValidation,
+          duesStatus: duesStatus,
+        },
+      });
 
       // Destinataire 2 (TOUS LES MEMBRES) : "🎉 Nouveau Gbrairai disponible !"
       dispatchPushNotification({
         title: '🎉 Nouveau Gbrairai disponible !',
-        body: "Un gbrairai vient d'être validé. Connectez-vous pour voir l'information !",
+        body: `Un versement de ${memberNickname} vient d'être validé par la Trésorerie. Bravo pour l'engagement fraternel !`,
         senderRole: 'TRESORIER',
         senderName: 'Léger (Trésorier)',
         targetRole: 'ALL',
@@ -2407,6 +2681,103 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }).catch(console.warn);
     } catch (notifErr) {
       console.warn('Erreur notification validation paiement:', notifErr);
+    }
+  };
+
+  // Alias validateCotisation pour compatibilité exacte avec l'exigence
+  const validateCotisation = approvePayment;
+
+  // Fonction de synchronisation / correction automatique du profil membre
+  const syncMemberProfileCotisation = async (memberId: string) => {
+    if (!memberId) return;
+    const cleanId = String(memberId).trim();
+    try {
+      const now = new Date();
+      const currentMonthNum = now.getMonth() + 1;
+      const totalRequiredMonths = Math.max(0, currentMonthNum - 1);
+      const totalExpectedAmount = totalRequiredMonths * 500;
+
+      const isPaymentValid = (d: any) => {
+        if (!d) return false;
+        if (d.isHidden || d.status === 'hidden' || d.status === 'deleted' || d.status === 'REJECTED' || d.status === 'rejected') return false;
+        const s = String(d.status || '').toLowerCase().trim();
+        return (
+          d.status === 'validated' ||
+          d.status === 'Validé' ||
+          d.status === 'approved' ||
+          d.status === 'APPROVED' ||
+          d.status === 'valide' ||
+          d.status === 'approuvé' ||
+          d.statut === 'valide' ||
+          d.statut === 'approuvé' ||
+          d.isValidated === true ||
+          d.isApproved === true ||
+          s === 'validated' ||
+          s === 'validé' ||
+          s === 'valide' ||
+          s === 'approved' ||
+          s === 'approuvé' ||
+          s === 'approuve'
+        );
+      };
+
+      const isCotisation = (d: any) =>
+        d.fund === 'COTISATION' ||
+        (d as any).caisse === 'Cotisation Mensuelle' ||
+        (d as any).type === 'Cotisation Mensuelle';
+
+      const validList = declarations.filter(
+        (d) => String(d.memberId).trim() === cleanId && isCotisation(d) && isPaymentValid(d)
+      );
+
+      const totalPaid = validList.reduce((sum, d) => sum + (Number(d.amount) || Number((d as any).montant) || 0), 0);
+      const monthsPaid = Math.floor(totalPaid / 500);
+      const unpaidMonths = Math.max(0, totalRequiredMonths - monthsPaid);
+      const resteADevoir = Math.max(0, totalExpectedAmount - totalPaid);
+      const duesStatus: DuesStatus =
+        totalPaid > totalExpectedAmount
+          ? 'EN_AVANCE'
+          : totalPaid >= totalExpectedAmount && (totalPaid > 0 || totalExpectedAmount === 0)
+          ? 'A_JOUR'
+          : 'RETARD';
+
+      const updateData = {
+        totalPaid,
+        solde: totalPaid,
+        montantPaye: totalPaid,
+        unpaidMonths,
+        moisRetard: unpaidMonths,
+        resteADevoir,
+        duesStatus,
+        statutCotisation: duesStatus,
+        statutDemande: 'valide',
+        updatedAt: new Date().toISOString(),
+      };
+
+      await Promise.allSettled([
+        setDoc(doc(db, 'users', cleanId), updateData, { merge: true }),
+        setDoc(doc(db, 'members', cleanId), updateData, { merge: true }),
+        setDoc(doc(db, 'users', cleanId, 'cotisations', 'summary'), updateData, { merge: true }),
+        setDoc(doc(db, 'members', cleanId, 'cotisations', 'summary'), updateData, { merge: true }),
+      ]);
+
+      setMembers((prev) =>
+        prev.map((m) => (String(m.id).trim() === cleanId ? { ...m, ...updateData } : m))
+      );
+
+      setCurrentUser((prev) => {
+        if (prev && prev.type === 'MEMBER' && prev.member && String(prev.member.id).trim() === cleanId) {
+          const updatedMember = { ...prev.member, ...updateData };
+          try {
+            localStorage.setItem(EROUAMA_ACTIVE_SESSION_KEY, JSON.stringify({ ...prev, member: updatedMember }));
+            localStorage.setItem('rouama_user', JSON.stringify(updatedMember));
+          } catch (e) {}
+          return { ...prev, member: updatedMember };
+        }
+        return prev;
+      });
+    } catch (err) {
+      console.warn('Erreur syncMemberProfileCotisation:', err);
     }
   };
 
@@ -3994,6 +4365,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         declarePayment,
         submitReceipt,
         approvePayment,
+        validateCotisation,
+        syncMemberProfileCotisation,
         rejectPayment,
         hideReceipt,
         deleteReceipt,

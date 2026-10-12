@@ -499,6 +499,8 @@ export interface PushDispatchOptions {
   targetUserId?: string;
   targetUserIds?: string[];
   targetDepartment?: string; // ex: "cerveau", "tresorerie", "communication", "projet", "organisation", "spiritualite", etc.
+  fcmToken?: string; // Jeton FCM direct du destinataire ciblé
+  fcmTokens?: string[]; // Liste de jetons FCM directs
   type: 'INFO_REQUEST' | 'PV_PUBLISHED' | 'BILAN_PUBLISHED' | 'PAYMENT' | 'GENERAL';
   url?: string;
   metadata?: Record<string, any>;
@@ -672,13 +674,23 @@ export const dispatchPushNotification = async (options: PushDispatchOptions) => 
       : undefined;
 
     // Récupération simultanée de tous les jetons FCM des destinataires concernés dans Firestore
-    const targetTokens = await extractRecipientFcmTokens({
+    let targetTokens = await extractRecipientFcmTokens({
       targetRole: options.targetRole,
       targetDepartment: normalizedDept || undefined,
       targetUserId: options.targetUserId,
       targetUserIds: options.targetUserIds,
       excludedUserId,
     });
+
+    if (options.fcmToken && typeof options.fcmToken === 'string' && options.fcmToken.trim().length > 10) {
+      targetTokens.push(options.fcmToken.trim());
+    }
+    if (Array.isArray(options.fcmTokens)) {
+      options.fcmTokens.forEach((t) => {
+        if (typeof t === 'string' && t.trim().length > 10) targetTokens.push(t.trim());
+      });
+    }
+    targetTokens = Array.from(new Set(targetTokens));
 
     const messageId =
       options.metadata?.messageId ||

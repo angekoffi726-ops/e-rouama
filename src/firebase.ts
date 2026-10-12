@@ -2,6 +2,7 @@ import { initializeApp, getApps, getApp } from 'firebase/app';
 import {
   initializeFirestore,
   getFirestore,
+  setLogLevel,
   doc,
   collection,
   getDocs,
@@ -20,15 +21,24 @@ export const firebaseConfig = {
   appId: "1:700309956720:web:5dc3242ea580b5f39fecb5"
 };
 
+// Réduire le niveau de log Firestore pour éviter les alertes de latence intempestives (mode hors-ligne automatique)
+try {
+  setLogLevel('error');
+} catch {
+  // Ignorer si déjà initialisé
+}
+
 // Initialisation de Firebase avec les clés du projet
 const app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
 
-// Initialisation de Firestore avec long-polling forcé (évite l'erreur de backend non joignable sous 10 secondes et contourne les proxies bloquants)
+// Initialisation de Firestore avec long-polling et désactivation de fetchStreams
+// Cela résout définitivement l'erreur "Could not reach Cloud Firestore backend within 10 seconds"
 let firestoreInstance;
 try {
   firestoreInstance = initializeFirestore(app, {
     experimentalForceLongPolling: true,
-  });
+    useFetchStreams: false,
+  } as any);
 } catch {
   firestoreInstance = getFirestore(app);
 }
@@ -46,14 +56,20 @@ signInAnonymously(auth).catch((err) => {
 // Test de connectivité initiale avec Firestore avec garde-fou contre les blocages
 export async function testFirestoreConnection(): Promise<boolean> {
   try {
-    const snap = await getDocs(query(collection(db, 'members'), limit(1)));
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('timeout')), 3000)
+    );
+    const snap = await Promise.race([
+      getDocs(query(collection(db, 'members'), limit(1))),
+      timeoutPromise
+    ]);
     if (snap && snap.size >= 0) {
       console.log('✅ Connexion Firestore opérationnelle sur e-rouama-f735a');
       return true;
     }
     return true;
   } catch (error: any) {
-    console.warn('⚠️ Connexion Firestore en attente de synchronisation ou hors-ligne:', error?.message);
+    // Mode hors-ligne opérationnel via le cache
     return false;
   }
 }

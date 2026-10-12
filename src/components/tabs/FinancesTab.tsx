@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { doc, deleteDoc, updateDoc, setDoc } from 'firebase/firestore';
+import { doc, deleteDoc, updateDoc, setDoc, collection, onSnapshot } from 'firebase/firestore';
 import { db } from '../../firebase';
 import { useApp } from '../../context/AppContext';
 import { FundType, FUND_LABELS } from '../../types';
@@ -383,11 +383,18 @@ export const FinancesTab: React.FC = () => {
       p.status === 'Validé' ||
       p.status === 'approved' ||
       p.status === 'APPROVED' ||
+      p.status === 'valide' ||
+      p.status === 'approuvé' ||
+      p.statut === 'valide' ||
+      p.statut === 'approuvé' ||
       p.isValidated === true ||
+      p.isApproved === true ||
       s === 'validated' ||
       s === 'validé' ||
       s === 'valide' ||
-      s === 'approved'
+      s === 'approved' ||
+      s === 'approuvé' ||
+      s === 'approuve'
     );
   };
 
@@ -395,9 +402,70 @@ export const FinancesTab: React.FC = () => {
   const [payments, setPayments] = useState<any[]>(() =>
     declarations.filter(p => !p.isHidden && p.status !== 'hidden' && p.status !== 'deleted')
   );
+
   useEffect(() => {
     setPayments(declarations.filter(p => !p.isHidden && p.status !== 'hidden' && p.status !== 'deleted'));
   }, [declarations]);
+
+  // ÉCOUTE EN TEMPS RÉEL (onSnapshot) DES COTISATIONS ET DEMANDES DU MEMBRE
+  useEffect(() => {
+    if (!currentMemberId) return;
+    const cleanId = String(currentMemberId).trim();
+    const unsubs: (() => void)[] = [];
+
+    // 1. Écouteur sur la collection receipts pour le membre
+    const unsubReceipts = onSnapshot(
+      collection(db, 'receipts'),
+      (snapshot) => {
+        const loaded: any[] = [];
+        snapshot.forEach((docSnap) => {
+          const data = docSnap.data();
+          if (String(data.memberId).trim() === cleanId && !data.isHidden && data.status !== 'hidden' && data.status !== 'deleted') {
+            loaded.push({ id: docSnap.id, ...data });
+          }
+        });
+        if (loaded.length > 0) {
+          setPayments((prev) => {
+            const map = new Map<string, any>();
+            prev.forEach((p) => map.set(p.id, p));
+            loaded.forEach((p) => map.set(p.id, { ...(map.get(p.id) || {}), ...p }));
+            return Array.from(map.values()).sort((a, b) => ((b.createdAt || 0) - (a.createdAt || 0)));
+          });
+        }
+      },
+      (err) => console.warn('Erreur écouteur receipts membre FinancesTab:', err)
+    );
+    unsubs.push(unsubReceipts);
+
+    // 2. Écouteur sur la sous-collection cotisations du membre
+    const unsubCotisations = onSnapshot(
+      collection(db, 'users', cleanId, 'cotisations'),
+      (snapshot) => {
+        const loaded: any[] = [];
+        snapshot.forEach((docSnap) => {
+          if (docSnap.id === 'summary') return;
+          const data = docSnap.data();
+          if (!data.isHidden && data.status !== 'hidden' && data.status !== 'deleted') {
+            loaded.push({ id: docSnap.id, ...data });
+          }
+        });
+        if (loaded.length > 0) {
+          setPayments((prev) => {
+            const map = new Map<string, any>();
+            prev.forEach((p) => map.set(p.id, p));
+            loaded.forEach((p) => map.set(p.id, { ...(map.get(p.id) || {}), ...p }));
+            return Array.from(map.values()).sort((a, b) => ((b.createdAt || 0) - (a.createdAt || 0)));
+          });
+        }
+      },
+      (err) => console.warn('Erreur écouteur cotisations membre FinancesTab:', err)
+    );
+    unsubs.push(unsubCotisations);
+
+    return () => {
+      unsubs.forEach((u) => u());
+    };
+  }, [currentMemberId]);
 
   const currentUserId = currentMemberId;
   // 3. FILTRAGE DES VUES (MASQUAGE EFFECTIF) DANS L'HISTORIQUE PERSONNEL :
@@ -625,10 +693,13 @@ export const FinancesTab: React.FC = () => {
           <div className="bg-slate-50 border border-slate-200 p-3.5 rounded-2xl text-center min-w-[140px]">
             <p className="text-[10px] font-extrabold uppercase text-slate-500">Total Validé (Toutes Caisses)</p>
             <p className="text-lg font-black text-emerald-600 mt-0.5 font-mono">
-              {declarations
-                .filter(d => d.memberId === currentMemberId && isPaymentValidated(d))
-                .reduce((s, d) => s + (Number(d.amount) || Number((d as any).montant) || 0), 0)
-                .toLocaleString('fr-FR')}{' '}
+              {Math.max(
+                declarations
+                  .filter(d => String(d.memberId).trim() === String(currentMemberId).trim() && isPaymentValidated(d))
+                  .reduce((s, d) => s + (Number(d.amount) || Number((d as any).montant) || 0), 0),
+                typeof connectedMember?.totalPaid === 'number' ? connectedMember.totalPaid : 0,
+                typeof connectedMember?.solde === 'number' ? connectedMember.solde : 0
+              ).toLocaleString('fr-FR')}{' '}
               F CFA
             </p>
           </div>

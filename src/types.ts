@@ -88,6 +88,13 @@ export interface RouamaMember {
   fcmTokens?: string[]; // Tableau des jetons FCM actifs associés aux appareils
   fcmToken?: string;
   resteADevoir?: number;
+  totalPaid?: number;
+  solde?: number;
+  unpaidMonths?: number;
+  moisRetard?: number;
+  duesStatus?: DuesStatus;
+  statutCotisation?: DuesStatus;
+  statutDemande?: string;
   updatedAt?: string;
   lastLogin?: string;
 }
@@ -157,9 +164,13 @@ export interface PaymentDeclaration {
   reference: string;
   month: string; // YYYY-MM
   date: string;
-  status: 'PENDING' | 'APPROVED' | 'REJECTED' | 'validated' | 'Validé' | 'approved' | 'rejected' | 'deleted' | 'hidden' | string;
+  status: 'PENDING' | 'APPROVED' | 'REJECTED' | 'validated' | 'Validé' | 'approved' | 'rejected' | 'valide' | 'approuvé' | 'en_attente' | 'deleted' | 'hidden' | string;
+  statut?: string;
   isValidated?: boolean;
+  isApproved?: boolean;
+  statutDemande?: string;
   validatedAt?: any;
+  approvedAt?: any;
   isHidden?: boolean;
   rejectionReason?: string;
   paymentType?: 'TOTAL' | 'TRANCHE';
