@@ -220,6 +220,8 @@ export interface NewsItem {
   payerId?: string;
   targetMemberIds?: string[];
   excludedMemberIds?: string[];
+  deleted?: boolean;
+  status?: string;
 }
 
 export interface Committee {
@@ -261,6 +263,65 @@ export interface EventActivity {
   budgetStatus?: 'NONE' | 'PENDING_TRESORIER' | 'APPROVED_TRESORIER';
   createdAt?: string;
 }
+
+export const DEFAULT_ANNIVERSAIRE_ACTIVITY: EventActivity = {
+  id: 'ACT-ANNIVERSAIRE-2027',
+  title: 'ANNIVERSAIRE ROUAMA (21 MARS 2027)',
+  eventType: 'FIXE',
+  fixedType: 'ANNIVERSAIRE',
+  eventDate: '21 Mars 2027',
+  eventDay: '21',
+  eventMonth: '3',
+  eventYear: '2027',
+  isDayPending: false,
+  status: 'PUBLISHED',
+  budgetStatus: 'NONE',
+  location: '',
+  description: '',
+  program: 'À déterminer',
+  createdBy: 'COMMISSION ORGANISATION',
+  createdAt: '2026-10-12T00:00:00.000Z',
+  adHocRoles: {
+    pco: [],
+    pcoAdjoint: [],
+    restauration: [],
+    cambuse: [],
+    logistique: [],
+    transport: [],
+  },
+  committees: [
+    {
+      name: 'COORDINATION GÉNÉRALE',
+      description: "PCO & PCO Adjoint - Supervision & pilotage de l'événement",
+      leaderNickname: 'Non désigné',
+      memberNicknames: [],
+    },
+    {
+      name: 'RESTAURATION',
+      description: 'Gestion des menus, repas et buffet',
+      leaderNickname: 'Non désigné',
+      memberNicknames: [],
+    },
+    {
+      name: 'CAMBUSE',
+      description: 'Gestion des boissons, rafraîchissements et réserves',
+      leaderNickname: 'Non désigné',
+      memberNicknames: [],
+    },
+    {
+      name: 'LOGISTIQUE',
+      description: 'Installation du site, sonorisation et matériel',
+      leaderNickname: 'Non désigné',
+      memberNicknames: [],
+    },
+    {
+      name: 'TRANSPORT',
+      description: 'Convoi, déplacements et logistique transport',
+      leaderNickname: 'Non désigné',
+      memberNicknames: [],
+    },
+  ],
+};
 
 export interface FinancialEvent {
   id: string;

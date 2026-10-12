@@ -23,21 +23,14 @@ export const firebaseConfig = {
 // Initialisation de Firebase avec les clés du projet
 const app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
 
-// Initialisation de Firestore avec long-polling forcé (évite l'erreur de backend non joignable sous 10 secondes)
+// Initialisation de Firestore avec long-polling forcé (évite l'erreur de backend non joignable sous 10 secondes et contourne les proxies bloquants)
 let firestoreInstance;
 try {
   firestoreInstance = initializeFirestore(app, {
     experimentalForceLongPolling: true,
-    experimentalAutoDetectLongPolling: true,
   });
 } catch {
-  try {
-    firestoreInstance = initializeFirestore(app, {
-      experimentalAutoDetectLongPolling: true,
-    });
-  } catch {
-    firestoreInstance = getFirestore(app);
-  }
+  firestoreInstance = getFirestore(app);
 }
 
 export const db = firestoreInstance;

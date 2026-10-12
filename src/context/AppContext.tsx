@@ -10,6 +10,7 @@ import {
   WithdrawalRequest,
   NewsItem,
   EventActivity,
+  DEFAULT_ANNIVERSAIRE_ACTIVITY,
   AgrProject,
   FinancialEvent,
   ArchiveDoc,
@@ -460,7 +461,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [withdrawals, setWithdrawals] = useState<WithdrawalRequest[]>([]);
   const [newsItems, setNewsItems] = useState<NewsItem[]>([]);
-  const [activities, setActivities] = useState<EventActivity[]>([]);
+  const [activities, setActivities] = useState<EventActivity[]>([DEFAULT_ANNIVERSAIRE_ACTIVITY]);
   const [projects, setProjects] = useState<AgrProject[]>([]);
   const [financialEvents, setFinancialEvents] = useState<FinancialEvent[]>([]);
   const [archiveDocs, setArchiveDocs] = useState<ArchiveDoc[]>([]);
@@ -872,6 +873,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       (snapshot) => {
         const loaded: EventActivity[] = [];
         snapshot.forEach(d => loaded.push({ id: d.id, ...(d.data() as any) }));
+
+        // Garantie de présence de l'Anniversaire Rouama (21 Mars 2027) dans Firestore et State
+        const hasAnniversaire = loaded.some(
+          a => a.fixedType === 'ANNIVERSAIRE' || a.id === 'ACT-ANNIVERSAIRE-2027' || a.title?.toUpperCase().includes('ANNIVERSAIRE')
+        );
+        if (!hasAnniversaire) {
+          setDoc(doc(db, 'activities', DEFAULT_ANNIVERSAIRE_ACTIVITY.id), sanitizeFirestore(DEFAULT_ANNIVERSAIRE_ACTIVITY)).catch(console.warn);
+          loaded.push(DEFAULT_ANNIVERSAIRE_ACTIVITY);
+        }
+
         loaded.sort((a, b) => b.id.localeCompare(a.id));
         setActivities(loaded);
       },
@@ -1660,6 +1671,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const logout = () => {
+    // RÈGLE STRICTE PERSISTANCE DU JETON FCM (LOGOUT / DÉCONNEXION) :
+    // Lors de la déconnexion, NE JAMAIS supprimer le jeton fcmToken du navigateur (localStorage)
+    // ni du document utilisateur dans Firestore. L'appareil conserve son fcmToken enregistré
+    // pour continuer à recevoir les notifications Push même hors session et application fermée.
     setCurrentUser(null);
   };
 

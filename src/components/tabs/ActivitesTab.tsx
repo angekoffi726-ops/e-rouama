@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useApp } from '../../context/AppContext';
-import { EventActivity } from '../../types';
+import { EventActivity, DEFAULT_ANNIVERSAIRE_ACTIVITY } from '../../types';
 import {
   Tent,
   Calendar,
@@ -85,6 +85,12 @@ function getActivityTargetDate(act: EventActivity): { targetDate: Date | null; i
 
   return { targetDate: null, isMonthYearOnly: false, isIndeterminate: true };
 }
+
+const formatMembers = (val?: string[] | string) => {
+  if (!val) return 'Non désigné';
+  if (Array.isArray(val)) return val.length > 0 ? val.join(', ') : 'Non désigné';
+  return val.trim() || 'Non désigné';
+};
 
 // 1. COMPOSANT DÉCOMPTE OFFICIEL GRAND FORMAT (HARMONISÉ POUR TOUS LES ÉVÉNEMENTS)
 export const OfficialCountdownClock: React.FC<{
@@ -184,12 +190,6 @@ export const EventActivityCard: React.FC<EventActivityCardProps> = ({ activity: 
     return Boolean(val && val !== 'Non désigné');
   });
 
-  const formatMembers = (val?: string[] | string) => {
-    if (!val) return 'Non désigné';
-    if (Array.isArray(val)) return val.length > 0 ? val.join(', ') : 'Non désigné';
-    return val.trim() || 'Non désigné';
-  };
-
   return (
     <div
       id={`event-card-${act.id}`}
@@ -214,7 +214,7 @@ export const EventActivityCard: React.FC<EventActivityCardProps> = ({ activity: 
                   {act.fixedType === 'SOIREE_ROUAMA'
                     ? 'Soirée Rouama (Fixe)'
                     : act.fixedType === 'ANNIVERSAIRE'
-                    ? 'Anniversaire 21 Mars (Fixe)'
+                    ? 'Anniversaire Rouama (Fixe)'
                     : 'Événement Fixe'}
                 </span>
               </span>
@@ -222,6 +222,14 @@ export const EventActivityCard: React.FC<EventActivityCardProps> = ({ activity: 
               <span className="text-xs font-black text-sky-900 bg-sky-100 border border-sky-300 px-3.5 py-1.5 rounded-full inline-flex items-center gap-1.5 shadow-xs">
                 <Palmtree className="w-3.5 h-3.5 text-sky-700" />
                 <span>Sorties & Loisirs (Simple)</span>
+              </span>
+            )}
+
+            {/* Badge JOUR DE FÊTE pour l'Anniversaire Rouama */}
+            {act.fixedType === 'ANNIVERSAIRE' && (
+              <span className="text-xs font-black text-amber-900 bg-amber-300/80 border border-amber-400 px-3.5 py-1.5 rounded-full inline-flex items-center gap-1.5 shadow-xs">
+                <Sparkles className="w-3.5 h-3.5 text-amber-700" />
+                <span>JOUR DE FÊTE</span>
               </span>
             )}
 
@@ -330,7 +338,7 @@ export const EventActivityCard: React.FC<EventActivityCardProps> = ({ activity: 
                     {act.program ? (
                       <p>{act.program}</p>
                     ) : (
-                      <p className="text-slate-400 italic">Aucun programme déroulé détaillé pour le moment.</p>
+                      <p className="text-slate-400 italic">À déterminer</p>
                     )}
                   </div>
                 </div>
@@ -378,13 +386,41 @@ export const EventActivityCard: React.FC<EventActivityCardProps> = ({ activity: 
                     </div>
                   </div>
                 ) : (
-                  <div className="bg-white p-4 rounded-2xl border border-emerald-200/80 text-xs text-slate-600 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
-                    <span className="italic leading-relaxed">
-                      Comité Ad-hoc en cours de constitution par la Commission Organisation. L'affectation des postes sera précisée avant l'événement.
-                    </span>
-                    <span className="bg-emerald-100 text-emerald-800 text-[11px] font-bold px-3 py-1 rounded-full shrink-0 self-start sm:self-auto">
-                      Optionnel à la création
-                    </span>
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 text-xs">
+                      <div className="bg-white/90 p-3 rounded-2xl border border-emerald-200/90 shadow-2xs">
+                        <span className="text-[10px] uppercase font-bold text-amber-700 block">PCO</span>
+                        <span className="font-semibold text-slate-400 text-xs">Non désigné</span>
+                      </div>
+                      <div className="bg-white/90 p-3 rounded-2xl border border-emerald-200/90 shadow-2xs">
+                        <span className="text-[10px] uppercase font-bold text-amber-700 block">PCO Adjoint</span>
+                        <span className="font-semibold text-slate-400 text-xs">Non désigné</span>
+                      </div>
+                      <div className="bg-white/90 p-3 rounded-2xl border border-emerald-200/90 shadow-2xs">
+                        <span className="text-[10px] uppercase font-bold text-emerald-700 block">Restauration</span>
+                        <span className="font-semibold text-slate-400 text-xs">Non désigné</span>
+                      </div>
+                      <div className="bg-white/90 p-3 rounded-2xl border border-emerald-200/90 shadow-2xs">
+                        <span className="text-[10px] uppercase font-bold text-emerald-700 block">Cambuse</span>
+                        <span className="font-semibold text-slate-400 text-xs">Non désigné</span>
+                      </div>
+                      <div className="bg-white/90 p-3 rounded-2xl border border-emerald-200/90 shadow-2xs">
+                        <span className="text-[10px] uppercase font-bold text-sky-700 block">Logistique</span>
+                        <span className="font-semibold text-slate-400 text-xs">Non désigné</span>
+                      </div>
+                      <div className="bg-white/90 p-3 rounded-2xl border border-emerald-200/90 shadow-2xs">
+                        <span className="text-[10px] uppercase font-bold text-sky-700 block">Transport</span>
+                        <span className="font-semibold text-slate-400 text-xs">Non désigné</span>
+                      </div>
+                    </div>
+                    <div className="bg-white p-3.5 rounded-2xl border border-emerald-200/80 text-xs text-slate-600 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+                      <span className="italic leading-relaxed">
+                        Comité Ad-hoc en cours de constitution par la Commission Organisation. L'affectation des postes sera précisée avant l'événement.
+                      </span>
+                      <span className="bg-emerald-100 text-emerald-800 text-[11px] font-bold px-3 py-1 rounded-full shrink-0 self-start sm:self-auto">
+                        Nomination ultérieure
+                      </span>
+                    </div>
                   </div>
                 )}
               </div>
@@ -410,6 +446,7 @@ export const EventActivityCard: React.FC<EventActivityCardProps> = ({ activity: 
 
 export const ActivitesTab: React.FC = () => {
   const { activities } = useApp();
+  const [showAnnivDetails, setShowAnnivDetails] = useState<boolean>(false);
 
   // Compute target festival year dynamically:
   // Before or on March 21st of current year -> current year (e.g. 2026)
@@ -431,35 +468,216 @@ export const ActivitesTab: React.FC = () => {
     return () => clearInterval(interval);
   }, []);
 
-  const publishedActivities = activities.filter(a => a.status === 'PUBLISHED');
+  // Récupération de l'activité dynamique Anniversaire Rouama configurée par la Commission Organisation
+  const anniversaireActivity = activities.find(
+    a => a.fixedType === 'ANNIVERSAIRE' || a.id === 'ACT-ANNIVERSAIRE-2027' || a.title?.toUpperCase().includes('ANNIVERSAIRE')
+  ) || DEFAULT_ANNIVERSAIRE_ACTIVITY;
+
+  const hasAnnivAdHocMembers = anniversaireActivity.adHocRoles && Object.values(anniversaireActivity.adHocRoles).some(val => {
+    if (Array.isArray(val)) return val.length > 0;
+    return Boolean(val && val !== 'Non désigné');
+  });
+
+  // SUPPRESSION DU DOUBLON CÔTÉ SHOW :
+  // Seuls la Soirée Rouama et les autres événements (sorties, gala, etc.) figurent dans la section inférieure "Comités Ad-Hoc & Programmes d'Événements"
+  const otherPublishedActivities = activities.filter(
+    a => a.status === 'PUBLISHED' && a.fixedType !== 'ANNIVERSAIRE' && a.id !== 'ACT-ANNIVERSAIRE-2027' && !a.title?.toUpperCase().includes('ANNIVERSAIRE')
+  );
 
   return (
     <div className="space-y-8 animate-fadeIn">
-      {/* 1. MARCH 21ST FESTIVAL COUNTDOWN HERO BANNER (DÉCOMPTE OFFICIEL MODÈLE) */}
+      {/* 1. MARCH 21ST FESTIVAL COUNTDOWN HERO BANNER (BANNIÈRE VERTE ORIGINALE AVEC DÉTAILS DÉPLIABLES) */}
       <div className="bg-[#355E3B] rounded-[2.5rem] sm:rounded-[3rem] p-6 sm:p-10 text-white shadow-xl relative overflow-hidden border border-white/10">
         <div className="absolute -right-10 -bottom-10 w-64 h-64 bg-[#E67E22]/20 rounded-full blur-2xl pointer-events-none" />
 
-        <div className="flex flex-col md:flex-row items-center justify-between gap-8 relative z-10">
-          <div className="space-y-3 text-center md:text-left">
+        <div className="flex flex-col lg:flex-row items-center justify-between gap-8 relative z-10">
+          <div className="space-y-3 text-center lg:text-left flex-1 min-w-0">
             <div className="inline-flex items-center gap-2 bg-amber-400/20 text-amber-300 px-4 py-1.5 rounded-full text-xs font-black border border-amber-300/30">
               <Sparkles className="w-4 h-4" />
               <span>JOUR DE FÊTE</span>
             </div>
             <h2 className="text-3xl sm:text-4xl font-black text-amber-200 tracking-tight">
-              ANNIVERSAIRE ROUAMA (21 MARS {targetYear})
+              {anniversaireActivity.title || `ANNIVERSAIRE ROUAMA (21 MARS ${targetYear})`}
             </h2>
             <p className="text-xs sm:text-sm text-emerald-100 max-w-lg leading-relaxed">
-              Célébration annuelle ROUAMA. Rassemblement, retrouvailles, partage et réjouissances fraternelles.
+              {anniversaireActivity.description || "Célébration annuelle ROUAMA. Rassemblement, retrouvailles, partage et réjouissances fraternelles."}
             </p>
           </div>
 
-          {/* Décompte officiel grand format standardisé */}
-          <OfficialCountdownClock
-            targetDate={new Date(targetYear, 2, 21, 0, 0, 0)}
-            isMonthYearOnly={false}
-            isIndeterminate={false}
-          />
+          {/* Décompte officiel grand format standardisé + Bouton Voir Détails */}
+          <div className="flex flex-col items-center lg:items-end gap-3 shrink-0 self-stretch lg:self-auto">
+            <OfficialCountdownClock
+              targetDate={new Date(targetYear, 2, 21, 0, 0, 0)}
+              isMonthYearOnly={false}
+              isIndeterminate={false}
+            />
+
+            {/* Bouton Voir Détails sur la bannière verte */}
+            <button
+              type="button"
+              id="btn-toggle-anniversaire-details"
+              onClick={() => setShowAnnivDetails(prev => !prev)}
+              className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-2xl bg-emerald-900/90 hover:bg-emerald-800 text-amber-200 text-xs font-black shadow-md border border-amber-300/40 hover:scale-[1.02] active:scale-[0.98] transition-all cursor-pointer"
+              title={showAnnivDetails ? "Replier les informations" : "Afficher les détails de l'Anniversaire"}
+            >
+              {showAnnivDetails ? (
+                <>
+                  <ChevronUp className="w-4 h-4 text-amber-300" />
+                  <span>Masquer Détails</span>
+                </>
+              ) : (
+                <>
+                  <Eye className="w-4 h-4 text-amber-300" />
+                  <span>Voir Détails</span>
+                </>
+              )}
+            </button>
+          </div>
         </div>
+
+        {/* SECTION DÉPLIABLE DES DÉTAILS DE L'ANNIVERSAIRE DIRECTEMENT SOUS LA BANNIÈRE VERTE */}
+        <AnimatePresence initial={false}>
+          {showAnnivDetails && (
+            <motion.div
+              key="anniversaire-details-content"
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: 'auto' }}
+              exit={{ opacity: 0, height: 0 }}
+              transition={{ duration: 0.3, ease: 'easeInOut' }}
+              className="overflow-hidden relative z-10"
+            >
+              <div className="pt-6 mt-6 border-t border-white/20 space-y-6">
+                {/* Grille des Blocs 1 et 2 */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                  {/* 1. Description & Objectifs */}
+                  <div className="bg-emerald-900/60 p-5 rounded-2xl border border-emerald-500/30 shadow-xs space-y-2.5">
+                    <h4 className="text-xs font-black text-amber-300 uppercase tracking-wider flex items-center gap-1.5">
+                      <FileText className="w-4 h-4 text-amber-400" />
+                      <span>1. Description & Objectifs</span>
+                    </h4>
+                    <div className="text-sm text-emerald-100 leading-relaxed bg-emerald-950/70 p-4 rounded-xl border border-emerald-700/60">
+                      {anniversaireActivity.description ? (
+                        <p>{anniversaireActivity.description}</p>
+                      ) : (
+                        <p className="text-emerald-300/70 italic">
+                          Célébration officielle de l'Anniversaire ROUAMA (21 Mars). Rassemblement, retrouvailles, partage et réjouissances fraternelles.
+                        </p>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* 2. Programme Déroulé */}
+                  <div className="bg-emerald-900/60 p-5 rounded-2xl border border-emerald-500/30 shadow-xs space-y-2.5">
+                    <h4 className="text-xs font-black text-amber-300 uppercase tracking-wider flex items-center gap-1.5">
+                      <ListOrdered className="w-4 h-4 text-amber-400" />
+                      <span>2. Programme Déroulé</span>
+                    </h4>
+                    <div className="text-sm text-emerald-100 leading-relaxed bg-emerald-950/70 p-4 rounded-xl border border-emerald-700/60 whitespace-pre-line">
+                      {anniversaireActivity.program ? (
+                        <p>{anniversaireActivity.program}</p>
+                      ) : (
+                        <p className="text-emerald-300/70 italic">À déterminer</p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {/* 3. Attribution du Comité Ad-Hoc */}
+                <div className="bg-emerald-900/60 p-5 rounded-2xl border border-emerald-500/30 shadow-xs space-y-3.5">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <h4 className="text-xs font-black text-amber-300 uppercase tracking-wider flex items-center gap-1.5">
+                      <Users className="w-4 h-4 text-amber-400" />
+                      <span>3. Attribution du Comité Ad-Hoc</span>
+                    </h4>
+                    {!hasAnnivAdHocMembers && (
+                      <span className="text-[11px] font-bold text-amber-200 bg-emerald-950 border border-emerald-700 px-3 py-0.5 rounded-full shadow-2xs">
+                        Nomination ultérieure
+                      </span>
+                    )}
+                  </div>
+
+                  {hasAnnivAdHocMembers && anniversaireActivity.adHocRoles ? (
+                    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 text-xs">
+                      <div className="bg-emerald-950/90 p-3.5 rounded-2xl border border-emerald-700/70 shadow-xs">
+                        <span className="text-[10px] uppercase font-bold text-amber-300 block">PCO</span>
+                        <span className="font-extrabold text-white text-xs break-words">{formatMembers(anniversaireActivity.adHocRoles.pco)}</span>
+                      </div>
+                      <div className="bg-emerald-950/90 p-3.5 rounded-2xl border border-emerald-700/70 shadow-xs">
+                        <span className="text-[10px] uppercase font-bold text-amber-300 block">PCO Adjoint</span>
+                        <span className="font-extrabold text-white text-xs break-words">{formatMembers(anniversaireActivity.adHocRoles.pcoAdjoint)}</span>
+                      </div>
+                      <div className="bg-emerald-950/90 p-3.5 rounded-2xl border border-emerald-700/70 shadow-xs">
+                        <span className="text-[10px] uppercase font-bold text-amber-300 block">Restauration</span>
+                        <span className="font-extrabold text-white text-xs break-words">{formatMembers(anniversaireActivity.adHocRoles.restauration)}</span>
+                      </div>
+                      <div className="bg-emerald-950/90 p-3.5 rounded-2xl border border-emerald-700/70 shadow-xs">
+                        <span className="text-[10px] uppercase font-bold text-amber-300 block">Cambuse</span>
+                        <span className="font-extrabold text-white text-xs break-words">{formatMembers(anniversaireActivity.adHocRoles.cambuse)}</span>
+                      </div>
+                      <div className="bg-emerald-950/90 p-3.5 rounded-2xl border border-emerald-700/70 shadow-xs">
+                        <span className="text-[10px] uppercase font-bold text-amber-300 block">Logistique</span>
+                        <span className="font-extrabold text-white text-xs break-words">{formatMembers(anniversaireActivity.adHocRoles.logistique)}</span>
+                      </div>
+                      <div className="bg-emerald-950/90 p-3.5 rounded-2xl border border-emerald-700/70 shadow-xs">
+                        <span className="text-[10px] uppercase font-bold text-amber-300 block">Transport</span>
+                        <span className="font-extrabold text-white text-xs break-words">{formatMembers(anniversaireActivity.adHocRoles.transport)}</span>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 text-xs">
+                        <div className="bg-emerald-950/90 p-3 rounded-2xl border border-emerald-700/70 shadow-2xs">
+                          <span className="text-[10px] uppercase font-bold text-amber-300/80 block">PCO</span>
+                          <span className="font-semibold text-emerald-200/60 text-xs">Non désigné</span>
+                        </div>
+                        <div className="bg-emerald-950/90 p-3 rounded-2xl border border-emerald-700/70 shadow-2xs">
+                          <span className="text-[10px] uppercase font-bold text-amber-300/80 block">PCO Adjoint</span>
+                          <span className="font-semibold text-emerald-200/60 text-xs">Non désigné</span>
+                        </div>
+                        <div className="bg-emerald-950/90 p-3 rounded-2xl border border-emerald-700/70 shadow-2xs">
+                          <span className="text-[10px] uppercase font-bold text-amber-300/80 block">Restauration</span>
+                          <span className="font-semibold text-emerald-200/60 text-xs">Non désigné</span>
+                        </div>
+                        <div className="bg-emerald-950/90 p-3 rounded-2xl border border-emerald-700/70 shadow-2xs">
+                          <span className="text-[10px] uppercase font-bold text-amber-300/80 block">Cambuse</span>
+                          <span className="font-semibold text-emerald-200/60 text-xs">Non désigné</span>
+                        </div>
+                        <div className="bg-emerald-950/90 p-3 rounded-2xl border border-emerald-700/70 shadow-2xs">
+                          <span className="text-[10px] uppercase font-bold text-amber-300/80 block">Logistique</span>
+                          <span className="font-semibold text-emerald-200/60 text-xs">Non désigné</span>
+                        </div>
+                        <div className="bg-emerald-950/90 p-3 rounded-2xl border border-emerald-700/70 shadow-2xs">
+                          <span className="text-[10px] uppercase font-bold text-amber-300/80 block">Transport</span>
+                          <span className="font-semibold text-emerald-200/60 text-xs">Non désigné</span>
+                        </div>
+                      </div>
+                      <div className="bg-emerald-950/80 p-3.5 rounded-2xl border border-emerald-700/60 text-xs text-emerald-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+                        <span className="italic leading-relaxed">
+                          Comité Ad-hoc en cours de constitution par la Commission Organisation. L'affectation des postes sera précisée avant l'événement.
+                        </span>
+                        <span className="bg-emerald-900 text-amber-300 text-[11px] font-bold px-3 py-1 rounded-full shrink-0 self-start sm:self-auto border border-emerald-700">
+                          Nomination ultérieure
+                        </span>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Bouton secondaire en bas pour replier facilement */}
+                <div className="flex justify-end pt-1">
+                  <button
+                    type="button"
+                    onClick={() => setShowAnnivDetails(false)}
+                    className="inline-flex items-center gap-1.5 text-xs text-amber-200 hover:text-white font-bold px-3.5 py-1.5 rounded-xl bg-emerald-900/60 hover:bg-emerald-900 transition-all cursor-pointer"
+                  >
+                    <ChevronUp className="w-4 h-4 text-amber-300" />
+                    <span>Masquer Détails</span>
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
 
       {/* 2. AD-HOC COMMITTEES & PUBLISHED PROGRAMS */}
@@ -474,13 +692,13 @@ export const ActivitesTab: React.FC = () => {
           </p>
         </div>
 
-        {publishedActivities.length === 0 ? (
+        {otherPublishedActivities.length === 0 ? (
           <div className="text-center py-12 bg-emerald-50/30 rounded-3xl border border-dashed border-emerald-200 text-slate-500 text-sm">
             Aucune activité ou programme publié pour l'instant. (Attente de rédaction par la Commission Organisation).
           </div>
         ) : (
           <div className="space-y-6">
-            {publishedActivities.map(act => (
+            {otherPublishedActivities.map(act => (
               <EventActivityCard key={act.id} activity={act} />
             ))}
           </div>

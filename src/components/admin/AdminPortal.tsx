@@ -2587,22 +2587,27 @@ export const AdminPortal: React.FC = () => {
     const unsubAnnouncements = onSnapshot(
       collection(db, "announcements"),
       (snapshot) => {
-        const loadedAnnouncements = snapshot.docs.map(docSnap => {
-          const data = docSnap.data();
-          const authorVal = data.author || data.authorRole || data.createdBy || '';
-          const createdByVal = data.createdBy || data.authorRole || data.author || '';
-          return {
-            id: docSnap.id,
-            ...data,
-            author: authorVal,
-            createdBy: createdByVal,
-          };
-        }) as NewsItem[];
+        const loadedAnnouncements = snapshot.docs
+          .filter(docSnap => {
+            const data = docSnap.data();
+            return data.deleted !== true && data.status !== 'deleted';
+          })
+          .map(docSnap => {
+            const data = docSnap.data();
+            const authorVal = data.author || data.authorRole || data.createdBy || '';
+            const createdByVal = data.createdBy || data.authorRole || data.author || '';
+            return {
+              id: docSnap.id,
+              ...data,
+              author: authorVal,
+              createdBy: createdByVal,
+            };
+          }) as NewsItem[];
 
         if (loadedAnnouncements.length > 0) {
           setAnnouncements(prev => {
             const map = new Map<string, NewsItem>();
-            prev.forEach(item => map.set(item.id, item));
+            prev.filter(item => item.deleted !== true && item.status !== 'deleted').forEach(item => map.set(item.id, item));
             loadedAnnouncements.forEach(item => {
               if (item.dispatchChannel !== 'MAIL') {
                 map.set(item.id, item);
@@ -2622,17 +2627,22 @@ export const AdminPortal: React.FC = () => {
     const unsubNews = onSnapshot(
       collection(db, "news"),
       (snapshot) => {
-        const loadedNews = snapshot.docs.map(docSnap => {
-          const data = docSnap.data();
-          const authorVal = data.author || data.authorRole || data.createdBy || '';
-          const createdByVal = data.createdBy || data.authorRole || data.author || '';
-          return {
-            id: docSnap.id,
-            ...data,
-            author: authorVal,
-            createdBy: createdByVal,
-          };
-        }) as NewsItem[];
+        const loadedNews = snapshot.docs
+          .filter(docSnap => {
+            const data = docSnap.data();
+            return data.deleted !== true && data.status !== 'deleted';
+          })
+          .map(docSnap => {
+            const data = docSnap.data();
+            const authorVal = data.author || data.authorRole || data.createdBy || '';
+            const createdByVal = data.createdBy || data.authorRole || data.author || '';
+            return {
+              id: docSnap.id,
+              ...data,
+              author: authorVal,
+              createdBy: createdByVal,
+            };
+          }) as NewsItem[];
 
         setAnnouncements(prev => {
           const map = new Map<string, NewsItem>();
@@ -2641,7 +2651,7 @@ export const AdminPortal: React.FC = () => {
               map.set(item.id, item);
             }
           });
-          prev.forEach(item => {
+          prev.filter(item => item.deleted !== true && item.status !== 'deleted').forEach(item => {
             if (item.dispatchChannel !== 'MAIL' && !map.has(item.id)) {
               map.set(item.id, item);
             }
@@ -2720,8 +2730,10 @@ export const AdminPortal: React.FC = () => {
       onConfirm: async () => {
         try {
           setDeletingAnnouncementId(id);
+          await updateDoc(doc(db, "announcements", id), { deleted: true, status: 'deleted' }).catch(() => {});
           await deleteDoc(doc(db, "announcements", id));
           try {
+            await updateDoc(doc(db, "news", id), { deleted: true, status: 'deleted' }).catch(() => {});
             await deleteDoc(doc(db, "news", id));
           } catch (_) {}
 
@@ -8103,8 +8115,32 @@ export const AdminPortal: React.FC = () => {
                       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-slate-800/80">
                         <div>
                           <div className="flex flex-wrap items-center gap-2 mb-2">
-                            <span className="bg-amber-500/20 text-amber-300 text-xs font-black px-3 py-1 rounded-full border border-amber-500/30 flex items-center gap-1.5">
-                              <Calendar className="w-3.5 h-3.5" />
+                            {/* Type d'événement */}
+                            {act.eventType === 'FIXE' ? (
+                              <span className="bg-amber-500/20 text-amber-300 text-xs font-black px-3 py-1 rounded-full border border-amber-500/30 flex items-center gap-1.5">
+                                <Sparkles className="w-3.5 h-3.5" />
+                                <span>
+                                  {act.fixedType === 'ANNIVERSAIRE'
+                                    ? 'Anniversaire Rouama (Fixe)'
+                                    : act.fixedType === 'SOIREE_ROUAMA'
+                                    ? 'Soirée Rouama (Fixe)'
+                                    : 'Événement Fixe'}
+                                </span>
+                              </span>
+                            ) : (
+                              <span className="bg-sky-500/20 text-sky-300 text-xs font-black px-3 py-1 rounded-full border border-sky-500/30 flex items-center gap-1.5">
+                                <Palmtree className="w-3.5 h-3.5" />
+                                <span>Sorties & Loisirs (Simple)</span>
+                              </span>
+                            )}
+                            {act.fixedType === 'ANNIVERSAIRE' && (
+                              <span className="bg-amber-400/20 text-amber-300 text-xs font-black px-3 py-1 rounded-full border border-amber-300/30 flex items-center gap-1">
+                                <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+                                <span>JOUR DE FÊTE</span>
+                              </span>
+                            )}
+                            <span className="bg-slate-800 text-slate-300 text-xs font-black px-3 py-1 rounded-full border border-slate-700 flex items-center gap-1.5">
+                              <Calendar className="w-3.5 h-3.5 text-amber-500" />
                               <span>Date : {act.eventDate}</span>
                             </span>
                             {act.location && (
@@ -8136,10 +8172,10 @@ export const AdminPortal: React.FC = () => {
                               setEditingActivityId(act.id);
                               setActTitle(act.title || '');
                               setActCategoryType(act.eventType || 'FIXE');
-                              setActFixedType(act.fixedType || 'SOIREE_ROUAMA');
-                              setActDay(act.eventDay || (act.isDayPending ? 'LATER' : 'LATER'));
-                              setActMonth(act.eventMonth || '12');
-                              setActYear(act.eventYear || '2026');
+                              setActFixedType(act.fixedType || (act.title?.toUpperCase().includes('ANNIVERSAIRE') ? 'ANNIVERSAIRE' : 'SOIREE_ROUAMA'));
+                              setActDay(act.eventDay || (act.eventDate?.match(/\b(\d{1,2})\b/) ? act.eventDate.match(/\b(\d{1,2})\b/)![1] : (act.isDayPending ? 'LATER' : 'LATER')));
+                              setActMonth(act.eventMonth || (act.fixedType === 'ANNIVERSAIRE' ? '3' : '12'));
+                              setActYear(act.eventYear || (act.eventDate?.match(/\b(202\d|203\d)\b/) ? act.eventDate.match(/\b(202\d|203\d)\b/)![1] : '2026'));
                               setActDate(act.eventDate || '');
                               setActLocation(act.location || '');
                               setActDesc(act.description || '');
