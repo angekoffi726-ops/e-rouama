@@ -287,7 +287,7 @@ export const DEFAULT_ANNIVERSAIRE_ACTIVITY: EventActivity = {
   isDayPending: false,
   status: 'PUBLISHED',
   budgetStatus: 'NONE',
-  location: '',
+  location: 'À définir',
   description: '',
   program: 'À déterminer',
   createdBy: 'COMMISSION ORGANISATION',
@@ -332,6 +332,26 @@ export const DEFAULT_ANNIVERSAIRE_ACTIVITY: EventActivity = {
       memberNicknames: [],
     },
   ],
+};
+
+export const DEFAULT_SOIREE_ACTIVITY: EventActivity = {
+  id: 'ACT-SOIREE-2026',
+  title: 'GRANDE SOIRÉE ROUAMA 2026 (GALA FRATERNEL)',
+  eventType: 'FIXE',
+  fixedType: 'SOIREE_ROUAMA',
+  eventDate: '19 Décembre 2026',
+  eventDay: '19',
+  eventMonth: '12',
+  eventYear: '2026',
+  isDayPending: false,
+  status: 'PUBLISHED',
+  budgetStatus: 'NONE',
+  location: 'À définir',
+  description: 'Grande soirée annuelle de gala et de communion fraternelle E-ROUAMA',
+  program: 'Dîner de gala, allocutions, bilan et réjouissances',
+  createdBy: 'COMMISSION ORGANISATION',
+  createdAt: '2026-10-12T00:00:00.000Z',
+  committees: [],
 };
 
 export interface FinancialEvent {

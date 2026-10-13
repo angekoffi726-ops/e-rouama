@@ -11,6 +11,7 @@ import {
   NewsItem,
   EventActivity,
   DEFAULT_ANNIVERSAIRE_ACTIVITY,
+  DEFAULT_SOIREE_ACTIVITY,
   AgrProject,
   FinancialEvent,
   ArchiveDoc,
@@ -463,7 +464,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [withdrawals, setWithdrawals] = useState<WithdrawalRequest[]>([]);
   const [newsItems, setNewsItems] = useState<NewsItem[]>([]);
-  const [activities, setActivities] = useState<EventActivity[]>([DEFAULT_ANNIVERSAIRE_ACTIVITY]);
+  const [activities, setActivities] = useState<EventActivity[]>([DEFAULT_ANNIVERSAIRE_ACTIVITY, DEFAULT_SOIREE_ACTIVITY]);
   const [projects, setProjects] = useState<AgrProject[]>([]);
   const [financialEvents, setFinancialEvents] = useState<FinancialEvent[]>([]);
   const [archiveDocs, setArchiveDocs] = useState<ArchiveDoc[]>([]);
@@ -921,7 +922,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const loaded: EventActivity[] = [];
         snapshot.forEach(d => loaded.push({ id: d.id, ...(d.data() as any) }));
 
-        // Garantie de présence de l'Anniversaire Rouama (21 Mars 2027) dans Firestore et State
+        // Garantie de présence des 2 activités statutaires de l'Organisation (Anniversaire & Soirée)
         const hasAnniversaire = loaded.some(
           a => a.fixedType === 'ANNIVERSAIRE' || a.id === 'ACT-ANNIVERSAIRE-2027' || a.title?.toUpperCase().includes('ANNIVERSAIRE')
         );
@@ -929,6 +930,21 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           setDoc(doc(db, 'activities', DEFAULT_ANNIVERSAIRE_ACTIVITY.id), sanitizeFirestore(DEFAULT_ANNIVERSAIRE_ACTIVITY)).catch(console.warn);
           loaded.push(DEFAULT_ANNIVERSAIRE_ACTIVITY);
         }
+
+        const hasSoiree = loaded.some(
+          a => a.fixedType === 'SOIREE_ROUAMA' || a.id === 'ACT-SOIREE-2026' || a.title?.toUpperCase().includes('SOIRÉE') || a.title?.toUpperCase().includes('SOIREE')
+        );
+        if (!hasSoiree) {
+          setDoc(doc(db, 'activities', DEFAULT_SOIREE_ACTIVITY.id), sanitizeFirestore(DEFAULT_SOIREE_ACTIVITY)).catch(console.warn);
+          loaded.push(DEFAULT_SOIREE_ACTIVITY);
+        }
+
+        // Nettoyage systématique des lieux inventés : mention 'À définir' tant que non officialisés
+        loaded.forEach(a => {
+          if (!a.location || !a.location.trim() || a.location.includes('Espace Festif') || a.location.includes('Salle des Fêtes') || a.location.trim().toLowerCase() === 'abidjan') {
+            a.location = 'À définir';
+          }
+        });
 
         loaded.sort((a, b) => b.id.localeCompare(a.id));
         setActivities(loaded);

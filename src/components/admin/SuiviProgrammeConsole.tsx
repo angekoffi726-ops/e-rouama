@@ -4,53 +4,40 @@ import { db } from '../../firebase';
 import { useApp } from '../../context/AppContext';
 import {
   AdminRole,
-  DepartmentRole,
-  ProgrammeTask,
-  ProgrammeAlert,
-  TaskStatus,
-  SecretaryPV,
-  FinancialBilan,
-  AgrProject,
   EventActivity,
+  ReligiousEvent,
+  AgrProject,
   AdminLoginLog,
+  InfoRequest,
+  RouamaMember,
 } from '../../types';
 import {
   Shield,
-  AlertTriangle,
-  CheckCircle2,
-  Clock,
   Calendar,
   Search,
   Filter,
-  Plus,
-  Trash2,
   Eye,
-  FileText,
-  DollarSign,
-  Layers,
-  Sparkles,
-  ExternalLink,
-  Lock,
   RefreshCw,
-  AlertCircle,
-  TrendingUp,
   BarChart3,
-  X,
-  PhoneCall,
-  User,
-  Check,
-  Activity,
-  Users,
-  Zap,
-  Radio,
+  MessageSquare,
+  LogIn,
   CheckCircle,
   XCircle,
-  ArrowUpRight,
-  History,
-  LogIn,
-  MessageSquare,
+  MessageCircle,
+  ExternalLink,
+  Sparkles,
+  MapPin,
+  Bell,
+  Clock,
+  PhoneCall,
+  Check,
+  Building2,
+  Send,
+  AlertCircle,
+  TrendingUp,
 } from 'lucide-react';
 import { InfoRequestsModule } from './InfoRequestsModule';
+import { OFFICIAL_DEPARTMENTS } from '../../data/departmentMapping';
 
 interface AdminDepartmentConfig {
   key: string;
@@ -177,42 +164,238 @@ export const ADMIN_DEPARTMENTS_CONFIG: AdminDepartmentConfig[] = [
   },
 ];
 
+// Helper: Calcul de la date de relance à 1 mois avant la date de l'événement
+export function calculateReminderDate(dateStr?: string): {
+  reminderDateStr: string;
+  isPast: boolean;
+  isDueForReminder: boolean;
+} {
+  if (!dateStr || !dateStr.trim()) {
+    return {
+      reminderDateStr: 'Date non définie',
+      isPast: false,
+      isDueForReminder: false,
+    };
+  }
+
+  const clean = dateStr.trim();
+  const monthsFr: Record<string, number> = {
+    janvier: 0,
+    fevrier: 1,
+    'février': 1,
+    mars: 2,
+    avril: 3,
+    mai: 4,
+    juin: 5,
+    juillet: 6,
+    aout: 7,
+    'août': 7,
+    septembre: 8,
+    octobre: 9,
+    novembre: 10,
+    decembre: 11,
+    'décembre': 11,
+  };
+
+  const monthNamesFr = [
+    'Janvier', 'Février', 'Mars', 'Avril', 'Mai', 'Juin',
+    'Juillet', 'Août', 'Septembre', 'Octobre', 'Novembre', 'Décembre'
+  ];
+
+  // Pattern 1 : Jour Mois Année (ex: "21 Mars 2027", "10 septembre 2027", "19 Décembre 2026")
+  const dayMonthNameYearRegex = /^(\d{1,2})\s+([a-zA-Z\u00C0-\u00FF]+)\s+(\d{4})/i;
+  const match1 = clean.match(dayMonthNameYearRegex);
+  if (match1) {
+    const day = parseInt(match1[1], 10);
+    const mName = match1[2].toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+    const year = parseInt(match1[3], 10);
+
+    const mIdx = Object.keys(monthsFr).find(k => k.normalize("NFD").replace(/[\u0300-\u036f]/g, "") === mName);
+    if (mIdx !== undefined) {
+      const monthNumber = monthsFr[mIdx];
+      let prevMonth = monthNumber - 1;
+      let prevYear = year;
+      if (prevMonth < 0) {
+        prevMonth = 11;
+        prevYear -= 1;
+      }
+      const maxDaysInPrev = new Date(prevYear, prevMonth + 1, 0).getDate();
+      const actualDay = Math.min(day, maxDaysInPrev);
+      const reminderDateStr = `${actualDay} ${monthNamesFr[prevMonth]} ${prevYear}`;
+
+      const targetEventDate = new Date(year, monthNumber, day, 23, 59, 59);
+      const reminderDateObj = new Date(prevYear, prevMonth, actualDay, 0, 0, 0);
+      const now = new Date();
+      const isPast = targetEventDate.getTime() < now.getTime();
+      const isDueForReminder = !isPast && now.getTime() >= reminderDateObj.getTime();
+
+      return {
+        reminderDateStr,
+        isPast,
+        isDueForReminder,
+      };
+    }
+  }
+
+  // Pattern 2 : Mois Année uniquement (ex: "Décembre 2026", "Septembre 2027")
+  const monthNameYearRegex = /^([a-zA-Z\u00C0-\u00FF]+)\s+(\d{4})/i;
+  const match2 = clean.match(monthNameYearRegex);
+  if (match2) {
+    const mName = match2[1].toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+    const year = parseInt(match2[2], 10);
+    const mIdx = Object.keys(monthsFr).find(k => k.normalize("NFD").replace(/[\u0300-\u036f]/g, "") === mName);
+    if (mIdx !== undefined) {
+      const monthNumber = monthsFr[mIdx];
+      let prevMonth = monthNumber - 1;
+      let prevYear = year;
+      if (prevMonth < 0) {
+        prevMonth = 11;
+        prevYear -= 1;
+      }
+      const reminderDateStr = `${monthNamesFr[prevMonth]} ${prevYear}`;
+      const reminderDateObj = new Date(prevYear, prevMonth, 1, 0, 0, 0);
+      const targetEventDate = new Date(year, monthNumber + 1, 0, 23, 59, 59);
+      const now = new Date();
+      const isPast = targetEventDate.getTime() < now.getTime();
+      const isDueForReminder = !isPast && now.getTime() >= reminderDateObj.getTime();
+
+      return {
+        reminderDateStr,
+        isPast,
+        isDueForReminder,
+      };
+    }
+  }
+
+  // Pattern 3 : Format standard DD/MM/YYYY ou YYYY-MM-DD
+  const slashMatch = clean.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
+  if (slashMatch) {
+    const day = parseInt(slashMatch[1], 10);
+    const month = parseInt(slashMatch[2], 10) - 1;
+    const year = parseInt(slashMatch[3], 10);
+    let prevMonth = month - 1;
+    let prevYear = year;
+    if (prevMonth < 0) {
+      prevMonth = 11;
+      prevYear -= 1;
+    }
+    const maxDays = new Date(prevYear, prevMonth + 1, 0).getDate();
+    const actualDay = Math.min(day, maxDays);
+    const reminderDateStr = `${actualDay} ${monthNamesFr[prevMonth]} ${prevYear}`;
+    const targetEventDate = new Date(year, month, day, 23, 59, 59);
+    const reminderDateObj = new Date(prevYear, prevMonth, actualDay, 0, 0, 0);
+    const now = new Date();
+    const isPast = targetEventDate.getTime() < now.getTime();
+    const isDueForReminder = !isPast && now.getTime() >= reminderDateObj.getTime();
+    return {
+      reminderDateStr,
+      isPast,
+      isDueForReminder,
+    };
+  }
+
+  return {
+    reminderDateStr: `1 mois avant (${clean})`,
+    isPast: false,
+    isDueForReminder: false,
+  };
+}
+
+// Helper: Nettoyage et nom affiché des départements
+export function getDepartmentDisplayName(role?: string): string {
+  if (!role) return 'Département';
+  const clean = role.toUpperCase().trim();
+  if (clean.includes('ORGANIS')) return 'Commission Organisation';
+  if (clean.includes('TRESOR')) return 'Trésorerie Générale';
+  if (clean.includes('PROJET') || clean.includes('AGR')) return 'Commission Projets (AGR)';
+  if (clean.includes('SPIRIT')) return 'Département Spiritualité';
+  if (clean.includes('SECRETAR') || clean === 'SG') return 'Secrétariat Général';
+  if (clean.includes('COM') || clean.includes('BIC')) return "Communication (BIC)";
+  if (clean.includes('CERVEAU') || clean.includes('PRESID')) return 'Le Cerveau (Présidence)';
+  if (clean.includes('PAYOR')) return 'Espace Payor';
+  if (clean.includes('SDP') || clean.includes('PROGRAMME')) return 'Suivi du Programme (SDP)';
+  return role;
+}
+
+// Helper: Recherche du contact WhatsApp du département
+export function getDepartmentContact(
+  deptRole: string,
+  membersList: RouamaMember[]
+): { name: string; phone: string; cleanPhone: string } {
+  const cleanRole = (deptRole || '').toUpperCase().trim();
+  const dept = OFFICIAL_DEPARTMENTS.find(d => {
+    const dRole = (d.adminRole || '').toUpperCase();
+    return cleanRole === dRole || cleanRole.includes(dRole) || dRole.includes(cleanRole);
+  });
+
+  if (dept && dept.managerMemberIds && dept.managerMemberIds.length > 0) {
+    const member = membersList.find(m => dept.managerMemberIds.includes(String(m.id)));
+    if (member && member.phone) {
+      return {
+        name: member.nickname || member.firstName,
+        phone: member.phone,
+        cleanPhone: member.phone.replace(/[^0-9]/g, ''),
+      };
+    }
+  }
+
+  // Fallbacks officiels vérifiés
+  if (cleanRole.includes('TRESOR')) return { name: 'Léger', phone: '2250757537785', cleanPhone: '2250757537785' };
+  if (cleanRole.includes('SECRETAR')) return { name: 'Josiane', phone: '2250747195076', cleanPhone: '2250747195076' };
+  if (cleanRole.includes('ORGANIS')) return { name: 'Emile / Otinel', phone: '2250544996236', cleanPhone: '2250544996236' };
+  if (cleanRole.includes('PROJET')) return { name: 'Ulrich / Gilbert', phone: '2250701137891', cleanPhone: '2250701137891' };
+  if (cleanRole.includes('SPIRIT')) return { name: 'Marie / Cyprien', phone: '2250564281013', cleanPhone: '2250564281013' };
+  if (cleanRole.includes('COM')) return { name: 'Désiré / Esther', phone: '2250584346071', cleanPhone: '2250584346071' };
+  if (cleanRole.includes('PAYOR')) return { name: 'Sylas', phone: '2250703567992', cleanPhone: '2250703567992' };
+  if (cleanRole.includes('CERVEAU')) return { name: 'Wilfried', phone: '2250501948962', cleanPhone: '2250501948962' };
+
+  return { name: 'Responsable', phone: '2250501948962', cleanPhone: '2250501948962' };
+}
+
+// Modèle unifié pour les activités des départements (Organisation, Spiritualité, Projets)
+interface DepartmentActivityViewItem {
+  id: string;
+  departmentKey: 'ORGANISATION' | 'SPIRITUALITE' | 'PROJET';
+  departmentName: string;
+  departmentIcon: string;
+  departmentBadgeColor: string;
+  title: string;
+  date: string;
+  location: string;
+  reminderDate: string;
+  isPast: boolean;
+  isDueForReminder: boolean;
+  statusLabel?: string;
+  description?: string;
+}
+
 interface SuiviProgrammeConsoleProps {
   activeRole?: AdminRole;
 }
 
-export const SuiviProgrammeConsole: React.FC<SuiviProgrammeConsoleProps> = ({ activeRole }) => {
+export const SuiviProgrammeConsole: React.FC<SuiviProgrammeConsoleProps> = () => {
   const {
-    members,
-    pvs,
-    bilans,
-    projects,
-    activities,
-    fundBalances,
-    declarations,
-    programmeTasks,
-    programmeAlerts,
-    adminLogs,
-    logAdminConnection,
-    addProgrammeTask,
-    updateProgrammeTask,
-    deleteProgrammeTask,
-    createProgrammeAlert,
-    resolveProgrammeAlert,
+    members = [],
+    activities = [],
+    projects = [],
+    religiousEvents = [],
     infoRequests = [],
+    adminLogs = [],
   } = useApp();
 
-  // Tab state: SYNTHESE, TACHES, ALERTES, AUDIT, CONNEXIONS, NAVETTE
-  const [activeTab, setActiveTab] = useState<'SYNTHESE' | 'TACHES' | 'ALERTES' | 'AUDIT' | 'CONNEXIONS' | 'NAVETTE'>('SYNTHESE');
+  // Navigation par onglets clairs et structurés
+  const [activeTab, setActiveTab] = useState<'ACTIVITES' | 'DEMANDES_INFO' | 'CONNEXIONS' | 'NAVETTE'>('ACTIVITES');
 
-  const unreadInfoRequestsForSdp = useMemo(() => {
-    return (infoRequests || []).filter(
-      r => (r.recipientRole === 'SDP' || r.recipientRole.includes('PROGRAMME')) && !r.isRead
-    ).length;
-  }, [infoRequests]);
+  // Filtres pour la rubrique Activités
+  const [activityDeptFilter, setActivityDeptFilter] = useState<'ALL' | 'ORGANISATION' | 'SPIRITUALITE' | 'PROJET'>('ALL');
+  const [activitySearchQuery, setActivitySearchQuery] = useState<string>('');
+
+  // Filtres pour la rubrique Demandes d'Information
+  const [infoFilter, setInfoFilter] = useState<'ALL' | 'PENDING' | 'REPLIED'>('ALL');
+  const [infoSearchQuery, setInfoSearchQuery] = useState<string>('');
 
   // =========================================================
-  // ÉCOUTE FIRESTORE EN TEMPS RÉEL (onSnapshot) DES ADMIN_LOGS
+  // ÉCOUTE FIRESTORE EN TEMPS RÉEL DES CONNEXIONS ADMINS
   // =========================================================
   const [realtimeAdminLogs, setRealtimeAdminLogs] = useState<AdminLoginLog[]>([]);
 
@@ -239,7 +422,7 @@ export const SuiviProgrammeConsole: React.FC<SuiviProgrammeConsoleProps> = ({ ac
     return adminLogs || [];
   }, [realtimeAdminLogs, adminLogs]);
 
-  // Date du jour (Multi-format pour prise en compte stricte des fuseaux horaires)
+  // Date du jour pour le contrôle d'assiduité
   const todayDateStrings = useMemo(() => {
     const now = new Date();
     const isoDate = now.toISOString().split('T')[0];
@@ -258,7 +441,6 @@ export const SuiviProgrammeConsole: React.FC<SuiviProgrammeConsoleProps> = ({ ac
     });
   }, []);
 
-  // Filtrage des logs pour la journée actuelle
   const todayLogs = useMemo(() => {
     return effectiveAdminLogs.filter((log) => {
       if (!log) return false;
@@ -292,11 +474,9 @@ export const SuiviProgrammeConsole: React.FC<SuiviProgrammeConsoleProps> = ({ ac
     );
   };
 
-  // Compilation des statistiques par département pour le jour en cours
   const departmentAttendance = useMemo(() => {
     return ADMIN_DEPARTMENTS_CONFIG.map((dept) => {
       const logsForDept = todayLogs.filter((log) => deptAttendanceMatch(dept, log.role));
-
       const count = logsForDept.length;
       const isConnectedToday = count > 0;
       const sortedLogs = [...logsForDept].sort((a, b) =>
@@ -316,25 +496,15 @@ export const SuiviProgrammeConsole: React.FC<SuiviProgrammeConsoleProps> = ({ ac
         isConnectedToday,
         latestLog,
         lastLoginTime,
-        logs: sortedLogs,
       };
     });
   }, [todayLogs]);
 
-  const connectedDepts = useMemo(() => {
-    return departmentAttendance.filter((d) => d.isConnectedToday);
-  }, [departmentAttendance]);
+  const connectedDepts = useMemo(() => departmentAttendance.filter((d) => d.isConnectedToday), [departmentAttendance]);
+  const absentDepts = useMemo(() => departmentAttendance.filter((d) => !d.isConnectedToday), [departmentAttendance]);
 
-  const absentDepts = useMemo(() => {
-    return departmentAttendance.filter((d) => !d.isConnectedToday);
-  }, [departmentAttendance]);
-
-  const totalConnectionsToday = todayLogs.length;
-
-  // Simulation test pour vérification immédiate dans l'espace SDP
+  // Simulation test de connexion
   const [isSimulatingLogin, setIsSimulatingLogin] = useState<boolean>(false);
-  const [simulationRoleSelected, setSimulationRoleSelected] = useState<string>('TRESORIER');
-
   const handleSimulateAdminLogin = async (deptKey: string) => {
     setIsSimulatingLogin(true);
     try {
@@ -355,898 +525,285 @@ export const SuiviProgrammeConsole: React.FC<SuiviProgrammeConsoleProps> = ({ ac
   };
 
   // =========================================================
-  // RENDU DES 2 BLOCS D'AUDIT DES CONNEXIONS ADMINS (JOUR J)
+  // 1. COMPILATION CENTRALISÉE DES ACTIVITÉS DES DÉPARTEMENTS
+  // (ORGANISATION : 2 ACTIVITÉS RÉELLES • SPIRITUALITÉ & PROJETS : 0 ACTIVITÉ)
   // =========================================================
-  const renderAdminAttendanceTwoBlocks = () => (
-    <div className="space-y-6">
-      {/* En-tête de section avec badge temps réel et assiduité */}
-      <div className="bg-slate-900 border border-emerald-500/30 rounded-3xl p-5 sm:p-6 shadow-xl relative overflow-hidden">
-        <div className="absolute top-0 right-0 w-64 h-64 bg-emerald-500/10 rounded-full blur-3xl pointer-events-none" />
-        <div className="relative z-10 flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
-          <div>
-            <div className="inline-flex items-center gap-2 bg-emerald-500/20 text-emerald-300 px-3 py-1 rounded-full text-xs font-black uppercase tracking-wider mb-2 border border-emerald-500/30">
-              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping inline-block" />
-              <span>Audit des Connexions Administrateurs • En Direct (onSnapshot)</span>
-            </div>
-            <h3 className="text-lg sm:text-xl font-black text-white flex flex-wrap items-center gap-2">
-              <span>Contrôle d'Assiduité des Départements Admins</span>
-              <span className="text-xs font-mono font-bold text-slate-300 bg-slate-950 px-2.5 py-1 rounded-xl border border-slate-800">
-                {todayDisplayDate}
-              </span>
-            </h3>
-            <p className="text-xs text-slate-400 mt-1 max-w-2xl">
-              Supervision continue de l'assiduité des responsables de départements admins (Trésorier, Organisateur, Respo Projet, Payor, Secrétaire, etc.).
-            </p>
-          </div>
+  const allDepartmentActivities = useMemo<DepartmentActivityViewItem[]>(() => {
+    const list: DepartmentActivityViewItem[] = [];
 
-          <div className="flex items-center gap-3">
-            <div className="bg-slate-950 px-4 py-2.5 rounded-2xl border border-slate-800 text-right">
-              <span className="text-[10px] text-slate-400 uppercase font-bold block">Assiduité Globale</span>
-              <span className="text-xl font-black text-emerald-400 font-mono">
-                {connectedDepts.length} / {ADMIN_DEPARTMENTS_CONFIG.length} connectés
-              </span>
-              <span className="text-[10px] text-slate-500 block">
-                {totalConnectionsToday} session{totalConnectionsToday > 1 ? 's' : ''} au total
-              </span>
-            </div>
-          </div>
-        </div>
-      </div>
+    // Helper de nettoyage des lieux : aucun lieu fictif autorisé, remplacement par "À définir"
+    const sanitizeLocation = (raw?: string): string => {
+      if (!raw || !raw.trim()) return 'À définir';
+      const clean = raw.trim();
+      const lower = clean.toLowerCase();
+      if (
+        lower === 'abidjan' ||
+        lower.includes('espace festif') ||
+        lower.includes('salle des fêtes') ||
+        lower.includes('espace dédié') ||
+        lower.includes('songon') ||
+        lower.includes('paroisse')
+      ) {
+        return 'À définir';
+      }
+      return clean;
+    };
 
-      {/* GRILLE DES 2 BLOCS DU CAHIER DES CHARGES */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+    // --- 1. COMMISSION ORGANISATION (UNIQUEMENT LES 2 ACTIVITÉS RÉELLES STATUTAIRES) ---
+    // Recherche des 2 activités statutaires officielles dans la liste
+    const annivAct = activities.find(
+      a => a.fixedType === 'ANNIVERSAIRE' || a.id === 'ACT-ANNIVERSAIRE-2027' || a.title?.toUpperCase().includes('ANNIVERSAIRE')
+    );
+    const soireeAct = activities.find(
+      a => a.fixedType === 'SOIREE_ROUAMA' || a.id === 'ACT-SOIREE-2026' || a.title?.toUpperCase().includes('SOIRÉE') || a.title?.toUpperCase().includes('SOIREE')
+    );
 
-        {/* ========================================================= */}
-        {/* BLOC 1 : DÉPARTEMENTS ADMINS CONNECTÉS AUJOURD'HUI */}
-        {/* ========================================================= */}
-        <div className="bg-slate-900 border border-slate-800 rounded-3xl p-5 sm:p-6 shadow-xl flex flex-col justify-between">
-          <div>
-            <div className="flex items-center justify-between border-b border-slate-800 pb-3 mb-4">
-              <div className="flex items-center gap-2.5">
-                <div className="p-2 bg-emerald-500/10 rounded-xl border border-emerald-500/20 text-emerald-400">
-                  <CheckCircle className="w-5 h-5" />
-                </div>
-                <div>
-                  <h4 className="text-sm font-black text-white uppercase tracking-wide">
-                    BLOC 1 : DÉPARTEMENTS ADMINS CONNECTÉS AUJOURD'HUI
-                  </h4>
-                  <p className="text-[11px] text-slate-400 font-medium">
-                    Responsables ayant effectué au moins 1 connexion ce jour
-                  </p>
-                </div>
-              </div>
-              <span className="bg-emerald-500/20 text-emerald-300 text-xs font-black px-2.5 py-1 rounded-full border border-emerald-500/30">
-                🟢 {connectedDepts.length} Présent(s)
-              </span>
-            </div>
-
-            {connectedDepts.length === 0 ? (
-              <div className="bg-slate-950/80 rounded-2xl border border-slate-800/80 p-8 text-center space-y-2 my-2">
-                <Clock className="w-8 h-8 text-slate-600 mx-auto animate-pulse" />
-                <p className="text-xs font-bold text-slate-300">
-                  Aucune connexion administrative enregistrée aujourd'hui pour l'instant.
-                </p>
-                <p className="text-[11px] text-slate-500">
-                  Dès qu'un responsable se connecte, son statut passera instantanément à 🟢 En ligne / Passé aujourd'hui.
-                </p>
-              </div>
-            ) : (
-              <div className="space-y-3 max-h-[420px] overflow-y-auto pr-1">
-                {connectedDepts.map((dept) => (
-                  <div
-                    key={dept.key}
-                    className="bg-slate-950 p-3.5 rounded-2xl border border-emerald-500/30 hover:border-emerald-500/60 transition-all flex items-center justify-between gap-3 shadow-md"
-                  >
-                    <div className="flex items-center gap-3 min-w-0">
-                      <span className="text-2xl p-2 bg-slate-900 rounded-xl border border-slate-800 shrink-0">
-                        {dept.icon}
-                      </span>
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2">
-                          <span className={`px-2 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider ${dept.badgeBg} ${dept.badgeText} border ${dept.borderColor}`}>
-                            {dept.shortName}
-                          </span>
-                          <span className="text-xs font-black text-white truncate">
-                            {dept.name}
-                          </span>
-                        </div>
-                        <div className="flex items-center gap-2 mt-1 text-[11px] text-slate-400">
-                          <Clock className="w-3 h-3 text-emerald-400 shrink-0" />
-                          <span>
-                            Dernière connexion : <strong className="text-white">{dept.lastLoginTime ? `Connecté à ${dept.lastLoginTime}` : "Aujourd'hui"}</strong>
-                          </span>
-                          {dept.latestLog?.memberName && dept.latestLog.memberName !== dept.key && (
-                            <span className="text-slate-500 truncate hidden sm:inline">
-                              • {dept.latestLog.memberName}
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="text-right shrink-0">
-                      <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 text-[10px] font-black">
-                        <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                        <span>🟢 En ligne / Passé aujourd'hui</span>
-                      </div>
-                      <span className="block text-[10px] font-bold text-slate-400 mt-1">
-                        {dept.count} connexion{dept.count > 1 ? 's' : ''}
-                      </span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-
-          <div className="mt-4 pt-3 border-t border-slate-800/80 flex items-center justify-between text-[11px] text-slate-400">
-            <span>Mise à jour instantanée sans rechargement (onSnapshot)</span>
-            <span className="text-emerald-400 font-mono font-bold">● Synchronisé</span>
-          </div>
-        </div>
-
-        {/* ========================================================= */}
-        {/* BLOC 2 : FRÉQUENCE & NOMBRE DE CONNEXIONS DU JOUR */}
-        {/* ========================================================= */}
-        <div className="bg-slate-900 border border-slate-800 rounded-3xl p-5 sm:p-6 shadow-xl flex flex-col justify-between">
-          <div>
-            <div className="flex items-center justify-between border-b border-slate-800 pb-3 mb-4">
-              <div className="flex items-center gap-2.5">
-                <div className="p-2 bg-amber-500/10 rounded-xl border border-amber-500/20 text-amber-400">
-                  <BarChart3 className="w-5 h-5" />
-                </div>
-                <div>
-                  <h4 className="text-sm font-black text-white uppercase tracking-wide">
-                    BLOC 2 : FRÉQUENCE & NOMBRE DE CONNEXIONS DU JOUR
-                  </h4>
-                  <p className="text-[11px] text-slate-400 font-medium">
-                    Compteur d'assiduité par département ({totalConnectionsToday} sessions au total)
-                  </p>
-                </div>
-              </div>
-              <span className="bg-slate-950 text-slate-300 text-xs font-mono font-black px-2.5 py-1 rounded-full border border-slate-800">
-                {totalConnectionsToday} Connexions
-              </span>
-            </div>
-
-            {/* Tableau ou cartes récapitulatives avec le compteur d'assiduité du jour */}
-            <div className="space-y-2 max-h-[420px] overflow-y-auto pr-1">
-              {departmentAttendance.map((dept) => {
-                const isZero = dept.count === 0;
-                return (
-                  <div
-                    key={dept.key}
-                    className={`p-3 rounded-2xl border transition-all flex items-center justify-between gap-3 ${
-                      isZero
-                        ? 'bg-rose-950/20 border-rose-500/30 hover:border-rose-500/50'
-                        : 'bg-slate-950 border-slate-800 hover:border-slate-700'
-                    }`}
-                  >
-                    <div className="flex items-center gap-3 min-w-0">
-                      <span className="text-xl p-1.5 bg-slate-900 rounded-xl border border-slate-800 shrink-0">
-                        {dept.icon}
-                      </span>
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2">
-                          <span className="text-xs font-black text-white truncate">
-                            {dept.name}
-                          </span>
-                          <span className="text-[10px] text-slate-400 font-semibold">
-                            ({dept.shortName})
-                          </span>
-                        </div>
-                        <p className="text-[10px] text-slate-400 truncate">
-                          {dept.description}
-                        </p>
-                      </div>
-                    </div>
-
-                    <div className="text-right shrink-0">
-                      {isZero ? (
-                        <div className="space-y-1">
-                          <span className="inline-block px-2.5 py-1 rounded-full bg-rose-500/20 border border-rose-500/40 text-rose-300 text-[10px] font-black">
-                            🔴 0 connexion aujourd'hui
-                          </span>
-                          <span className="block text-[10px] text-rose-400/80 font-bold">
-                            Absent / Non connecté
-                          </span>
-                        </div>
-                      ) : (
-                        <div className="space-y-1">
-                          <span className="inline-block px-2.5 py-1 rounded-full bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 text-[10px] font-black font-mono">
-                            {dept.shortName} : {dept.count} connexion{dept.count > 1 ? 's' : ''} aujourd'hui
-                          </span>
-                          <span className="block text-[10px] text-slate-400">
-                            Dernier passage : {dept.lastLoginTime || 'Aujourd’hui'}
-                          </span>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* Barre de relance pour absents */}
-          <div className="mt-4 pt-3 border-t border-slate-800/80 flex flex-wrap items-center justify-between gap-2 text-[11px]">
-            <div className="flex items-center gap-2 text-slate-400">
-              <span>Départements non connectés aujourd'hui :</span>
-              <span className="text-rose-400 font-bold font-mono">{absentDepts.length} / {ADMIN_DEPARTMENTS_CONFIG.length}</span>
-            </div>
-            {absentDepts.length > 0 && (
-              <button
-                type="button"
-                onClick={() => handleOpenAlertModal(absentDepts[0].key, absentDepts[0].name)}
-                className="text-[10px] bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/30 px-2.5 py-1 rounded-lg font-bold flex items-center gap-1 transition-all"
-              >
-                <AlertTriangle className="w-3 h-3 text-rose-400" />
-                <span>Relancer les absents</span>
-              </button>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* BARRE DE SIMULATION & TEST IMMÉDIAT DE CONNEXION */}
-      <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
-        <div className="flex items-center gap-2.5">
-          <Zap className="w-4 h-4 text-amber-400 shrink-0" />
-          <div>
-            <span className="text-xs font-bold text-white block">
-              Tester l'actualisation temps réel d'une connexion admin
-            </span>
-            <span className="text-[10px] text-slate-400 block">
-              Simule l'enregistrement immédiat dans Firestore (admin_logs) pour tester l'actualisation instantanée sans rafraîchir.
-            </span>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-2 w-full sm:w-auto">
-          <select
-            value={simulationRoleSelected}
-            onChange={(e) => setSimulationRoleSelected(e.target.value)}
-            className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-1.5 text-xs text-white font-bold"
-          >
-            {ADMIN_DEPARTMENTS_CONFIG.map((d) => (
-              <option key={d.key} value={d.key}>
-                {d.icon} {d.shortName} ({d.name})
-              </option>
-            ))}
-          </select>
-
-          <button
-            type="button"
-            disabled={isSimulatingLogin}
-            onClick={() => handleSimulateAdminLogin(simulationRoleSelected)}
-            className="bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-slate-950 font-black px-3.5 py-1.5 rounded-xl text-xs flex items-center gap-1.5 transition-all cursor-pointer shrink-0"
-          >
-            {isSimulatingLogin ? (
-              <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-            ) : (
-              <LogIn className="w-3.5 h-3.5" />
-            )}
-            <span>Simuler Connexion</span>
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-
-  // Filters for TACHES tab
-  const [filterDepartment, setFilterDepartment] = useState<string>('ALL');
-  const [filterStatus, setFilterStatus] = useState<string>('ALL');
-  const [searchQuery, setSearchQuery] = useState<string>('');
-
-  // Modal: Add / Edit Task
-  const [isAddTaskModalOpen, setIsAddTaskModalOpen] = useState(false);
-  const [taskForm, setTaskForm] = useState<{
-    department: DepartmentRole;
-    departmentName: string;
-    source: 'PV' | 'PROJET' | 'ACTIVITE' | 'CALENDRIER' | 'MANUAL';
-    sourceTitle: string;
-    title: string;
-    description: string;
-    assignedTo: string;
-    deadline: string;
-    status: TaskStatus;
-    notes: string;
-  }>({
-    department: 'SECRETARIAT',
-    departmentName: 'Secrétariat Général',
-    source: 'CALENDRIER',
-    sourceTitle: 'Programme Annuel 2026',
-    title: '',
-    description: '',
-    assignedTo: '',
-    deadline: new Date(Date.now() + 14 * 86400000).toISOString().split('T')[0],
-    status: 'IN_PROGRESS',
-    notes: '',
-  });
-
-  // Modal: Create Alert / Signalement
-  const [isAlertModalOpen, setIsAlertModalOpen] = useState(false);
-  const [alertTargetTask, setAlertTargetTask] = useState<ProgrammeTask | null>(null);
-  const [alertForm, setAlertForm] = useState<{
-    targetDepartment: DepartmentRole;
-    targetDepartmentName: string;
-    title: string;
-    message: string;
-    severity: 'INFO' | 'WARNING' | 'CRITICAL';
-    targetPhone: string;
-  }>({
-    targetDepartment: 'SECRETARIAT',
-    targetDepartmentName: 'Secrétariat Général',
-    title: '',
-    message: '',
-    severity: 'WARNING',
-    targetPhone: '',
-  });
-
-  // Modal: Audit Detail (Read-Only)
-  const [auditItemModal, setAuditItemModal] = useState<{
-    type: 'PV' | 'BILAN' | 'PROJET' | 'ACTIVITE';
-    item: SecretaryPV | FinancialBilan | AgrProject | EventActivity | any;
-  } | null>(null);
-
-  // Sub-filter for Audit view
-  const [auditSubCategory, setAuditSubCategory] = useState<'PVS' | 'BILANS' | 'PROJETS' | 'ACTIVITES' | 'CAISSES'>('PVS');
-
-  // Default Baseline Tasks if programmeTasks is empty
-  const defaultBaselineTasks: Omit<ProgrammeTask, 'id' | 'createdAt'>[] = useMemo(() => [
-    {
-      department: 'SECRETARIAT',
-      departmentName: 'Secrétariat Général',
-      source: 'PV',
-      sourceTitle: 'Règlement Intérieur E-ROUAMA',
-      title: 'Rédaction et archivage systématique des Procès-Verbaux de réunions',
-      description: 'Chaque réunion doit faire l’objet d’un PV complet avec registre des présences et transmission au Payor.',
-      assignedTo: 'Secrétariat Général',
-      deadline: '2026-12-31',
-      status: 'IN_PROGRESS',
-      notes: 'Suivi permanent des émargements',
-    },
-    {
-      department: 'TRESORIER',
-      departmentName: 'Trésorerie Générale',
-      source: 'CALENDRIER',
-      sourceTitle: 'Statuts E-ROUAMA (Art. Cotisations)',
-      title: 'Recouvrement mensuel des cotisations statutaires (500 FCFA/mois)',
-      description: 'Tenue des 5 caisses, validation des reçus Wave et relances régulières des membres en retard.',
-      assignedTo: 'Trésorier Général (Capelo)',
-      deadline: '2026-10-31',
-      status: 'WARNING',
-      notes: 'Relances périodiques nécessaires',
-    },
-    {
-      department: 'TRESORIER',
-      departmentName: 'Trésorerie Générale',
-      source: 'CALENDRIER',
-      sourceTitle: 'Comptabilité Annuelle',
-      title: 'Publication du Bilan Financier Trimestriel consolidé',
-      description: 'Arrêté des caisses, pointage des décaissements et soumission au Payor pour double visa.',
-      assignedTo: 'Trésorier Général',
-      deadline: '2026-11-15',
-      status: 'IN_PROGRESS',
-    },
-    {
-      department: 'PROJET',
-      departmentName: 'Commission Projets (AGR)',
-      source: 'PROJET',
-      sourceTitle: 'Projet Élevage Poulets Goliath',
-      title: 'Finalisation de la levée de fonds et démarrage du site pilote AGR',
-      description: 'Atteindre le coût estimé du projet, vérifier les quotes-parts des membres et lancer les acquisitions.',
-      assignedTo: 'Responsable Commission Projets',
-      deadline: '2026-11-30',
-      status: 'WARNING',
-      notes: 'Investissement prioritaire de la Fraternité',
-    },
-    {
-      department: 'ORGANISATION',
+    // Activité Réelle 1 : Anniversaire Rouama (21 Mars 2027)
+    const annivTitle = annivAct?.title || 'ANNIVERSAIRE ROUAMA (21 MARS 2027)';
+    const annivDate = annivAct?.eventDate || '21 Mars 2027';
+    const annivReminder = calculateReminderDate(annivDate);
+    list.push({
+      id: annivAct?.id || 'ACT-ANNIVERSAIRE-2027',
+      departmentKey: 'ORGANISATION',
       departmentName: 'Commission Organisation',
-      source: 'ACTIVITE',
-      sourceTitle: 'Soirée Fraternelle Rouama',
-      title: 'Mise en place du Comité Ad-hoc (PCO, Cambuse, Logistique)',
-      description: 'Dépôt du budget prévisionnel de l’événement et validation par le Trésorier Général.',
-      assignedTo: 'Commission Organisation',
-      deadline: '2026-11-10',
-      status: 'IN_PROGRESS',
-    },
-    {
-      department: 'SPIRITUALITE',
-      departmentName: 'Département Spiritualité',
-      source: 'CALENDRIER',
-      sourceTitle: 'Vie Spirituelle Rouama',
-      title: 'Animation de la Chaîne de Prière et intentions fraternelles',
-      description: 'Veiller au maintien quotidien de la prière de Saint Augustin et du verset du jour.',
-      assignedTo: 'Responsable Spiritualité',
-      deadline: '2026-12-31',
-      status: 'IN_PROGRESS',
-    },
-    {
-      department: 'COM',
-      departmentName: 'Base d’Information et Communication (BIC)',
-      source: 'CALENDRIER',
-      sourceTitle: 'Gbaïraï & Annonces',
-      title: 'Diffusion des communiqués officiels et suivi des accusés de réception (ACK)',
-      description: 'Garantir que 100% des décisions validées par Payor soient portées à la connaissance des membres.',
-      assignedTo: 'Responsable Communication (COM)',
-      deadline: '2026-12-31',
-      status: 'IN_PROGRESS',
-    },
-    {
-      department: 'CERVEAU',
-      departmentName: 'Le Cerveau (Présidence)',
-      source: 'CALENDRIER',
-      sourceTitle: 'Haute Gouvernance',
-      title: 'Audit des accès membres et arbitrage des décaissements',
-      description: 'Supervision de la collégialité, validation des clés PIN et verrouillage des sorties de caisse.',
-      assignedTo: 'Le Cerveau (Président)',
-      deadline: '2026-12-31',
-      status: 'IN_PROGRESS',
-    },
-  ], []);
-
-  // Merged live tasks: from Firestore, or fallback to default baseline tasks
-  const allTasks: ProgrammeTask[] = useMemo(() => {
-    if (programmeTasks && programmeTasks.length > 0) {
-      return programmeTasks;
-    }
-    return defaultBaselineTasks.map((t, idx) => ({
-      ...t,
-      id: `BASE-TASK-${idx + 1}`,
-      createdAt: new Date().toISOString(),
-    }));
-  }, [programmeTasks, defaultBaselineTasks]);
-
-  // Derived tasks from real database records (Projects with deadline, PVs with status)
-  const autoDerivedTasks: ProgrammeTask[] = useMemo(() => {
-    const derived: ProgrammeTask[] = [];
-
-    // 1. Projects deadlines
-    projects.forEach(p => {
-      if (p.paymentDeadline) {
-        const isPast = new Date(p.paymentDeadline).getTime() < Date.now();
-        derived.push({
-          id: `DERIVED-PROJ-${p.id}`,
-          department: 'PROJET',
-          departmentName: 'Commission Projets (AGR)',
-          source: 'PROJET',
-          sourceTitle: p.title,
-          sourceId: p.id,
-          title: `Date Limite Cotisation AGR : ${p.title}`,
-          description: `Objectif per capita : ${p.requiredAmountPerMember?.toLocaleString('fr-FR')} F CFA. Coût total : ${p.estimatedCost?.toLocaleString('fr-FR')} F CFA.`,
-          assignedTo: (p.pilotTeam && p.pilotTeam[0]) || 'Commission Projets',
-          deadline: p.paymentDeadline,
-          status: isPast ? 'OVERDUE' : 'IN_PROGRESS',
-          createdAt: new Date().toISOString(),
-        });
-      }
+      departmentIcon: '🎪',
+      departmentBadgeColor: 'bg-rose-500/20 text-rose-300 border-rose-500/40',
+      title: annivTitle,
+      date: annivDate,
+      location: sanitizeLocation(annivAct?.location),
+      reminderDate: annivReminder.reminderDateStr,
+      isPast: annivReminder.isPast,
+      isDueForReminder: annivReminder.isDueForReminder,
+      statusLabel: 'Activité Publiée',
+      description: annivAct?.description || 'Célébration officielle statutaire de l\'Anniversaire ROUAMA',
     });
 
-    // 2. Activities deadlines
-    activities.forEach(a => {
-      if (a.eventDate) {
-        const isPast = new Date(a.eventDate).getTime() < Date.now();
-        derived.push({
-          id: `DERIVED-ACT-${a.id}`,
-          department: 'ORGANISATION',
-          departmentName: 'Commission Organisation',
-          source: 'ACTIVITE',
-          sourceTitle: a.title,
-          sourceId: a.id,
-          title: `Échéance Événement : ${a.title}`,
-          description: `Budget estimé : ${(a.budget || 0).toLocaleString('fr-FR')} F CFA. Statut : ${a.status}.`,
-          assignedTo: (a.committees && a.committees[0]?.leaderNickname) || 'Organisation',
-          deadline: a.eventDate,
-          status: isPast ? 'COMPLETED' : 'IN_PROGRESS',
-          createdAt: new Date().toISOString(),
-        });
-      }
+    // Activité Réelle 2 : Soirée Rouama (19 Décembre 2026)
+    const soireeTitle = soireeAct?.title || 'GRANDE SOIRÉE ROUAMA 2026 (GALA FRATERNEL)';
+    const soireeDate = soireeAct?.eventDate || '19 Décembre 2026';
+    const soireeReminder = calculateReminderDate(soireeDate);
+    list.push({
+      id: soireeAct?.id || 'ACT-SOIREE-2026',
+      departmentKey: 'ORGANISATION',
+      departmentName: 'Commission Organisation',
+      departmentIcon: '🎪',
+      departmentBadgeColor: 'bg-rose-500/20 text-rose-300 border-rose-500/40',
+      title: soireeTitle,
+      date: soireeDate,
+      location: sanitizeLocation(soireeAct?.location),
+      reminderDate: soireeReminder.reminderDateStr,
+      isPast: soireeReminder.isPast,
+      isDueForReminder: soireeReminder.isDueForReminder,
+      statusLabel: 'Activité Publiée',
+      description: soireeAct?.description || 'Grande soirée annuelle de gala et de communion fraternelle E-ROUAMA',
     });
 
-    return derived;
-  }, [projects, activities]);
+    // --- 2. DÉPARTEMENT SPIRITUALITÉ ---
+    // Aucune activité publiée pour le moment (aucune fausse activité inventée)
 
-  // Combined master list of tasks for the SDP
-  const consolidatedTasks: ProgrammeTask[] = useMemo(() => {
-    const map = new Map<string, ProgrammeTask>();
-    allTasks.forEach(t => map.set(t.id, t));
-    autoDerivedTasks.forEach(t => {
-      if (!map.has(t.id)) {
-        map.set(t.id, t);
-      }
-    });
-    return Array.from(map.values());
-  }, [allTasks, autoDerivedTasks]);
+    // --- 3. COMMISSION PROJETS (AGR) ---
+    // Aucune activité publiée pour le moment (aucune fausse activité inventée)
 
-  // Compute Task Status based on deadline if not completed
-  const evaluatedTasks = useMemo(() => {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    return list;
+  }, [activities]);
 
-    return consolidatedTasks.map(task => {
-      if (task.status === 'COMPLETED') {
-        return task;
-      }
-      if (!task.deadline) {
-        return task;
-      }
-      const dDate = new Date(task.deadline);
-      dDate.setHours(0, 0, 0, 0);
-      const diffDays = Math.ceil((dDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
-
-      let autoStatus: TaskStatus = task.status;
-      if (diffDays < 0) {
-        autoStatus = 'OVERDUE';
-      } else if (diffDays <= 7) {
-        autoStatus = 'WARNING';
-      } else {
-        autoStatus = 'IN_PROGRESS';
-      }
-
-      return {
-        ...task,
-        status: autoStatus,
-      };
-    });
-  }, [consolidatedTasks]);
-
-  // Filtered tasks for the list
-  const filteredTasks = useMemo(() => {
-    return evaluatedTasks.filter(t => {
-      if (filterDepartment !== 'ALL' && t.department !== filterDepartment) return false;
-      if (filterStatus !== 'ALL' && t.status !== filterStatus) return false;
-      if (searchQuery.trim()) {
-        const q = searchQuery.toLowerCase();
-        const matchTitle = t.title.toLowerCase().includes(q);
-        const matchDesc = t.description?.toLowerCase().includes(q);
-        const matchDept = t.departmentName?.toLowerCase().includes(q);
-        const matchResp = t.assignedTo?.toLowerCase().includes(q);
-        if (!matchTitle && !matchDesc && !matchDept && !matchResp) return false;
+  const filteredActivities = useMemo(() => {
+    return allDepartmentActivities.filter(act => {
+      if (activityDeptFilter !== 'ALL' && act.departmentKey !== activityDeptFilter) return false;
+      if (activitySearchQuery.trim()) {
+        const q = activitySearchQuery.toLowerCase();
+        const matchesTitle = act.title.toLowerCase().includes(q);
+        const matchesLocation = act.location.toLowerCase().includes(q);
+        const matchesDate = act.date.toLowerCase().includes(q);
+        const matchesDept = act.departmentName.toLowerCase().includes(q);
+        if (!matchesTitle && !matchesLocation && !matchesDate && !matchesDept) return false;
       }
       return true;
     });
-  }, [evaluatedTasks, filterDepartment, filterStatus, searchQuery]);
+  }, [allDepartmentActivities, activityDeptFilter, activitySearchQuery]);
 
-  // Statistics & Progress Indicators
-  const stats = useMemo(() => {
-    const total = evaluatedTasks.length;
-    const completed = evaluatedTasks.filter(t => t.status === 'COMPLETED').length;
-    const inProgress = evaluatedTasks.filter(t => t.status === 'IN_PROGRESS').length;
-    const warning = evaluatedTasks.filter(t => t.status === 'WARNING').length;
-    const overdue = evaluatedTasks.filter(t => t.status === 'OVERDUE').length;
-    const activeAlerts = (programmeAlerts || []).filter(a => a.status === 'PENDING').length;
+  // =========================================================
+  // 2. SUIVI DISCRET DES DEMANDES D'INFORMATION INTER-DÉPARTEMENTS
+  // (MÉTADONNÉES ET STATUTS SANS CORPS DE MESSAGE + ALERTE WHATSAPP 1H)
+  // =========================================================
+  // Données de démonstration intégrées si la collection est encore vide
+  const sampleDemonstrationRequests: InfoRequest[] = useMemo(() => [
+    {
+      id: 'DEMO-REQ-01',
+      senderRole: 'ORGANISATION',
+      senderRoleLabel: 'Commission Organisation',
+      senderName: 'Emile (Organisation)',
+      recipientRole: 'TRESORIER',
+      recipientRoleLabel: 'Trésorerie Générale',
+      subject: '[Confidentiel]',
+      message: '[Confidentiel]',
+      status: 'En attente',
+      isRead: false,
+      createdAt: new Date(Date.now() - 80 * 60 * 1000).toISOString(), // Il y a 1h20 (> 1h -> Relance WhatsApp active)
+    },
+    {
+      id: 'DEMO-REQ-02',
+      senderRole: 'PROJET',
+      senderRoleLabel: 'Commission Projets (AGR)',
+      senderName: 'Ulrich (Projets)',
+      recipientRole: 'SECRETARIAT',
+      recipientRoleLabel: 'Secrétariat Général',
+      subject: '[Confidentiel]',
+      message: '[Confidentiel]',
+      replyMessage: '[Réponse transmise]',
+      status: 'Répondu',
+      isRead: true,
+      createdAt: new Date(Date.now() - 4 * 3600 * 1000).toISOString(),
+      repliedAt: new Date(Date.now() - 2 * 3600 * 1000).toISOString(),
+      repliedBy: 'Josiane (Secrétariat)',
+    },
+    {
+      id: 'DEMO-REQ-03',
+      senderRole: 'SPIRITUALITE',
+      senderRoleLabel: 'Département Spiritualité',
+      senderName: 'Marie (Spiritualité)',
+      recipientRole: 'COM',
+      recipientRoleLabel: 'Communication (BIC)',
+      subject: '[Confidentiel]',
+      message: '[Confidentiel]',
+      status: 'En attente',
+      isRead: false,
+      createdAt: new Date(Date.now() - 25 * 60 * 1000).toISOString(), // Il y a 25 min (< 1h -> En cours)
+    },
+  ], []);
 
-    const rate = total > 0 ? Math.round(((completed + inProgress * 0.5) / total) * 100) : 100;
+  const effectiveInfoRequests = useMemo(() => {
+    if (infoRequests && infoRequests.length > 0) return infoRequests;
+    return sampleDemonstrationRequests;
+  }, [infoRequests, sampleDemonstrationRequests]);
 
-    return {
-      total,
-      completed,
-      inProgress,
-      warning,
-      overdue,
-      activeAlerts,
-      rate,
-    };
-  }, [evaluatedTasks, programmeAlerts]);
+  const filteredInfoRequests = useMemo(() => {
+    return effectiveInfoRequests.filter(req => {
+      const isReplied = Boolean((req.replyMessage && req.replyMessage.trim().length > 0) || req.status === 'Répondu' || req.repliedAt);
+      if (infoFilter === 'PENDING' && isReplied) return false;
+      if (infoFilter === 'REPLIED' && !isReplied) return false;
 
-  // Department Summaries for SYNTHESE Tab
-  const departmentSummaries = useMemo(() => {
-    const depts: {
-      key: DepartmentRole;
-      name: string;
-      roleTitle: string;
-      responsibleName: string;
-      responsiblePhone: string;
-      color: string;
-      icon: string;
-      missions: string;
-    }[] = [
-      {
-        key: 'SECRETARIAT',
-        name: 'Secrétariat Général',
-        roleTitle: 'Secrétaire Général',
-        responsibleName: 'Secrétariat (PIN 4040)',
-        responsiblePhone: '2250757537785',
-        color: 'from-blue-600 to-sky-700',
-        icon: '📝',
-        missions: 'Rédaction et archivage des PV de réunions, registre des présences et tenue des résolutions.',
-      },
-      {
-        key: 'TRESORIER',
-        name: 'Trésorerie Générale',
-        roleTitle: 'Trésorier Général',
-        responsibleName: 'Wilfried Capelo (PIN 210300)',
-        responsiblePhone: '2250501948962',
-        color: 'from-emerald-600 to-teal-700',
-        icon: '💰',
-        missions: 'Tenue des 5 caisses, validation des cotisations Wave (500 F/mois) et bilans trimestriels.',
-      },
-      {
-        key: 'PROJET',
-        name: 'Commission Projets (AGR)',
-        roleTitle: 'Responsable Projets AGR',
-        responsibleName: 'Commission Projets (PIN 2020)',
-        responsiblePhone: '2250564281013',
-        color: 'from-amber-600 to-orange-700',
-        icon: '🚀',
-        missions: 'Montage et exécution des projets d’investissement rentables (Poulets Goliath), respect des échéances.',
-      },
-      {
-        key: 'ORGANISATION',
-        name: 'Commission Organisation',
-        roleTitle: 'Responsable Organisation',
-        responsibleName: 'Commission Organisation (PIN 3030)',
-        responsiblePhone: '2250584346071',
-        color: 'from-purple-600 to-indigo-700',
-        icon: '🎪',
-        missions: 'Préparation des sorties et soirées statutaires, constitution des comités PCO et budgets.',
-      },
-      {
-        key: 'SPIRITUALITE',
-        name: 'Département Spiritualité',
-        roleTitle: 'Responsable Spiritualité',
-        responsibleName: 'Spiritualité (PIN 5050)',
-        responsiblePhone: '2250747195076',
-        color: 'from-cyan-600 to-blue-700',
-        icon: '✝️',
-        missions: 'Prière ROUAMA, liturgie AELF, chaîne de prière et intentions fraternelles.',
-      },
-      {
-        key: 'COM',
-        name: 'Base d’Information & COM (BIC)',
-        roleTitle: 'Responsable Communication',
-        responsibleName: 'BIC / COM (PIN 1010)',
-        responsiblePhone: '2250503643626',
-        color: 'from-rose-600 to-pink-700',
-        icon: '📢',
-        missions: 'Diffusion des décisions officielles, validation des communiqués avec accusé de réception (ACK).',
-      },
-      {
-        key: 'CERVEAU',
-        name: 'Le Cerveau (Présidence)',
-        roleTitle: 'Président / Le Cerveau',
-        responsibleName: 'Le Cerveau (PIN 1234)',
-        responsiblePhone: '2250501948962',
-        color: 'from-amber-500 to-yellow-600',
-        icon: '👑',
-        missions: 'Haute gouvernance, arbitrage suprême, verrouillage et validation des décaissements.',
-      },
-    ];
-
-    return depts.map(d => {
-      const deptTasks = evaluatedTasks.filter(t => t.department === d.key);
-      const total = deptTasks.length;
-      const overdue = deptTasks.filter(t => t.status === 'OVERDUE').length;
-      const warning = deptTasks.filter(t => t.status === 'WARNING').length;
-      const completed = deptTasks.filter(t => t.status === 'COMPLETED').length;
-      const inProgress = deptTasks.filter(t => t.status === 'IN_PROGRESS').length;
-      const pendingAlerts = (programmeAlerts || []).filter(a => a.targetDepartment === d.key && a.status === 'PENDING').length;
-
-      // Status indicator: 🔴 En retard > 0 | 🟡 À relancer > 0 ou alertes > 0 | 🟢 En cours / Dans les temps
-      let healthStatus: 'GREEN' | 'YELLOW' | 'RED' = 'GREEN';
-      let healthLabel = '🟢 Dans les temps / Conforme';
-      if (overdue > 0) {
-        healthStatus = 'RED';
-        healthLabel = `🔴 ${overdue} Tâche(s) en retard`;
-      } else if (warning > 0 || pendingAlerts > 0) {
-        healthStatus = 'YELLOW';
-        healthLabel = `🟡 À relancer (${warning} échéance(s) proche(s))`;
+      if (infoSearchQuery.trim()) {
+        const q = infoSearchQuery.toLowerCase();
+        const sDept = getDepartmentDisplayName(req.senderRole).toLowerCase();
+        const rDept = getDepartmentDisplayName(req.recipientRole).toLowerCase();
+        if (!sDept.includes(q) && !rDept.includes(q)) return false;
       }
-
-      return {
-        ...d,
-        totalTasks: total,
-        overdueTasks: overdue,
-        warningTasks: warning,
-        completedTasks: completed,
-        inProgressTasks: inProgress,
-        pendingAlerts,
-        healthStatus,
-        healthLabel,
-      };
+      return true;
     });
-  }, [evaluatedTasks, programmeAlerts]);
+  }, [effectiveInfoRequests, infoFilter, infoSearchQuery]);
 
-  // Open Alert Modal with prefill for a specific department or task
-  const handleOpenAlertModal = (dept: string, deptName: string, task?: ProgrammeTask) => {
-    const summary = departmentSummaries.find(d => d.key === dept);
-    setAlertTargetTask(task || null);
-    setAlertForm({
-      targetDepartment: dept as DepartmentRole,
-      targetDepartmentName: deptName,
-      title: task ? `Rappel : ${task.title}` : `Signalement d'audit : ${deptName}`,
-      message: task
-        ? `Bonjour fraternel. En qualité de Chargé du Suivi du Programme, je constate que l'engagement « ${task.title} » arrive à échéance le ${task.deadline}. Merci de bien vouloir faire le point sur son état d'avancement et régulariser la situation.`
-        : `Bonjour fraternel. En qualité de Chargé du Suivi du Programme, je sollicite un point d'étape urgent concernant les engagements statutaires de votre département.`,
-      severity: task?.status === 'OVERDUE' ? 'CRITICAL' : 'WARNING',
-      targetPhone: summary?.responsiblePhone || '2250501948962',
-    });
-    setIsAlertModalOpen(true);
-  };
+  // Indicateur du nombre de demandes en attente depuis plus d'une heure
+  const pendingOverOneHourCount = useMemo(() => {
+    return effectiveInfoRequests.filter(req => {
+      const isReplied = Boolean((req.replyMessage && req.replyMessage.trim().length > 0) || req.status === 'Répondu' || req.repliedAt);
+      if (isReplied) return false;
+      const createdTimestamp = req.createdAt ? new Date(req.createdAt).getTime() : 0;
+      return createdTimestamp > 0 && (Date.now() - createdTimestamp) >= (60 * 60 * 1000);
+    }).length;
+  }, [effectiveInfoRequests]);
 
-  // Submit Alert / Signalement
-  const handleSubmitAlert = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!alertForm.title.trim() || !alertForm.message.trim()) {
-      alert('Veuillez renseigner le titre et le message du signalement.');
-      return;
-    }
-
-    const res = await createProgrammeAlert({
-      taskId: alertTargetTask?.id,
-      taskTitle: alertTargetTask?.title,
-      targetDepartment: alertForm.targetDepartment,
-      targetDepartmentName: alertForm.targetDepartmentName,
-      title: alertForm.title,
-      message: alertForm.message,
-      severity: alertForm.severity,
-      targetPhone: alertForm.targetPhone,
-      sentBy: 'Chargé du Suivi du Programme (SDP)',
-    });
-
-    if (res.success) {
-      setIsAlertModalOpen(false);
-      setAlertTargetTask(null);
-    }
-  };
-
-  // Direct WhatsApp Link Generator for SDP Reminders
-  const generateWhatsAppReminderLink = (alert: {
-    targetDepartmentName: string;
-    title: string;
-    message: string;
-    targetPhone?: string;
-  }) => {
-    const phone = (alert.targetPhone || '2250501948962').replace(/\D/g, '');
-    const text = encodeURIComponent(
-      `🚨 *[E-ROUAMA - AUDIT & CONTRÔLE INTERNE]*\n\n` +
-      `📌 *Destinataire :* ${alert.targetDepartmentName}\n` +
-      `⚠️ *Objet :* ${alert.title}\n\n` +
-      `${alert.message}\n\n` +
-      `_Message officiel transmis par le Chargé du Suivi du Programme (SDP) E-ROUAMA._`
-    );
-    return `https://wa.me/${phone}?text=${text}`;
-  };
-
-  // Submit Add Task
-  const handleSaveTask = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!taskForm.title.trim()) {
-      alert('Veuillez saisir l’intitulé de la tâche.');
-      return;
-    }
-
-    const res = await addProgrammeTask({
-      department: taskForm.department,
-      departmentName: taskForm.departmentName,
-      source: taskForm.source,
-      sourceTitle: taskForm.sourceTitle || 'Programme Annuel',
-      title: taskForm.title.trim(),
-      description: taskForm.description.trim(),
-      assignedTo: taskForm.assignedTo.trim() || taskForm.departmentName,
-      deadline: taskForm.deadline,
-      status: taskForm.status,
-      notes: taskForm.notes.trim(),
-    });
-
-    if (res.success) {
-      setIsAddTaskModalOpen(false);
-      setTaskForm({
-        department: 'SECRETARIAT',
-        departmentName: 'Secrétariat Général',
-        source: 'CALENDRIER',
-        sourceTitle: 'Programme Annuel 2026',
-        title: '',
-        description: '',
-        assignedTo: '',
-        deadline: new Date(Date.now() + 14 * 86400000).toISOString().split('T')[0],
-        status: 'IN_PROGRESS',
-        notes: '',
-      });
-    }
-  };
+  // Activités nécessitant une relance (date de relance atteinte)
+  const activitiesDueForReminderCount = useMemo(() => {
+    return allDepartmentActivities.filter(a => a.isDueForReminder).length;
+  }, [allDepartmentActivities]);
 
   return (
-    <div className="space-y-8 animate-fadeIn text-slate-100">
+    <div className="space-y-6 text-slate-100 animate-fadeIn pb-12">
       {/* ========================================================= */}
-      {/* 1. HEADER AUDITEUR & CONTRÔLE DU PROGRAMME */}
+      {/* 1. BANNIÈRE OFFICIELLE CHARGÉ DU SUIVI DU PROGRAMME */}
       {/* ========================================================= */}
-      <div className="bg-slate-900 border border-amber-500/40 rounded-[2.5rem] p-6 sm:p-8 shadow-2xl relative overflow-hidden">
-        <div className="absolute top-0 right-0 w-96 h-96 bg-amber-500/10 rounded-full blur-3xl pointer-events-none" />
+      <div className="bg-gradient-to-r from-slate-900 via-slate-800 to-amber-950 text-white rounded-3xl p-6 sm:p-8 shadow-2xl relative overflow-hidden border border-amber-500/30">
+        <div className="absolute top-0 right-0 w-80 h-80 bg-amber-500/10 rounded-full blur-3xl pointer-events-none" />
 
         <div className="relative z-10 flex flex-col md:flex-row items-start md:items-center justify-between gap-6">
-          <div className="space-y-2">
-            <div className="inline-flex items-center gap-2 bg-amber-500 text-slate-950 px-4 py-1 rounded-full text-xs font-black tracking-wide shadow-md">
-              <span className="text-base">🕵️</span>
-              <span>RÔLE OFFICIEL : SUIVI PROGRAMME (SDP) • POLICIER & AUDITEUR INTERNE</span>
+          <div className="space-y-2 max-w-2xl">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="inline-flex items-center gap-1.5 bg-amber-500 text-slate-950 px-3.5 py-1 rounded-full text-xs font-black tracking-wide shadow">
+                <Shield className="w-4 h-4" />
+                <span>SUIVI DU PROGRAMME & CONTRÔLE STATUTAIRE</span>
+              </span>
+              <span className="bg-amber-500/20 text-amber-300 border border-amber-500/40 px-3 py-1 rounded-full text-xs font-bold font-mono">
+                SDP • Wilfried (Capelo)
+              </span>
             </div>
 
-            <h1 className="text-2xl sm:text-4xl font-black text-white tracking-tight flex items-center gap-3">
-              <span>CONTRÔLE & SUIVI DU PROGRAMME DE L'ANNÉE</span>
+            <h1 className="text-2xl sm:text-3xl font-black text-white tracking-tight">
+              Console Centrale de Suivi des Départements
             </h1>
 
-            <p className="text-xs sm:text-sm text-slate-300 font-medium max-w-3xl leading-relaxed">
-              Supervision indépendante de l'exécution des résolutions des PVs, des projets et du calendrier annuel par l'ensemble des départements (Secrétariat, Trésorerie, Projets, Organisation, Spiritualité, BIC, Présidence).
+            <p className="text-xs sm:text-sm text-slate-300 leading-relaxed font-medium">
+              Supervision automatisée des <strong>Activités des Départements</strong> (Organisation, Spiritualité, Projets) avec calcul des dates de relance, et <strong>Suivi discret des Demandes d'Information</strong> inter-départements avec alerte WhatsApp après 1 heure.
             </p>
           </div>
 
-          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 shrink-0">
-            <button
-              type="button"
-              onClick={() => setIsAddTaskModalOpen(true)}
-              className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-black px-5 py-3 rounded-2xl text-xs sm:text-sm shadow-xl flex items-center justify-center gap-2 transition-all active:scale-95 cursor-pointer"
-            >
-              <Plus className="w-4 h-4" />
-              <span>[ ➕ Enregistrer une Tâche / Échéance ]</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => handleOpenAlertModal('SECRETARIAT', 'Secrétariat Général')}
-              className="bg-rose-600 hover:bg-rose-500 text-white font-black px-5 py-3 rounded-2xl text-xs sm:text-sm shadow-xl flex items-center justify-center gap-2 transition-all active:scale-95 cursor-pointer"
-            >
-              <AlertTriangle className="w-4 h-4" />
-              <span>[ ⚠️ Émettre un Signalement ]</span>
-            </button>
-          </div>
-        </div>
+          {/* KPI CARDS EN EN-TÊTE */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 w-full md:w-auto">
+            <div className="bg-slate-950/80 p-3 rounded-2xl border border-slate-800 text-center">
+              <span className="text-[10px] font-bold text-slate-400 uppercase block">Activités</span>
+              <span className="text-xl font-black text-white font-mono">{allDepartmentActivities.length}</span>
+              <span className="text-[9px] text-slate-500 block">Organisation ({allDepartmentActivities.length})</span>
+            </div>
 
-        {/* Global KPIs Bar */}
-        <div className="mt-6 pt-6 border-t border-slate-800 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
-          <div className="bg-slate-950/80 p-3.5 rounded-2xl border border-slate-800">
-            <span className="text-[10px] font-bold text-slate-400 uppercase block">Taux d'Exécution</span>
-            <span className="text-2xl font-black text-amber-400 font-mono">{stats.rate}%</span>
-            <span className="text-[10px] text-slate-500 block">Indice de conformité</span>
-          </div>
+            <div className="bg-slate-950/80 p-3 rounded-2xl border border-amber-500/30 text-center">
+              <span className="text-[10px] font-bold text-amber-400 uppercase block">Relances J-30</span>
+              <span className="text-xl font-black text-amber-400 font-mono">{activitiesDueForReminderCount}</span>
+              <span className="text-[9px] text-amber-500/80 block">À relancer</span>
+            </div>
 
-          <div className="bg-slate-950/80 p-3.5 rounded-2xl border border-slate-800">
-            <span className="text-[10px] font-bold text-slate-400 uppercase block">Total Engagements</span>
-            <span className="text-2xl font-black text-white font-mono">{stats.total}</span>
-            <span className="text-[10px] text-slate-500 block">Tâches répertoriées</span>
-          </div>
+            <div className="bg-slate-950/80 p-3 rounded-2xl border border-rose-500/30 text-center">
+              <span className="text-[10px] font-bold text-rose-400 uppercase block">Attente &gt; 1h</span>
+              <span className="text-xl font-black text-rose-400 font-mono">{pendingOverOneHourCount}</span>
+              <span className="text-[9px] text-rose-500/80 block">WhatsApp requise</span>
+            </div>
 
-          <div className="bg-slate-950/80 p-3.5 rounded-2xl border border-emerald-500/30">
-            <span className="text-[10px] font-bold text-emerald-400 uppercase block">Dans les temps</span>
-            <span className="text-2xl font-black text-emerald-400 font-mono">{stats.inProgress + stats.completed}</span>
-            <span className="text-[10px] text-emerald-500/80 block">🟢 Conformes</span>
-          </div>
-
-          <div className="bg-slate-950/80 p-3.5 rounded-2xl border border-amber-500/30">
-            <span className="text-[10px] font-bold text-amber-400 uppercase block">À Relancer</span>
-            <span className="text-2xl font-black text-amber-400 font-mono">{stats.warning}</span>
-            <span className="text-[10px] text-amber-500/80 block">🟡 Échéance &lt; 7j</span>
-          </div>
-
-          <div className="bg-slate-950/80 p-3.5 rounded-2xl border border-rose-500/30">
-            <span className="text-[10px] font-bold text-rose-400 uppercase block">En Retard</span>
-            <span className="text-2xl font-black text-rose-400 font-mono">{stats.overdue}</span>
-            <span className="text-[10px] text-rose-500/80 block">🔴 Non exécuté</span>
-          </div>
-
-          <div className="bg-slate-950/80 p-3.5 rounded-2xl border border-orange-500/30">
-            <span className="text-[10px] font-bold text-orange-400 uppercase block">Alertes Actives</span>
-            <span className="text-2xl font-black text-orange-400 font-mono">{stats.activeAlerts}</span>
-            <span className="text-[10px] text-orange-500/80 block">⚠️ En cours</span>
+            <div className="bg-slate-950/80 p-3 rounded-2xl border border-emerald-500/30 text-center">
+              <span className="text-[10px] font-bold text-emerald-400 uppercase block">Admins Présents</span>
+              <span className="text-xl font-black text-emerald-400 font-mono">{connectedDepts.length}/{ADMIN_DEPARTMENTS_CONFIG.length}</span>
+              <span className="text-[9px] text-emerald-500/80 block">Aujourd'hui</span>
+            </div>
           </div>
         </div>
       </div>
 
       {/* ========================================================= */}
-      {/* 2. ONGLETS DE NAVIGATION DE LA CONSOLE */}
+      {/* 2. ONGLETS DE NAVIGATION PRINCIPAUX */}
       {/* ========================================================= */}
       <div className="flex flex-wrap items-center gap-2 bg-slate-900/90 p-2 rounded-2xl border border-slate-800">
         <button
           type="button"
-          onClick={() => setActiveTab('SYNTHESE')}
+          onClick={() => setActiveTab('ACTIVITES')}
           className={`flex items-center gap-2 px-4 py-2.5 rounded-xl font-black text-xs sm:text-sm transition-all cursor-pointer ${
-            activeTab === 'SYNTHESE'
-              ? 'bg-amber-500 text-slate-950 shadow-md scale-102'
+            activeTab === 'ACTIVITES'
+              ? 'bg-amber-500 text-slate-950 shadow-md scale-102 font-black'
               : 'text-slate-400 hover:text-white hover:bg-slate-800'
           }`}
         >
-          <BarChart3 className="w-4 h-4" />
-          <span>VUE SYNTHÉTIQUE DES DÉPARTEMENTS</span>
+          <Calendar className="w-4 h-4" />
+          <span>ACTIVITÉS DES DÉPARTEMENTS ({allDepartmentActivities.length})</span>
+          {activitiesDueForReminderCount > 0 && (
+            <span className="bg-rose-500 text-white text-[10px] font-black px-1.5 py-0.2 rounded-full shadow animate-pulse">
+              {activitiesDueForReminderCount}
+            </span>
+          )}
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveTab('DEMANDES_INFO')}
+          className={`flex items-center gap-2 px-4 py-2.5 rounded-xl font-black text-xs sm:text-sm transition-all cursor-pointer ${
+            activeTab === 'DEMANDES_INFO'
+              ? 'bg-amber-500 text-slate-950 shadow-md scale-102 font-black'
+              : 'text-slate-400 hover:text-white hover:bg-slate-800'
+          }`}
+        >
+          <MessageSquare className="w-4 h-4" />
+          <span>DEMANDES D'INFO INTER-DÉPARTEMENTS</span>
+          {pendingOverOneHourCount > 0 && (
+            <span className="bg-emerald-500 text-slate-950 text-[10px] font-black px-1.5 py-0.2 rounded-full shadow animate-pulse">
+              {pendingOverOneHourCount}
+            </span>
+          )}
         </button>
 
         <button
@@ -1254,7 +811,7 @@ export const SuiviProgrammeConsole: React.FC<SuiviProgrammeConsoleProps> = ({ ac
           onClick={() => setActiveTab('CONNEXIONS')}
           className={`flex items-center gap-2 px-4 py-2.5 rounded-xl font-black text-xs sm:text-sm transition-all cursor-pointer ${
             activeTab === 'CONNEXIONS'
-              ? 'bg-amber-500 text-slate-950 shadow-md scale-102'
+              ? 'bg-amber-500 text-slate-950 shadow-md scale-102 font-black'
               : 'text-slate-400 hover:text-white hover:bg-slate-800'
           }`}
         >
@@ -1267,1258 +824,659 @@ export const SuiviProgrammeConsole: React.FC<SuiviProgrammeConsoleProps> = ({ ac
 
         <button
           type="button"
-          onClick={() => setActiveTab('TACHES')}
-          className={`flex items-center gap-2 px-4 py-2.5 rounded-xl font-black text-xs sm:text-sm transition-all cursor-pointer ${
-            activeTab === 'TACHES'
-              ? 'bg-amber-500 text-slate-950 shadow-md scale-102'
-              : 'text-slate-400 hover:text-white hover:bg-slate-800'
-          }`}
-        >
-          <Calendar className="w-4 h-4" />
-          <span>ENGAGEMENTS & ÉCHÉANCES ({evaluatedTasks.length})</span>
-        </button>
-
-        <button
-          type="button"
-          onClick={() => setActiveTab('ALERTES')}
-          className={`flex items-center gap-2 px-4 py-2.5 rounded-xl font-black text-xs sm:text-sm transition-all cursor-pointer ${
-            activeTab === 'ALERTES'
-              ? 'bg-amber-500 text-slate-950 shadow-md scale-102'
-              : 'text-slate-400 hover:text-white hover:bg-slate-800'
-          }`}
-        >
-          <AlertTriangle className="w-4 h-4" />
-          <span>SIGNALEMENTS & RELANCES D'AUDIT ({programmeAlerts?.length || 0})</span>
-        </button>
-
-        <button
-          type="button"
-          onClick={() => setActiveTab('AUDIT')}
-          className={`flex items-center gap-2 px-4 py-2.5 rounded-xl font-black text-xs sm:text-sm transition-all cursor-pointer ${
-            activeTab === 'AUDIT'
-              ? 'bg-emerald-600 text-white shadow-md scale-102'
-              : 'text-slate-400 hover:text-white hover:bg-slate-800'
-          }`}
-        >
-          <Lock className="w-4 h-4 text-emerald-300" />
-          <span>ACCÈS EN LECTURE SEULE D'AUDIT</span>
-        </button>
-
-        <button
-          type="button"
           onClick={() => setActiveTab('NAVETTE')}
           className={`flex items-center gap-2 px-4 py-2.5 rounded-xl font-black text-xs sm:text-sm transition-all cursor-pointer ${
             activeTab === 'NAVETTE'
-              ? 'bg-indigo-600 text-white shadow-md scale-102'
+              ? 'bg-indigo-600 text-white shadow-md scale-102 font-black'
               : 'text-slate-400 hover:text-white hover:bg-slate-800'
           }`}
         >
-          <MessageSquare className="w-4 h-4 text-indigo-400" />
-          <span>NAVETTE & DEMANDES D'INFO</span>
-          {unreadInfoRequestsForSdp > 0 && (
-            <span className="bg-rose-500 text-white text-[10px] font-black px-1.5 py-0.2 rounded-full shadow-sm animate-pulse">
-              {unreadInfoRequestsForSdp}
-            </span>
-          )}
+          <Send className="w-4 h-4 text-indigo-300" />
+          <span>NAVETTE &amp; DEMANDES D'INFORMATION (OPÉRATIONNEL)</span>
         </button>
       </div>
 
       {/* ========================================================= */}
-      {/* 3. VUE SYNTHÉTIQUE DES DÉPARTEMENTS (TAB 1) */}
+      {/* 3. SECTION 1 : ACTIVITÉS DES DÉPARTEMENTS */}
+      {/* (ORGANISATION, SPIRITUALITÉ, PROJETS) AVEC DATE DE RELANCE J-30 */}
       {/* ========================================================= */}
-      {activeTab === 'SYNTHESE' && (
-        <div className="space-y-6">
-          {/* Les 2 blocs d'audit de présence intégrés directement au sommet */}
-          {renderAdminAttendanceTwoBlocks()}
-
-          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 bg-slate-900 border border-slate-800 p-5 rounded-2xl">
-            <div>
-              <h2 className="text-lg font-black text-white flex items-center gap-2">
-                <BarChart3 className="w-5 h-5 text-amber-400" />
-                <span>Tableau de Bord Récapitulatif par Département</span>
-              </h2>
-              <p className="text-xs text-slate-400 mt-0.5">
-                Surveillance du respect des résolutions de réunions, des délais budgétaires et des plans d'action statutaires.
-              </p>
-            </div>
-            <div className="flex items-center gap-2 text-xs font-bold text-slate-300 bg-slate-950 px-3.5 py-1.5 rounded-xl border border-slate-800">
-              <span>Légende :</span>
-              <span className="text-emerald-400">🟢 Conforme</span>
-              <span>•</span>
-              <span className="text-amber-400">🟡 À relancer</span>
-              <span>•</span>
-              <span className="text-rose-400">🔴 En retard</span>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-            {departmentSummaries.map(dept => (
-              <div
-                key={dept.key}
-                className="bg-slate-900 border border-slate-800 hover:border-slate-700 rounded-3xl p-5 shadow-xl flex flex-col justify-between space-y-4 transition-all"
-              >
-                <div>
-                  <div className="flex items-center justify-between gap-2 mb-3">
-                    <div className="flex items-center gap-2.5">
-                      <span className="text-2xl p-2 bg-slate-950 rounded-xl border border-slate-800">
-                        {dept.icon}
-                      </span>
-                      <div>
-                        <h3 className="text-base font-black text-white">{dept.name}</h3>
-                        <p className="text-[11px] text-slate-400 font-medium">{dept.roleTitle}</p>
-                      </div>
-                    </div>
-
-                    <div
-                      className={`px-2.5 py-1 rounded-full text-[10px] font-black tracking-wider uppercase border ${
-                        dept.healthStatus === 'GREEN'
-                          ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30'
-                          : dept.healthStatus === 'YELLOW'
-                          ? 'bg-amber-500/15 text-amber-400 border-amber-500/30'
-                          : 'bg-rose-500/15 text-rose-400 border-rose-500/30 animate-pulse'
-                      }`}
-                    >
-                      {dept.healthStatus === 'GREEN' ? '🟢 Dans les temps' : dept.healthStatus === 'YELLOW' ? '🟡 À relancer' : '🔴 En retard'}
-                    </div>
-                  </div>
-
-                  <p className="text-xs text-slate-400 line-clamp-2 mb-4 leading-relaxed">
-                    {dept.missions}
-                  </p>
-
-                  <div className="grid grid-cols-3 gap-2 text-center bg-slate-950 p-2.5 rounded-2xl border border-slate-800 mb-3">
-                    <div>
-                      <span className="text-[10px] text-slate-400 block font-bold">Tâches</span>
-                      <span className="text-sm font-black text-white font-mono">{dept.totalTasks}</span>
-                    </div>
-                    <div>
-                      <span className="text-[10px] text-amber-400 block font-bold">Attention</span>
-                      <span className="text-sm font-black text-amber-400 font-mono">{dept.warningTasks}</span>
-                    </div>
-                    <div>
-                      <span className="text-[10px] text-rose-400 block font-bold">Retard</span>
-                      <span className="text-sm font-black text-rose-400 font-mono">{dept.overdueTasks}</span>
-                    </div>
-                  </div>
-
-                  <div className="text-[11px] text-slate-400 flex items-center justify-between border-t border-slate-800/80 pt-2.5">
-                    <span>Responsable : <strong className="text-slate-200">{dept.responsibleName}</strong></span>
-                    {dept.pendingAlerts > 0 && (
-                      <span className="bg-orange-500/20 text-orange-300 font-bold px-2 py-0.5 rounded-md text-[10px]">
-                        ⚠️ {dept.pendingAlerts} signalement(s)
-                      </span>
-                    )}
-                  </div>
-                </div>
-
-                <div className="pt-2 flex items-center gap-2 border-t border-slate-800">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setFilterDepartment(dept.key);
-                      setActiveTab('TACHES');
-                    }}
-                    className="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-xs py-2 rounded-xl transition-all flex items-center justify-center gap-1.5"
-                  >
-                    <Eye className="w-3.5 h-3.5" />
-                    <span>Voir Tâches ({dept.totalTasks})</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => handleOpenAlertModal(dept.key, dept.name)}
-                    className="bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/30 font-bold text-xs py-2 px-3 rounded-xl transition-all flex items-center justify-center gap-1"
-                    title="Émettre un signalement officiel au département"
-                  >
-                    <AlertTriangle className="w-3.5 h-3.5 text-rose-400" />
-                    <span>Relancer</span>
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* ========================================================= */}
-      {/* 4. ENGAGEMENTS & ÉCHÉANCES (TAB 2) */}
-      {/* ========================================================= */}
-      {activeTab === 'TACHES' && (
-        <div className="space-y-6">
-          {/* Filter Bar */}
-          <div className="bg-slate-900 border border-slate-800 p-5 rounded-3xl space-y-4">
-            <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-4">
-              <div className="flex-1 relative">
-                <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
-                <input
-                  type="text"
-                  placeholder="Rechercher une tâche, un PV, un projet ou un responsable..."
-                  value={searchQuery}
-                  onChange={e => setSearchQuery(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-2xl pl-10 pr-4 py-2.5 text-xs sm:text-sm text-white focus:outline-none focus:border-amber-500"
-                />
-              </div>
-
-              <div className="flex flex-wrap items-center gap-2">
-                <select
-                  value={filterDepartment}
-                  onChange={e => setFilterDepartment(e.target.value)}
-                  className="bg-slate-950 border border-slate-800 text-slate-200 text-xs font-bold rounded-2xl px-3 py-2.5 focus:outline-none focus:border-amber-500"
-                >
-                  <option value="ALL">Tous les départements</option>
-                  <option value="SECRETARIAT">Secrétariat Général</option>
-                  <option value="TRESORIER">Trésorerie Générale</option>
-                  <option value="PROJET">Commission Projets (AGR)</option>
-                  <option value="ORGANISATION">Commission Organisation</option>
-                  <option value="SPIRITUALITE">Spiritualité</option>
-                  <option value="COM">Communication (BIC)</option>
-                  <option value="CERVEAU">Le Cerveau (Présidence)</option>
-                </select>
-
-                <select
-                  value={filterStatus}
-                  onChange={e => setFilterStatus(e.target.value)}
-                  className="bg-slate-950 border border-slate-800 text-slate-200 text-xs font-bold rounded-2xl px-3 py-2.5 focus:outline-none focus:border-amber-500"
-                >
-                  <option value="ALL">Tous les statuts</option>
-                  <option value="IN_PROGRESS">🟢 En cours / Dans les temps</option>
-                  <option value="WARNING">🟡 À relancer</option>
-                  <option value="OVERDUE">🔴 En retard</option>
-                  <option value="COMPLETED">✅ Exécuté / Terminé</option>
-                </select>
-
-                <button
-                  type="button"
-                  onClick={() => setIsAddTaskModalOpen(true)}
-                  className="bg-amber-500 hover:bg-amber-400 text-slate-950 font-black px-4 py-2.5 rounded-2xl text-xs flex items-center gap-1.5 transition-all active:scale-95"
-                >
-                  <Plus className="w-4 h-4" />
-                  <span>Ajouter une Tâche</span>
-                </button>
-              </div>
-            </div>
-          </div>
-
-          {/* Tasks List */}
-          <div className="space-y-3">
-            {filteredTasks.length === 0 ? (
-              <div className="bg-slate-900 border border-slate-800 rounded-3xl p-12 text-center text-slate-400">
-                <CheckCircle2 className="w-12 h-12 text-slate-600 mx-auto mb-3" />
-                <p className="text-base font-bold text-slate-300">Aucune tâche correspondant aux filtres.</p>
-                <p className="text-xs text-slate-500 mt-1">Tous les engagements sont à jour ou aucun critère ne correspond.</p>
-              </div>
-            ) : (
-              filteredTasks.map(task => {
-                const isOverdue = task.status === 'OVERDUE';
-                const isWarning = task.status === 'WARNING';
-                const isCompleted = task.status === 'COMPLETED';
-
-                return (
-                  <div
-                    key={task.id}
-                    className={`bg-slate-900 border rounded-3xl p-5 shadow-lg flex flex-col lg:flex-row items-start lg:items-center justify-between gap-4 transition-all ${
-                      isOverdue
-                        ? 'border-rose-500/50 bg-rose-950/10'
-                        : isWarning
-                        ? 'border-amber-500/50 bg-amber-950/10'
-                        : isCompleted
-                        ? 'border-emerald-500/30 opacity-75'
-                        : 'border-slate-800 hover:border-slate-700'
-                    }`}
-                  >
-                    <div className="space-y-1.5 flex-1">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="bg-slate-800 text-slate-300 font-bold px-2.5 py-0.5 rounded-md text-[10px] uppercase">
-                          {task.departmentName}
-                        </span>
-
-                        <span className="bg-slate-950 text-slate-400 px-2 py-0.5 rounded-md text-[10px] border border-slate-800">
-                          Source : {task.sourceTitle || task.source}
-                        </span>
-
-                        <span
-                          className={`px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider ${
-                            isCompleted
-                              ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
-                              : isOverdue
-                              ? 'bg-rose-500/20 text-rose-400 border border-rose-500/30 animate-pulse'
-                              : isWarning
-                              ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
-                              : 'bg-blue-500/20 text-blue-400 border border-blue-500/30'
-                          }`}
-                        >
-                          {isCompleted
-                            ? '✅ Terminé'
-                            : isOverdue
-                            ? '🔴 En retard'
-                            : isWarning
-                            ? '🟡 À relancer'
-                            : '🟢 Dans les temps'}
-                        </span>
-                      </div>
-
-                      <h3 className="text-base font-black text-white">{task.title}</h3>
-                      <p className="text-xs text-slate-300 max-w-3xl leading-relaxed">{task.description}</p>
-
-                      <div className="flex flex-wrap items-center gap-4 text-[11px] text-slate-400 pt-1">
-                        <span>Responsable : <strong className="text-slate-200">{task.assignedTo || 'Non assigné'}</strong></span>
-                        <span>•</span>
-                        <span className="flex items-center gap-1">
-                          <Calendar className="w-3.5 h-3.5 text-amber-400" />
-                          <span>Échéance : <strong className={isOverdue ? 'text-rose-400 font-bold' : 'text-slate-200'}>{task.deadline || 'Non définie'}</strong></span>
-                        </span>
-                        {task.remindersCount && task.remindersCount > 0 ? (
-                          <>
-                            <span>•</span>
-                            <span className="text-orange-400 font-bold">
-                              ⚠️ {task.remindersCount} relance(s) effectuée(s)
-                            </span>
-                          </>
-                        ) : null}
-                      </div>
-                    </div>
-
-                    <div className="flex flex-wrap items-center gap-2 shrink-0 w-full lg:w-auto justify-end pt-3 lg:pt-0 border-t lg:border-t-0 border-slate-800">
-                      {/* Mark Completed Toggle */}
-                      <button
-                        type="button"
-                        onClick={() =>
-                          updateProgrammeTask(task.id, {
-                            status: isCompleted ? 'IN_PROGRESS' : 'COMPLETED',
-                            completedAt: isCompleted ? undefined : new Date().toISOString(),
-                          })
-                        }
-                        className={`px-3 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
-                          isCompleted
-                            ? 'bg-emerald-950 text-emerald-300 border border-emerald-500/30'
-                            : 'bg-slate-800 hover:bg-slate-700 text-slate-300'
-                        }`}
-                        title={isCompleted ? 'Marquer comme non terminé' : 'Valider l’exécution de la tâche'}
-                      >
-                        <Check className="w-3.5 h-3.5" />
-                        <span>{isCompleted ? '✓ Réalisé' : 'Marquer Réalisé'}</span>
-                      </button>
-
-                      {/* Émettre un signalement / relancer */}
-                      <button
-                        type="button"
-                        onClick={() => handleOpenAlertModal(task.department, task.departmentName, task)}
-                        className="bg-rose-600/20 hover:bg-rose-600/30 text-rose-300 border border-rose-500/40 font-bold px-3 py-2 rounded-xl text-xs flex items-center gap-1.5 transition-all cursor-pointer"
-                        title="Émettre un signalement d'audit ou relancer le responsable"
-                      >
-                        <AlertTriangle className="w-3.5 h-3.5 text-rose-400" />
-                        <span>Relancer</span>
-                      </button>
-
-                      {/* Delete task if created manually */}
-                      {task.id.startsWith('TASK-') && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            if (confirm('Voulez-vous supprimer cet engagement ?')) {
-                              deleteProgrammeTask(task.id);
-                            }
-                          }}
-                          className="text-slate-500 hover:text-rose-400 p-2 rounded-xl hover:bg-slate-800 transition-all cursor-pointer"
-                          title="Supprimer la tâche"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                );
-              })
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* ========================================================= */}
-      {/* 5. REGISTRE DES SIGNALEMENTS & RELANCES (TAB 3) */}
-      {/* ========================================================= */}
-      {activeTab === 'ALERTES' && (
-        <div className="space-y-6">
-          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 bg-slate-900 border border-slate-800 p-5 rounded-3xl">
-            <div>
-              <h2 className="text-lg font-black text-white flex items-center gap-2">
-                <AlertTriangle className="w-5 h-5 text-amber-400" />
-                <span>Registre Officiel des Signalements & Relances du Contrôleur</span>
-              </h2>
-              <p className="text-xs text-slate-400 mt-0.5">
-                Historique des notifications de retard, rappels statutaires et mises en demeure adressées aux départements.
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={() => handleOpenAlertModal('SECRETARIAT', 'Secrétariat Général')}
-              className="bg-rose-600 hover:bg-rose-500 text-white font-black px-4 py-2.5 rounded-2xl text-xs flex items-center gap-1.5 shadow-lg transition-all active:scale-95 cursor-pointer"
-            >
-              <Plus className="w-4 h-4" />
-              <span>Nouveau Signalement</span>
-            </button>
-          </div>
-
-          <div className="space-y-3">
-            {(!programmeAlerts || programmeAlerts.length === 0) ? (
-              <div className="bg-slate-900 border border-slate-800 rounded-3xl p-12 text-center text-slate-400">
-                <CheckCircle2 className="w-12 h-12 text-emerald-500 mx-auto mb-3" />
-                <p className="text-base font-bold text-slate-200">Aucun signalement émis pour le moment.</p>
-                <p className="text-xs text-slate-500 mt-1">Tous les départements sont dans les temps ou aucune mise en demeure n'a été rédigée.</p>
-              </div>
-            ) : (
-              programmeAlerts.map(alert => {
-                const isPending = alert.status === 'PENDING';
-                return (
-                  <div
-                    key={alert.id}
-                    className={`bg-slate-900 border rounded-3xl p-5 shadow-lg flex flex-col md:flex-row items-start md:items-center justify-between gap-4 transition-all ${
-                      isPending ? 'border-amber-500/40 bg-amber-950/10' : 'border-slate-800 opacity-70'
-                    }`}
-                  >
-                    <div className="space-y-1.5 flex-1">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="bg-slate-800 text-slate-300 font-bold px-2.5 py-0.5 rounded-md text-[10px] uppercase">
-                          {alert.targetDepartmentName}
-                        </span>
-
-                        <span
-                          className={`px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider ${
-                            alert.severity === 'CRITICAL'
-                              ? 'bg-rose-500/20 text-rose-300 border border-rose-500/30'
-                              : alert.severity === 'WARNING'
-                              ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
-                              : 'bg-blue-500/20 text-blue-300 border border-blue-500/30'
-                          }`}
-                        >
-                          {alert.severity === 'CRITICAL' ? '🔴 ALERTE CRITIQUE' : alert.severity === 'WARNING' ? '🟠 RETARD CONSTATÉ' : '🟡 RAPPEL AMICAL'}
-                        </span>
-
-                        <span
-                          className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold ${
-                            isPending ? 'bg-orange-500/20 text-orange-300' : 'bg-emerald-500/20 text-emerald-300'
-                          }`}
-                        >
-                          {isPending ? '⏳ En cours' : '✓ Régularisé'}
-                        </span>
-                      </div>
-
-                      <h3 className="text-base font-black text-white">{alert.title}</h3>
-                      <p className="text-xs text-slate-300 leading-relaxed max-w-3xl whitespace-pre-line">{alert.message}</p>
-
-                      <div className="text-[11px] text-slate-400 pt-1 flex flex-wrap items-center gap-3">
-                        <span>Émis le : <strong className="text-slate-200">{new Date(alert.sentAt).toLocaleDateString('fr-FR')}</strong></span>
-                        <span>•</span>
-                        <span>Par : <strong className="text-slate-200">{alert.sentBy}</strong></span>
-                        {alert.taskTitle && (
-                          <>
-                            <span>•</span>
-                            <span>Tâche liée : <strong className="text-amber-300">{alert.taskTitle}</strong></span>
-                          </>
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="flex flex-wrap items-center gap-2 shrink-0 justify-end w-full md:w-auto pt-3 md:pt-0 border-t md:border-t-0 border-slate-800">
-                      {/* WhatsApp Direct Action */}
-                      <a
-                        href={generateWhatsAppReminderLink(alert)}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold px-3.5 py-2 rounded-xl text-xs flex items-center gap-1.5 shadow-md transition-all active:scale-95"
-                      >
-                        <ExternalLink className="w-3.5 h-3.5" />
-                        <span>Transmettre via WhatsApp</span>
-                      </a>
-
-                      {isPending ? (
-                        <button
-                          type="button"
-                          onClick={() => resolveProgrammeAlert(alert.id)}
-                          className="bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold px-3.5 py-2 rounded-xl text-xs transition-all flex items-center gap-1.5"
-                        >
-                          <Check className="w-3.5 h-3.5 text-emerald-400" />
-                          <span>Marquer Régularisé</span>
-                        </button>
-                      ) : (
-                        <span className="text-xs font-bold text-emerald-400 flex items-center gap-1 px-3 py-2 bg-emerald-950/40 rounded-xl border border-emerald-500/20">
-                          <CheckCircle2 className="w-3.5 h-3.5" />
-                          <span>Régularisé</span>
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                );
-              })
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* ========================================================= */}
-      {/* 6. ACCÈS EN LECTURE SEULE D'AUDIT (TAB 4) */}
-      {/* ========================================================= */}
-      {activeTab === 'AUDIT' && (
-        <div className="space-y-6">
-          <div className="bg-slate-900 border border-emerald-500/40 p-5 rounded-3xl flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
-            <div className="space-y-1">
-              <div className="inline-flex items-center gap-2 bg-emerald-500/20 text-emerald-300 px-3 py-1 rounded-full text-xs font-black border border-emerald-500/30">
-                <Lock className="w-3.5 h-3.5" />
-                <span>DROIT D'INSPECTION & CONTRÔLE INTERNE</span>
-              </div>
-              <h2 className="text-lg font-black text-white">Registre Intégral des Documents et Livrables en Lecture Seule</h2>
-              <p className="text-xs text-slate-300">
-                L’Auditeur consulte en toute transparence l'intégralité des PV, bilans financiers, projets AGR et soldes réels sans droit de modification directe.
-              </p>
-            </div>
-
-            {/* Sub-Tabs for Audit */}
-            <div className="flex flex-wrap items-center gap-1.5 bg-slate-950 p-1.5 rounded-2xl border border-slate-800 shrink-0">
-              <button
-                type="button"
-                onClick={() => setAuditSubCategory('PVS')}
-                className={`px-3 py-2 rounded-xl font-bold text-xs transition-all ${
-                  auditSubCategory === 'PVS' ? 'bg-emerald-600 text-white shadow' : 'text-slate-400 hover:text-white'
-                }`}
-              >
-                PVs Réunions ({pvs.length})
-              </button>
-              <button
-                type="button"
-                onClick={() => setAuditSubCategory('BILANS')}
-                className={`px-3 py-2 rounded-xl font-bold text-xs transition-all ${
-                  auditSubCategory === 'BILANS' ? 'bg-emerald-600 text-white shadow' : 'text-slate-400 hover:text-white'
-                }`}
-              >
-                Bilans Financiers ({bilans.length})
-              </button>
-              <button
-                type="button"
-                onClick={() => setAuditSubCategory('PROJETS')}
-                className={`px-3 py-2 rounded-xl font-bold text-xs transition-all ${
-                  auditSubCategory === 'PROJETS' ? 'bg-emerald-600 text-white shadow' : 'text-slate-400 hover:text-white'
-                }`}
-              >
-                Projets AGR ({projects.length})
-              </button>
-              <button
-                type="button"
-                onClick={() => setAuditSubCategory('ACTIVITES')}
-                className={`px-3 py-2 rounded-xl font-bold text-xs transition-all ${
-                  auditSubCategory === 'ACTIVITES' ? 'bg-emerald-600 text-white shadow' : 'text-slate-400 hover:text-white'
-                }`}
-              >
-                Activités ({activities.length})
-              </button>
-              <button
-                type="button"
-                onClick={() => setAuditSubCategory('CAISSES')}
-                className={`px-3 py-2 rounded-xl font-bold text-xs transition-all ${
-                  auditSubCategory === 'CAISSES' ? 'bg-emerald-600 text-white shadow' : 'text-slate-400 hover:text-white'
-                }`}
-              >
-                Caisses & Reçus
-              </button>
-            </div>
-          </div>
-
-          {/* AUDIT: PVS */}
-          {auditSubCategory === 'PVS' && (
-            <div className="space-y-3">
-              {pvs.length === 0 ? (
-                <div className="bg-slate-900 border border-slate-800 rounded-3xl p-10 text-center text-slate-400">
-                  <FileText className="w-10 h-10 text-slate-600 mx-auto mb-2" />
-                  <p className="font-bold text-slate-300">Aucun Procès-Verbal enregistré par le Secrétariat.</p>
-                </div>
-              ) : (
-                pvs.map(pv => (
-                  <div
-                    key={pv.id}
-                    className="bg-slate-900 border border-slate-800 hover:border-slate-700 rounded-3xl p-5 shadow-lg flex flex-col md:flex-row items-start md:items-center justify-between gap-4"
-                  >
-                    <div className="space-y-1">
-                      <div className="flex items-center gap-2">
-                        <span className="bg-blue-500/20 text-blue-300 text-[10px] font-bold px-2 py-0.5 rounded-md">
-                          {pv.id}
-                        </span>
-                        <span className="text-xs text-slate-400">
-                          Réunion du : <strong className="text-slate-200">{pv.meetingDate}</strong>
-                        </span>
-                        <span className="bg-slate-800 text-slate-300 text-[10px] font-bold px-2 py-0.5 rounded-full">
-                          Statut : {pv.status}
-                        </span>
-                      </div>
-                      <h4 className="text-base font-black text-white">{pv.title}</h4>
-                      <p className="text-xs text-slate-400 line-clamp-2 max-w-3xl">{pv.content}</p>
-                    </div>
-
-                    <button
-                      type="button"
-                      onClick={() => setAuditItemModal({ type: 'PV', item: pv })}
-                      className="bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold px-4 py-2 rounded-xl text-xs flex items-center gap-1.5 shrink-0 transition-all cursor-pointer"
-                    >
-                      <Eye className="w-3.5 h-3.5" />
-                      <span>Lire le PV Intégral (Audit)</span>
-                    </button>
-                  </div>
-                ))
-              )}
-            </div>
-          )}
-
-          {/* AUDIT: BILANS FINANCIERS */}
-          {auditSubCategory === 'BILANS' && (
-            <div className="space-y-3">
-              {bilans.length === 0 ? (
-                <div className="bg-slate-900 border border-slate-800 rounded-3xl p-10 text-center text-slate-400">
-                  <DollarSign className="w-10 h-10 text-slate-600 mx-auto mb-2" />
-                  <p className="font-bold text-slate-300">Aucun Bilan Financier officiel enregistré.</p>
-                </div>
-              ) : (
-                bilans.map(bilan => (
-                  <div
-                    key={bilan.id}
-                    className="bg-slate-900 border border-slate-800 hover:border-slate-700 rounded-3xl p-5 shadow-lg flex flex-col md:flex-row items-start md:items-center justify-between gap-4"
-                  >
-                    <div className="space-y-1">
-                      <div className="flex items-center gap-2">
-                        <span className="bg-emerald-500/20 text-emerald-300 text-[10px] font-bold px-2 py-0.5 rounded-md">
-                          {bilan.period || bilan.id}
-                        </span>
-                        <span className="text-xs text-slate-400">
-                          Date : <strong className="text-slate-200">{bilan.date}</strong>
-                        </span>
-                        <span className="bg-slate-800 text-slate-300 text-[10px] font-bold px-2 py-0.5 rounded-full">
-                          {bilan.status}
-                        </span>
-                      </div>
-                      <h4 className="text-base font-black text-white">{bilan.title}</h4>
-                      <div className="flex items-center gap-4 text-xs font-mono">
-                        <span className="text-emerald-400 font-bold">Total Entrées : {(bilan.totalIn || 0).toLocaleString('fr-FR')} F</span>
-                        <span className="text-rose-400 font-bold">Total Sorties : {(bilan.totalOut || 0).toLocaleString('fr-FR')} F</span>
-                      </div>
-                    </div>
-
-                    <button
-                      type="button"
-                      onClick={() => setAuditItemModal({ type: 'BILAN', item: bilan })}
-                      className="bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold px-4 py-2 rounded-xl text-xs flex items-center gap-1.5 shrink-0 transition-all cursor-pointer"
-                    >
-                      <Eye className="w-3.5 h-3.5" />
-                      <span>Inspecter le Bilan</span>
-                    </button>
-                  </div>
-                ))
-              )}
-            </div>
-          )}
-
-          {/* AUDIT: PROJETS AGR */}
-          {auditSubCategory === 'PROJETS' && (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {projects.length === 0 ? (
-                <div className="col-span-2 bg-slate-900 border border-slate-800 rounded-3xl p-10 text-center text-slate-400">
-                  <p className="font-bold text-slate-300">Aucun projet AGR déposé.</p>
-                </div>
-              ) : (
-                projects.map(proj => (
-                  <div key={proj.id} className="bg-slate-900 border border-slate-800 rounded-3xl p-5 space-y-3">
-                    <div className="flex items-center justify-between">
-                      <span className="bg-amber-500/20 text-amber-300 text-[10px] font-bold px-2.5 py-0.5 rounded-full">
-                        Catégorie : {proj.category}
-                      </span>
-                      <span className="text-xs font-bold text-slate-400">{proj.status}</span>
-                    </div>
-
-                    <h4 className="text-base font-black text-white">{proj.title}</h4>
-                    <p className="text-xs text-slate-300 line-clamp-3">{proj.description}</p>
-
-                    <div className="bg-slate-950 p-3 rounded-2xl border border-slate-800 space-y-1 text-xs font-mono">
-                      <div className="flex justify-between text-slate-400">
-                        <span>Coût Estimé :</span>
-                        <strong className="text-amber-400">{(proj.estimatedCost || 0).toLocaleString('fr-FR')} F CFA</strong>
-                      </div>
-                      <div className="flex justify-between text-slate-400">
-                        <span>Quote-part par membre :</span>
-                        <strong className="text-white">{(proj.requiredAmountPerMember || 0).toLocaleString('fr-FR')} F CFA</strong>
-                      </div>
-                      <div className="flex justify-between text-slate-400">
-                        <span>Date Limite :</span>
-                        <strong className="text-slate-300">{proj.paymentDeadline || 'Non renseignée'}</strong>
-                      </div>
-                    </div>
-                  </div>
-                ))
-              )}
-            </div>
-          )}
-
-          {/* AUDIT: ACTIVITES */}
-          {auditSubCategory === 'ACTIVITES' && (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {activities.length === 0 ? (
-                <div className="col-span-2 bg-slate-900 border border-slate-800 rounded-3xl p-10 text-center text-slate-400">
-                  <p className="font-bold text-slate-300">Aucune activité enregistrée.</p>
-                </div>
-              ) : (
-                activities.map(act => (
-                  <div key={act.id} className="bg-slate-900 border border-slate-800 rounded-3xl p-5 space-y-3">
-                    <div className="flex items-center justify-between">
-                      <span className="bg-purple-500/20 text-purple-300 text-[10px] font-bold px-2.5 py-0.5 rounded-full">
-                        {act.fixedType || act.eventType || 'ACTIVITÉ'}
-                      </span>
-                      <span className="text-xs font-bold text-slate-400">Date : {act.eventDate}</span>
-                    </div>
-
-                    <h4 className="text-base font-black text-white">{act.title}</h4>
-                    <p className="text-xs text-slate-300 line-clamp-2">{act.description}</p>
-
-                    <div className="bg-slate-950 p-3 rounded-2xl border border-slate-800 text-xs flex justify-between font-mono">
-                      <span className="text-slate-400">Budget prévisionnel :</span>
-                      <strong className="text-emerald-400">{(act.budget || 0).toLocaleString('fr-FR')} F CFA</strong>
-                    </div>
-                  </div>
-                ))
-              )}
-            </div>
-          )}
-
-          {/* AUDIT: CAISSES & REÇUS */}
-          {auditSubCategory === 'CAISSES' && (
-            <div className="space-y-6">
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
-                <div className="bg-slate-900 border border-slate-800 p-4 rounded-2xl">
-                  <span className="text-[10px] text-slate-400 font-bold uppercase block">Caisse Cotisation</span>
-                  <span className="text-xl font-black text-emerald-400 font-mono">{(fundBalances.COTISATION || 0).toLocaleString('fr-FR')} F</span>
-                </div>
-                <div className="bg-slate-900 border border-slate-800 p-4 rounded-2xl">
-                  <span className="text-[10px] text-slate-400 font-bold uppercase block">Caisse Anniversaire</span>
-                  <span className="text-xl font-black text-amber-400 font-mono">{(fundBalances.ANNIVERSAIRE || 0).toLocaleString('fr-FR')} F</span>
-                </div>
-                <div className="bg-slate-900 border border-slate-800 p-4 rounded-2xl">
-                  <span className="text-[10px] text-slate-400 font-bold uppercase block">Caisse Loisirs</span>
-                  <span className="text-xl font-black text-purple-400 font-mono">{(fundBalances.LOISIRS || 0).toLocaleString('fr-FR')} F</span>
-                </div>
-                <div className="bg-slate-900 border border-slate-800 p-4 rounded-2xl">
-                  <span className="text-[10px] text-slate-400 font-bold uppercase block">Caisse Projets AGR</span>
-                  <span className="text-xl font-black text-blue-400 font-mono">{(fundBalances.AGR || 0).toLocaleString('fr-FR')} F</span>
-                </div>
-                <div className="bg-slate-900 border border-slate-800 p-4 rounded-2xl">
-                  <span className="text-[10px] text-slate-400 font-bold uppercase block">Caisse Cas Sociaux</span>
-                  <span className="text-xl font-black text-rose-400 font-mono">{(fundBalances.CAS_SOCIAUX || 0).toLocaleString('fr-FR')} F</span>
-                </div>
-              </div>
-
-              <div className="bg-slate-900 border border-slate-800 rounded-3xl p-5">
-                <h3 className="text-sm font-black text-white mb-3">Reçus Déclarés Récents ({declarations.length})</h3>
-                <div className="space-y-2 max-h-80 overflow-y-auto pr-2">
-                  {declarations.slice(0, 10).map(d => (
-                    <div key={d.id} className="bg-slate-950 p-3 rounded-xl border border-slate-800 flex items-center justify-between text-xs">
-                      <div>
-                        <strong className="text-white">{d.memberNickname || d.memberName}</strong>
-                        <span className="text-slate-400 block text-[10px]">{d.fund} • Réf: {d.reference}</span>
-                      </div>
-                      <div className="text-right">
-                        <strong className="text-emerald-400 font-mono">{(d.amount || 0).toLocaleString('fr-FR')} F</strong>
-                        <span className={`block text-[10px] font-bold ${d.status === 'APPROVED' ? 'text-emerald-400' : d.status === 'PENDING' ? 'text-amber-400' : 'text-rose-400'}`}>
-                          {d.status}
-                        </span>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* ========================================================= */}
-      {/* 5. AUDIT DÉTAILLÉ DES CONNEXIONS ADMINS (TAB DÉDIÉ) */}
-      {/* ========================================================= */}
-      {activeTab === 'CONNEXIONS' && (
-        <div className="space-y-6">
-          {renderAdminAttendanceTwoBlocks()}
-
-          {/* HISTORIQUE DÉTAILLÉ DE TOUTES LES CONNEXIONS DE LA JOURNÉE */}
+      {activeTab === 'ACTIVITES' && (
+        <div className="space-y-6 animate-fadeIn">
+          {/* Header & Filtres */}
           <div className="bg-slate-900 border border-slate-800 rounded-3xl p-5 sm:p-6 shadow-xl space-y-4">
-            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 border-b border-slate-800 pb-4">
+            <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
               <div>
-                <h4 className="text-base font-black text-white flex items-center gap-2">
-                  <History className="w-5 h-5 text-amber-400" />
-                  <span>Journal Chronologique des Connexions Administrateurs ({todayLogs.length} logs ce jour)</span>
-                </h4>
-                <p className="text-xs text-slate-400 mt-0.5">
-                  Flux continu d'événements enregistrés en temps réel dans Firestore (<code>admin_logs</code>).
+                <div className="inline-flex items-center gap-2 bg-amber-500/20 text-amber-300 px-3 py-1 rounded-full text-xs font-black uppercase tracking-wider mb-1.5 border border-amber-500/30">
+                  <Sparkles className="w-3.5 h-3.5" />
+                  <span>Centralisation Statutaire • Organisation (2) • Spiritualité &amp; Projets (0)</span>
+                </div>
+                <h2 className="text-xl font-black text-white flex items-center gap-2">
+                  <span>Activités Publiées des Départements</span>
+                </h2>
+                <p className="text-xs text-slate-400 mt-0.5 max-w-2xl">
+                  Seul le département <strong>Organisation</strong> possède des activités publiées (au nombre de 2, avec lieux à définir). Les départements Spiritualité et Projets n'ont encore publié aucune activité. Pour chaque activité, la <strong>Date de relance</strong> est calculée automatiquement à un mois avant l'événement.
                 </p>
               </div>
 
-              <div className="flex items-center gap-2">
-                <span className="text-xs font-mono bg-slate-950 px-3 py-1.5 rounded-xl border border-slate-800 text-emerald-400 font-bold flex items-center gap-1.5">
+              {/* Badges départements */}
+              <div className="flex flex-wrap items-center gap-2 text-xs font-bold">
+                <button
+                  type="button"
+                  onClick={() => setActivityDeptFilter('ALL')}
+                  className={`px-3 py-1.5 rounded-xl font-black transition-all ${
+                    activityDeptFilter === 'ALL'
+                      ? 'bg-white text-slate-950 shadow'
+                      : 'bg-slate-950 text-slate-400 hover:text-white border border-slate-800'
+                  }`}
+                >
+                  Tous ({allDepartmentActivities.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActivityDeptFilter('ORGANISATION')}
+                  className={`px-3 py-1.5 rounded-xl font-black transition-all flex items-center gap-1.5 ${
+                    activityDeptFilter === 'ORGANISATION'
+                      ? 'bg-rose-500 text-white shadow'
+                      : 'bg-slate-950 text-rose-400 hover:text-white border border-slate-800'
+                  }`}
+                >
+                  <span>🎪 Organisation</span>
+                  <span className="bg-rose-950/60 text-white text-[10px] px-1.5 py-0.2 rounded-full font-mono">
+                    {allDepartmentActivities.filter(a => a.departmentKey === 'ORGANISATION').length}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActivityDeptFilter('SPIRITUALITE')}
+                  className={`px-3 py-1.5 rounded-xl font-black transition-all flex items-center gap-1.5 ${
+                    activityDeptFilter === 'SPIRITUALITE'
+                      ? 'bg-violet-600 text-white shadow'
+                      : 'bg-slate-950 text-violet-400 hover:text-white border border-slate-800'
+                  }`}
+                >
+                  <span>🕊️ Spiritualité</span>
+                  <span className="bg-violet-950/60 text-white text-[10px] px-1.5 py-0.2 rounded-full font-mono">
+                    {allDepartmentActivities.filter(a => a.departmentKey === 'SPIRITUALITE').length}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActivityDeptFilter('PROJET')}
+                  className={`px-3 py-1.5 rounded-xl font-black transition-all flex items-center gap-1.5 ${
+                    activityDeptFilter === 'PROJET'
+                      ? 'bg-indigo-600 text-white shadow'
+                      : 'bg-slate-950 text-indigo-400 hover:text-white border border-slate-800'
+                  }`}
+                >
+                  <span>🚀 Projets (AGR)</span>
+                  <span className="bg-indigo-950/60 text-white text-[10px] px-1.5 py-0.2 rounded-full font-mono">
+                    {allDepartmentActivities.filter(a => a.departmentKey === 'PROJET').length}
+                  </span>
+                </button>
+              </div>
+            </div>
+
+            {/* Barre de recherche */}
+            <div className="relative">
+              <Search className="w-4 h-4 text-slate-500 absolute left-3.5 top-3.5" />
+              <input
+                type="text"
+                placeholder="Rechercher une activité par titre, lieu, date ou département..."
+                value={activitySearchQuery}
+                onChange={e => setActivitySearchQuery(e.target.value)}
+                className="w-full bg-slate-950 border border-slate-800 rounded-2xl pl-10 pr-4 py-2.5 text-xs text-white placeholder-slate-500 font-medium focus:border-amber-500/50 outline-none"
+              />
+            </div>
+          </div>
+
+          {/* Grille des Activités */}
+          {filteredActivities.length === 0 ? (
+            <div className="bg-slate-900 border border-slate-800 rounded-3xl p-12 text-center space-y-3">
+              <Calendar className="w-10 h-10 text-slate-600 mx-auto" />
+              <p className="text-sm font-bold text-slate-300">
+                {activityDeptFilter === 'SPIRITUALITE'
+                  ? 'Aucune activité publiée par le Département Spiritualité pour le moment.'
+                  : activityDeptFilter === 'PROJET'
+                  ? 'Aucune activité publiée par la Commission Projets (AGR) pour le moment.'
+                  : 'Aucune activité trouvée.'}
+              </p>
+              <p className="text-xs text-slate-500 max-w-md mx-auto">
+                {activityDeptFilter === 'SPIRITUALITE' || activityDeptFilter === 'PROJET'
+                  ? 'Ce département n\'a encore programmé ou officialisé aucune activité dans le calendrier.'
+                  : 'Modifiez votre filtre ou effectuez une autre recherche.'}
+              </p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+              {filteredActivities.map((act) => (
+                <div
+                  key={act.id}
+                  className="bg-slate-900 border border-slate-800 hover:border-slate-700 rounded-3xl p-5 shadow-xl flex flex-col justify-between space-y-4 transition-all relative overflow-hidden"
+                >
+                  <div className="space-y-3">
+                    {/* Badge Département & Statut */}
+                    <div className="flex items-center justify-between gap-2">
+                      <span className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-black uppercase tracking-wider border ${act.departmentBadgeColor}`}>
+                        <span>{act.departmentIcon}</span>
+                        <span>{act.departmentName}</span>
+                      </span>
+
+                      {act.isDueForReminder ? (
+                        <span className="bg-rose-500/20 text-rose-300 border border-rose-500/40 text-[10px] font-black px-2.5 py-0.5 rounded-full animate-pulse flex items-center gap-1">
+                          <Bell className="w-3 h-3 text-rose-400" />
+                          <span>Relance Requise</span>
+                        </span>
+                      ) : act.isPast ? (
+                        <span className="bg-slate-800 text-slate-400 text-[10px] font-bold px-2 py-0.5 rounded-full">
+                          Événement passé
+                        </span>
+                      ) : (
+                        <span className="bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-[10px] font-black px-2 py-0.5 rounded-full flex items-center gap-1">
+                          <Check className="w-3 h-3 text-emerald-400" />
+                          <span>Dans les temps</span>
+                        </span>
+                      )}
+                    </div>
+
+                    {/* Titre */}
+                    <div>
+                      <h3 className="text-base font-black text-white leading-snug">
+                        {act.title}
+                      </h3>
+                      {act.description && (
+                        <p className="text-xs text-slate-400 line-clamp-2 mt-1 leading-relaxed">
+                          {act.description}
+                        </p>
+                      )}
+                    </div>
+
+                    {/* Informations Clés (Date, Lieu, Relance) */}
+                    <div className="space-y-2 bg-slate-950 p-3.5 rounded-2xl border border-slate-800/80 text-xs">
+                      {/* Date de l'événement */}
+                      <div className="flex items-start gap-2 text-slate-300">
+                        <Calendar className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                        <div>
+                          <span className="text-[10px] font-extrabold uppercase text-slate-500 block">Date de l'événement</span>
+                          <span className="font-bold text-white font-mono">{act.date}</span>
+                        </div>
+                      </div>
+
+                      {/* Lieu */}
+                      <div className="flex items-start gap-2 text-slate-300">
+                        <MapPin className="w-4 h-4 text-cyan-400 shrink-0 mt-0.5" />
+                        <div>
+                          <span className="text-[10px] font-extrabold uppercase text-slate-500 block">Lieu de réalisation</span>
+                          <span className={`font-bold ${act.location === 'À définir' || !act.location ? 'text-amber-400/90 italic' : 'text-slate-200'}`}>
+                            {act.location || 'À définir'}
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Date de Relance Automatique (1 mois avant) */}
+                      <div className="flex items-start gap-2 pt-2 border-t border-slate-900">
+                        <Clock className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                        <div>
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-[10px] font-black uppercase text-amber-400">Date de Relance (J-30)</span>
+                            <span className="text-[9px] bg-amber-500/20 text-amber-300 px-1.5 py-0.2 rounded font-bold">Auto</span>
+                          </div>
+                          <span className="font-black text-amber-300 font-mono text-sm block mt-0.5">
+                            ⏰ {act.reminderDate}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Bas de carte */}
+                  <div className="pt-2 border-t border-slate-800 flex items-center justify-between text-[11px] text-slate-400">
+                    <span className="font-medium">Statut : <strong className="text-slate-200">{act.statusLabel || 'En cours'}</strong></span>
+                    <span className="font-mono text-[10px] text-slate-500">ID: {act.id.substring(0, 14)}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ========================================================= */}
+      {/* 4. SECTION 2 : DEMANDES D'INFORMATION INTER-DÉPARTEMENTS */}
+      {/* (SUIVI DISCRET SANS CORPS DE MESSAGE + ALERTE WHATSAPP APRÈS 1H) */}
+      {/* ========================================================= */}
+      {activeTab === 'DEMANDES_INFO' && (
+        <div className="space-y-6 animate-fadeIn">
+          {/* Header & Consignes de confidentialité */}
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-5 sm:p-6 shadow-xl space-y-4">
+            <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+              <div>
+                <div className="inline-flex items-center gap-2 bg-emerald-500/20 text-emerald-300 px-3 py-1 rounded-full text-xs font-black uppercase tracking-wider mb-1.5 border border-emerald-500/30">
+                  <Shield className="w-3.5 h-3.5" />
+                  <span>Confidentialité Stricte • Métadonnées et Statuts Uniquement</span>
+                </div>
+                <h2 className="text-xl font-black text-white flex items-center gap-2">
+                  <span>Suivi Discret des Demandes d'Information Inter-Départements</span>
+                </h2>
+                <p className="text-xs text-slate-400 mt-0.5 max-w-2xl">
+                  Seuls les départements émetteurs et destinataires ainsi que le statut sont visibles. Si une demande reste <strong>en attente depuis plus d'une heure</strong>, le bouton <strong>Notifier via WhatsApp</strong> permet d'interpeller directement le destinataire en message privé.
+                </p>
+              </div>
+
+              {/* Filtres de statut */}
+              <div className="flex items-center gap-2 text-xs font-bold">
+                <button
+                  type="button"
+                  onClick={() => setInfoFilter('ALL')}
+                  className={`px-3 py-1.5 rounded-xl font-black transition-all ${
+                    infoFilter === 'ALL'
+                      ? 'bg-white text-slate-950 shadow'
+                      : 'bg-slate-950 text-slate-400 hover:text-white border border-slate-800'
+                  }`}
+                >
+                  Toutes ({effectiveInfoRequests.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setInfoFilter('PENDING')}
+                  className={`px-3 py-1.5 rounded-xl font-black transition-all flex items-center gap-1.5 ${
+                    infoFilter === 'PENDING'
+                      ? 'bg-amber-500 text-slate-950 shadow'
+                      : 'bg-slate-950 text-amber-400 hover:text-white border border-slate-800'
+                  }`}
+                >
+                  <span>⏳ En attente</span>
+                  <span className="bg-amber-950 text-amber-200 text-[10px] px-1.5 py-0.2 rounded-full font-mono">
+                    {effectiveInfoRequests.filter(r => !((r.replyMessage && r.replyMessage.trim().length > 0) || r.status === 'Répondu' || r.repliedAt)).length}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setInfoFilter('REPLIED')}
+                  className={`px-3 py-1.5 rounded-xl font-black transition-all flex items-center gap-1.5 ${
+                    infoFilter === 'REPLIED'
+                      ? 'bg-emerald-600 text-white shadow'
+                      : 'bg-slate-950 text-emerald-400 hover:text-white border border-slate-800'
+                  }`}
+                >
+                  <span>🟢 Répondues</span>
+                  <span className="bg-emerald-950 text-emerald-200 text-[10px] px-1.5 py-0.2 rounded-full font-mono">
+                    {effectiveInfoRequests.filter(r => Boolean((r.replyMessage && r.replyMessage.trim().length > 0) || r.status === 'Répondu' || r.repliedAt)).length}
+                  </span>
+                </button>
+              </div>
+            </div>
+
+            {/* Barre de recherche */}
+            <div className="relative">
+              <Search className="w-4 h-4 text-slate-500 absolute left-3.5 top-3.5" />
+              <input
+                type="text"
+                placeholder="Filtrer par nom de département émetteur ou destinataire..."
+                value={infoSearchQuery}
+                onChange={e => setInfoSearchQuery(e.target.value)}
+                className="w-full bg-slate-950 border border-slate-800 rounded-2xl pl-10 pr-4 py-2.5 text-xs text-white placeholder-slate-500 font-medium focus:border-amber-500/50 outline-none"
+              />
+            </div>
+          </div>
+
+          {/* Liste des Demandes sous format discret et neutre */}
+          {filteredInfoRequests.length === 0 ? (
+            <div className="bg-slate-900 border border-slate-800 rounded-3xl p-12 text-center space-y-2">
+              <MessageSquare className="w-10 h-10 text-slate-600 mx-auto" />
+              <p className="text-sm font-bold text-slate-300">Aucun échange d'information sous ce filtre.</p>
+              <p className="text-xs text-slate-500">Toutes les demandes inter-départements apparaîtront ici automatiquement.</p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {filteredInfoRequests.map((req) => {
+                const senderDept = getDepartmentDisplayName(req.senderRole);
+                const recipientDept = getDepartmentDisplayName(req.recipientRole);
+                const isReplied = Boolean((req.replyMessage && req.replyMessage.trim().length > 0) || req.status === 'Répondu' || req.repliedAt);
+
+                // Calcul du délai d'attente
+                const createdTime = req.createdAt ? new Date(req.createdAt).getTime() : 0;
+                const diffMs = Date.now() - createdTime;
+                const isOverOneHour = !isReplied && createdTime > 0 && diffMs >= (60 * 60 * 1000);
+                const hoursWaiting = Math.floor(diffMs / (60 * 60 * 1000));
+                const minutesWaiting = Math.floor((diffMs % (60 * 60 * 1000)) / (60 * 1000));
+
+                // Contact WhatsApp du destinataire
+                const contact = getDepartmentContact(req.recipientRole, members);
+                const whatsappMessage = `Bonjour fraternel ${contact.name}. En qualité de Chargé du Suivi du Programme E-ROUAMA, je constate qu'une demande d'information adressée au département ${recipientDept} est en attente de réponse depuis plus d'une heure. Merci de bien vouloir te connecter sur la plateforme pour y apporter une réponse fraternelle : https://e-rouama.web.app`;
+
+                const formattedSentDate = req.createdAt
+                  ? new Date(req.createdAt).toLocaleDateString('fr-FR', {
+                      day: '2-digit',
+                      month: '2-digit',
+                      year: 'numeric',
+                      hour: '2-digit',
+                      minute: '2-digit',
+                    })
+                  : 'Date inconnue';
+
+                const formattedRepliedDate = req.repliedAt
+                  ? new Date(req.repliedAt).toLocaleDateString('fr-FR', {
+                      day: '2-digit',
+                      month: '2-digit',
+                      year: 'numeric',
+                      hour: '2-digit',
+                      minute: '2-digit',
+                    })
+                  : undefined;
+
+                return (
+                  <div
+                    key={req.id}
+                    className={`bg-slate-900 border ${
+                      isOverOneHour
+                        ? 'border-amber-500/60 shadow-amber-950/20 shadow-lg'
+                        : isReplied
+                        ? 'border-slate-800 hover:border-slate-700'
+                        : 'border-slate-800'
+                    } rounded-2xl p-4 sm:p-5 transition-all flex flex-col md:flex-row items-start md:items-center justify-between gap-4`}
+                  >
+                    <div className="space-y-1.5 flex-1 min-w-0">
+                      {/* Format neutre strict exigé par le cahier des charges */}
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-sm font-black text-white">
+                          Demande d'information envoyée par le <span className="text-amber-400 font-extrabold">{senderDept}</span> au <span className="text-cyan-400 font-extrabold">{recipientDept}</span>
+                        </span>
+                      </div>
+
+                      {/* Métadonnées temporelles et auteur sans dévoiler le message */}
+                      <div className="flex flex-wrap items-center gap-3 text-xs text-slate-400 font-medium">
+                        <span className="flex items-center gap-1 font-mono text-[11px]">
+                          <Clock className="w-3.5 h-3.5 text-slate-500" />
+                          <span>Émise le {formattedSentDate}</span>
+                        </span>
+
+                        {!isReplied && createdTime > 0 && (
+                          <span className={`text-[11px] font-bold px-2 py-0.5 rounded-md ${
+                            isOverOneHour ? 'bg-rose-500/20 text-rose-300 font-mono' : 'bg-slate-800 text-slate-300 font-mono'
+                          }`}>
+                            Attente : {hoursWaiting > 0 ? `${hoursWaiting}h ` : ''}{minutesWaiting}min
+                          </span>
+                        )}
+
+                        {isReplied && formattedRepliedDate && (
+                          <span className="flex items-center gap-1 text-emerald-400 font-mono text-[11px]">
+                            <Check className="w-3.5 h-3.5" />
+                            <span>Réponse le {formattedRepliedDate} {req.repliedBy ? `par ${req.repliedBy}` : ''}</span>
+                          </span>
+                        )}
+
+                        <span className="text-slate-600">•</span>
+                        <span className="text-[11px] text-slate-500 font-mono">Réf: {req.id}</span>
+                      </div>
+                    </div>
+
+                    {/* Statut & Action WhatsApp */}
+                    <div className="flex flex-wrap items-center gap-3 shrink-0 w-full md:w-auto justify-between md:justify-end border-t md:border-t-0 pt-3 md:pt-0 border-slate-800">
+                      {/* Statut dynamique */}
+                      <div>
+                        {isReplied ? (
+                          <span className="inline-flex items-center gap-1.5 bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 px-3 py-1 rounded-full text-xs font-black">
+                            <CheckCircle className="w-3.5 h-3.5 text-emerald-400" />
+                            <span>Répondu</span>
+                          </span>
+                        ) : (
+                          <span className={`inline-flex items-center gap-1.5 ${
+                            isOverOneHour
+                              ? 'bg-amber-500/20 text-amber-300 border border-amber-500/50'
+                              : 'bg-slate-800 text-slate-300 border border-slate-700'
+                          } px-3 py-1 rounded-full text-xs font-black`}>
+                            <Clock className={`w-3.5 h-3.5 ${isOverOneHour ? 'text-amber-400 animate-spin' : 'text-slate-400'}`} />
+                            <span>En attente de réponse</span>
+                          </span>
+                        )}
+                      </div>
+
+                      {/* Bouton Alerte WhatsApp si en attente depuis > 1h */}
+                      {isOverOneHour && (
+                        <a
+                          href={`https://wa.me/${contact.cleanPhone}?text=${encodeURIComponent(whatsappMessage)}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-2 bg-emerald-600 hover:bg-emerald-500 text-white font-black px-4 py-2 rounded-xl text-xs shadow-lg transition-all active:scale-95 cursor-pointer"
+                          title={`Interpeller ${contact.name} (${recipientDept}) sur WhatsApp`}
+                        >
+                          <MessageCircle className="w-4 h-4 fill-current" />
+                          <span>Notifier via WhatsApp</span>
+                        </a>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ========================================================= */}
+      {/* 5. SECTION 3 : AUDIT DES CONNEXIONS ADMINS (JOUR J) */}
+      {/* ========================================================= */}
+      {activeTab === 'CONNEXIONS' && (
+        <div className="space-y-6 animate-fadeIn">
+          {/* En-tête de section */}
+          <div className="bg-slate-900 border border-emerald-500/30 rounded-3xl p-5 sm:p-6 shadow-xl relative overflow-hidden">
+            <div className="absolute top-0 right-0 w-64 h-64 bg-emerald-500/10 rounded-full blur-3xl pointer-events-none" />
+            <div className="relative z-10 flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+              <div>
+                <div className="inline-flex items-center gap-2 bg-emerald-500/20 text-emerald-300 px-3 py-1 rounded-full text-xs font-black uppercase tracking-wider mb-2 border border-emerald-500/30">
                   <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping inline-block" />
-                  <span>Écoute en Direct (onSnapshot)</span>
+                  <span>Audit des Connexions Administrateurs • En Direct (onSnapshot)</span>
+                </div>
+                <h3 className="text-lg sm:text-xl font-black text-white flex flex-wrap items-center gap-2">
+                  <span>Contrôle d'Assiduité des Départements Admins</span>
+                  <span className="text-xs font-mono font-bold text-slate-300 bg-slate-950 px-2.5 py-1 rounded-xl border border-slate-800">
+                    {todayDisplayDate}
+                  </span>
+                </h3>
+                <p className="text-xs text-slate-400 mt-1 max-w-2xl">
+                  Supervision de l'assiduité des responsables de départements admins (Trésorier, Organisateur, Respo Projet, Payor, Secrétaire, etc.).
+                </p>
+              </div>
+
+              <div className="bg-slate-950 px-4 py-2.5 rounded-2xl border border-slate-800 text-right">
+                <span className="text-[10px] text-slate-400 uppercase font-bold block">Assiduité Globale</span>
+                <span className="text-xl font-black text-emerald-400 font-mono">
+                  {connectedDepts.length} / {ADMIN_DEPARTMENTS_CONFIG.length} connectés
+                </span>
+                <span className="text-[10px] text-slate-500 block">
+                  {todayLogs.length} session(s) aujourd'hui
                 </span>
               </div>
             </div>
-
-            {todayLogs.length === 0 ? (
-              <div className="bg-slate-950 rounded-2xl border border-slate-800 p-8 text-center text-slate-400 text-xs">
-                <Clock className="w-8 h-8 text-slate-600 mx-auto mb-2" />
-                <p className="font-bold text-slate-300">Aucun journal de connexion enregistré pour l'instant aujourd'hui.</p>
-                <p className="text-slate-500 mt-1">Utilisez la barre de simulation ci-dessus ou connectez-vous avec l'un des rôles administrateurs pour tester.</p>
-              </div>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-left text-xs text-slate-300">
-                  <thead className="bg-slate-950 text-slate-400 uppercase text-[10px] font-bold border-b border-slate-800">
-                    <tr>
-                      <th className="p-3">Heure</th>
-                      <th className="p-3">Département / Rôle</th>
-                      <th className="p-3">Responsable / Profil</th>
-                      <th className="p-3">Identifiant</th>
-                      <th className="p-3 text-right">Statut</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-800/60 font-mono">
-                    {todayLogs.map((log, idx) => {
-                      const deptConfig = ADMIN_DEPARTMENTS_CONFIG.find(
-                        d => d.key === log.role || deptAttendanceMatch(d, log.role)
-                      );
-                      const timeStr = log.loginTimestamp
-                        ? new Date(log.loginTimestamp).toLocaleTimeString('fr-FR', {
-                            hour: '2-digit',
-                            minute: '2-digit',
-                            second: '2-digit',
-                          })
-                        : '--:--';
-
-                      return (
-                        <tr key={log.id || idx} className="hover:bg-slate-950/50 transition-colors">
-                          <td className="p-3 text-white font-bold flex items-center gap-2">
-                            <Clock className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-                            <span>{timeStr}</span>
-                          </td>
-                          <td className="p-3">
-                            <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-md text-[10px] font-black uppercase ${deptConfig?.badgeBg || 'bg-slate-800'} ${deptConfig?.badgeText || 'text-white'} border ${deptConfig?.borderColor || 'border-slate-700'}`}>
-                              <span>{deptConfig?.icon || '🛡️'}</span>
-                              <span>{deptConfig?.shortName || log.role}</span>
-                            </span>
-                          </td>
-                          <td className="p-3 text-slate-200 font-sans font-bold">
-                            {log.memberName || log.role}
-                          </td>
-                          <td className="p-3 text-slate-400 text-[11px]">
-                            {log.userId || log.role}
-                          </td>
-                          <td className="p-3 text-right">
-                            <span className="inline-flex items-center gap-1 text-emerald-400 text-[10px] font-bold">
-                              <CheckCircle className="w-3 h-3" />
-                              <span>Enregistré</span>
-                            </span>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            )}
           </div>
-        </div>
-      )}
 
-      {/* ========================================================= */}
-      {/* 6. NAVETTE & DEMANDES D'INFORMATION (INTER-ADMINS) */}
-      {/* ========================================================= */}
-      {activeTab === 'NAVETTE' && (
-        <div className="space-y-6">
-          <InfoRequestsModule currentRole="SDP" senderNameOverride="Chargé du Suivi du Programme" />
-        </div>
-      )}
-
-      {/* ========================================================= */}
-      {/* MODAL: AJOUTER UNE TÂCHE / ENGAGEMENT */}
-      {/* ========================================================= */}
-      {isAddTaskModalOpen && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-amber-500/40 rounded-3xl p-6 sm:p-8 max-w-xl w-full shadow-2xl space-y-5 animate-fadeIn">
-            <div className="flex items-center justify-between border-b border-slate-800 pb-4">
-              <div className="flex items-center gap-2 text-amber-400 font-black text-base sm:text-lg">
-                <Plus className="w-5 h-5" />
-                <span>Enregistrer un Engagement / Échéance</span>
-              </div>
-              <button
-                type="button"
-                onClick={() => setIsAddTaskModalOpen(false)}
-                className="text-slate-400 hover:text-white p-1 rounded-lg"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <form onSubmit={handleSaveTask} className="space-y-4 text-xs">
+          {/* Grille des 2 Blocs : Connectés vs Absents */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            {/* BLOC 1 : CONNECTÉS */}
+            <div className="bg-slate-900 border border-slate-800 rounded-3xl p-5 sm:p-6 shadow-xl flex flex-col justify-between">
               <div>
-                <label className="block font-bold text-slate-300 uppercase mb-1">
-                  Département Responsable
-                </label>
-                <select
-                  value={taskForm.department}
-                  onChange={e => {
-                    const dKey = e.target.value as DepartmentRole;
-                    const summary = departmentSummaries.find(s => s.key === dKey);
-                    setTaskForm(prev => ({
-                      ...prev,
-                      department: dKey,
-                      departmentName: summary?.name || dKey,
-                    }));
-                  }}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-white font-bold"
-                >
-                  <option value="SECRETARIAT">Secrétariat Général</option>
-                  <option value="TRESORIER">Trésorerie Générale</option>
-                  <option value="PROJET">Commission Projets (AGR)</option>
-                  <option value="ORGANISATION">Commission Organisation</option>
-                  <option value="SPIRITUALITE">Département Spiritualité</option>
-                  <option value="COM">Communication (BIC)</option>
-                  <option value="CERVEAU">Le Cerveau (Présidence)</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="block font-bold text-slate-300 uppercase mb-1">
-                  Intitulé de l'engagement / Résolution
-                </label>
-                <input
-                  type="text"
-                  placeholder="Ex: Clôture de la levée de fonds pour l'élevage"
-                  value={taskForm.title}
-                  onChange={e => setTaskForm(prev => ({ ...prev, title: e.target.value }))}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-white font-bold"
-                />
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div>
-                  <label className="block font-bold text-slate-300 uppercase mb-1">
-                    Source de la tâche
-                  </label>
-                  <select
-                    value={taskForm.source}
-                    onChange={e => setTaskForm(prev => ({ ...prev, source: e.target.value as any }))}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-white font-bold"
-                  >
-                    <option value="PV">Procès-Verbal de Réunion</option>
-                    <option value="PROJET">Projet AGR</option>
-                    <option value="ACTIVITE">Événement / Activité</option>
-                    <option value="CALENDRIER">Calendrier Statutaire</option>
-                    <option value="MANUAL">Recommandation d'Audit</option>
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block font-bold text-slate-300 uppercase mb-1">
-                    Date Limite / Échéance
-                  </label>
-                  <input
-                    type="date"
-                    value={taskForm.deadline}
-                    onChange={e => setTaskForm(prev => ({ ...prev, deadline: e.target.value }))}
-                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-white font-bold"
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label className="block font-bold text-slate-300 uppercase mb-1">
-                  Responsable Désigné (Optionnel)
-                </label>
-                <input
-                  type="text"
-                  placeholder="Ex: Secrétaire Général, PCO, Trésorier..."
-                  value={taskForm.assignedTo}
-                  onChange={e => setTaskForm(prev => ({ ...prev, assignedTo: e.target.value }))}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-white"
-                />
-              </div>
-
-              <div>
-                <label className="block font-bold text-slate-300 uppercase mb-1">
-                  Description & Recommandation d'Exécution
-                </label>
-                <textarea
-                  rows={3}
-                  placeholder="Détails de l'obligation, livrables attendus..."
-                  value={taskForm.description}
-                  onChange={e => setTaskForm(prev => ({ ...prev, description: e.target.value }))}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-white"
-                />
-              </div>
-
-              <div className="flex items-center justify-end gap-3 pt-3 border-t border-slate-800">
-                <button
-                  type="button"
-                  onClick={() => setIsAddTaskModalOpen(false)}
-                  className="px-4 py-2.5 bg-slate-800 text-slate-300 font-bold rounded-xl hover:bg-slate-700"
-                >
-                  Annuler
-                </button>
-                <button
-                  type="submit"
-                  className="px-5 py-2.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black rounded-xl shadow-lg transition-all"
-                >
-                  Enregistrer l'Engagement
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* ========================================================= */}
-      {/* MODAL: ÉMETTRE UN SIGNALEMENT / RELANCE */}
-      {/* ========================================================= */}
-      {isAlertModalOpen && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-rose-500/50 rounded-3xl p-6 sm:p-8 max-w-xl w-full shadow-2xl space-y-5 animate-fadeIn">
-            <div className="flex items-center justify-between border-b border-slate-800 pb-4">
-              <div className="flex items-center gap-2 text-rose-400 font-black text-base sm:text-lg">
-                <AlertTriangle className="w-5 h-5" />
-                <span>Émettre un Signalement / Relancer le Département</span>
-              </div>
-              <button
-                type="button"
-                onClick={() => setIsAlertModalOpen(false)}
-                className="text-slate-400 hover:text-white p-1 rounded-lg"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <form onSubmit={handleSubmitAlert} className="space-y-4 text-xs">
-              <div className="bg-slate-950 p-3 rounded-2xl border border-slate-800 space-y-1">
-                <span className="text-[10px] text-slate-400 uppercase font-bold">Département Ciblé</span>
-                <p className="text-sm font-black text-white">{alertForm.targetDepartmentName}</p>
-                {alertTargetTask && (
-                  <p className="text-[11px] text-amber-300">
-                    Tâche liée : <strong>{alertTargetTask.title}</strong> (Échéance : {alertTargetTask.deadline})
-                  </p>
-                )}
-              </div>
-
-              <div>
-                <label className="block font-bold text-slate-300 uppercase mb-1">
-                  Niveau d'Urgence / Gravité
-                </label>
-                <div className="grid grid-cols-3 gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setAlertForm(prev => ({ ...prev, severity: 'INFO' }))}
-                    className={`py-2 px-2 rounded-xl font-bold text-center border transition-all ${
-                      alertForm.severity === 'INFO'
-                        ? 'bg-blue-500/20 text-blue-300 border-blue-500'
-                        : 'bg-slate-950 text-slate-400 border-slate-800'
-                    }`}
-                  >
-                    🟡 Rappel amical
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setAlertForm(prev => ({ ...prev, severity: 'WARNING' }))}
-                    className={`py-2 px-2 rounded-xl font-bold text-center border transition-all ${
-                      alertForm.severity === 'WARNING'
-                        ? 'bg-amber-500/20 text-amber-300 border-amber-500'
-                        : 'bg-slate-950 text-slate-400 border-slate-800'
-                    }`}
-                  >
-                    🟠 Retard constaté
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setAlertForm(prev => ({ ...prev, severity: 'CRITICAL' }))}
-                    className={`py-2 px-2 rounded-xl font-bold text-center border transition-all ${
-                      alertForm.severity === 'CRITICAL'
-                        ? 'bg-rose-500/20 text-rose-300 border-rose-500'
-                        : 'bg-slate-950 text-slate-400 border-slate-800'
-                    }`}
-                  >
-                    🔴 Alerte critique
-                  </button>
-                </div>
-              </div>
-
-              <div>
-                <label className="block font-bold text-slate-300 uppercase mb-1">
-                  Objet du Signalement
-                </label>
-                <input
-                  type="text"
-                  value={alertForm.title}
-                  onChange={e => setAlertForm(prev => ({ ...prev, title: e.target.value }))}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2.5 text-white font-bold"
-                />
-              </div>
-
-              <div>
-                <label className="block font-bold text-slate-300 uppercase mb-1">
-                  Numéro WhatsApp du Responsable
-                </label>
-                <input
-                  type="text"
-                  value={alertForm.targetPhone}
-                  onChange={e => setAlertForm(prev => ({ ...prev, targetPhone: e.target.value }))}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white font-mono"
-                />
-              </div>
-
-              <div>
-                <label className="block font-bold text-slate-300 uppercase mb-1">
-                  Message Officiel de Relance
-                </label>
-                <textarea
-                  rows={4}
-                  value={alertForm.message}
-                  onChange={e => setAlertForm(prev => ({ ...prev, message: e.target.value }))}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-white leading-relaxed"
-                />
-              </div>
-
-              <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 pt-3 border-t border-slate-800">
-                <a
-                  href={generateWhatsAppReminderLink(alertForm)}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-xl text-center flex items-center justify-center gap-1.5 transition-all"
-                >
-                  <ExternalLink className="w-3.5 h-3.5" />
-                  <span>Envoyer via WhatsApp</span>
-                </a>
-
-                <div className="flex items-center justify-end gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setIsAlertModalOpen(false)}
-                    className="px-4 py-2.5 bg-slate-800 text-slate-300 font-bold rounded-xl hover:bg-slate-700"
-                  >
-                    Annuler
-                  </button>
-                  <button
-                    type="submit"
-                    className="px-5 py-2.5 bg-rose-600 hover:bg-rose-500 text-white font-black rounded-xl shadow-lg transition-all"
-                  >
-                    Enregistrer au Registre
-                  </button>
-                </div>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* ========================================================= */}
-      {/* MODAL: DETAIL AUDIT (LECTURE SEULE STRICTE) */}
-      {/* ========================================================= */}
-      {auditItemModal && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-emerald-500/50 rounded-3xl p-6 sm:p-8 max-w-2xl w-full shadow-2xl space-y-4 animate-fadeIn max-h-[90vh] flex flex-col">
-            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-              <div className="flex items-center gap-2 text-emerald-400 font-black text-base">
-                <Lock className="w-4 h-4" />
-                <span>INSPECTION AUDIT (LECTURE SEULE) • {auditItemModal.type}</span>
-              </div>
-              <button
-                type="button"
-                onClick={() => setAuditItemModal(null)}
-                className="text-slate-400 hover:text-white p-1 rounded-lg"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <div className="flex-1 overflow-y-auto pr-2 space-y-4 text-xs">
-              <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800 space-y-2">
-                <h3 className="text-base font-black text-white">{auditItemModal.item.title}</h3>
-                <p className="text-slate-400 font-mono text-[11px]">Identifiant : {auditItemModal.item.id}</p>
-                <div className="flex items-center gap-2">
-                  <span className="bg-emerald-500/20 text-emerald-300 text-[10px] font-bold px-2 py-0.5 rounded">
-                    Statut : {auditItemModal.item.status}
-                  </span>
-                  {auditItemModal.item.meetingDate && (
-                    <span className="text-slate-400">Date réunion : {auditItemModal.item.meetingDate}</span>
-                  )}
-                  {auditItemModal.item.date && (
-                    <span className="text-slate-400">Date : {auditItemModal.item.date}</span>
-                  )}
-                </div>
-              </div>
-
-              {auditItemModal.type === 'PV' && (
-                <div className="space-y-3">
-                  <div>
-                    <span className="font-bold text-slate-300 uppercase block mb-1">Contenu Intégral du PV :</span>
-                    <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800 text-slate-200 leading-relaxed whitespace-pre-wrap font-sans text-xs">
-                      {auditItemModal.item.content}
+                <div className="flex items-center justify-between border-b border-slate-800 pb-3 mb-4">
+                  <div className="flex items-center gap-2.5">
+                    <div className="p-2 bg-emerald-500/10 rounded-xl border border-emerald-500/20 text-emerald-400">
+                      <CheckCircle className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <h4 className="text-sm font-black text-white uppercase tracking-wide">
+                        DÉPARTEMENTS CONNECTÉS AUJOURD'HUI
+                      </h4>
+                      <p className="text-[11px] text-slate-400 font-medium">
+                        Responsables ayant effectué au moins 1 connexion ce jour
+                      </p>
                     </div>
                   </div>
+                  <span className="bg-emerald-500/20 text-emerald-300 text-xs font-black px-2.5 py-1 rounded-full border border-emerald-500/30">
+                    🟢 {connectedDepts.length} Présent(s)
+                  </span>
+                </div>
 
-                  {auditItemModal.item.attendance && (
-                    <div>
-                      <span className="font-bold text-slate-300 uppercase block mb-1">Émargement / Présences :</span>
-                      <div className="bg-slate-950 p-3 rounded-2xl border border-slate-800 grid grid-cols-2 gap-2">
-                        {auditItemModal.item.attendance.map((att: any, idx: number) => {
-                          const m = members.find(mem => mem.id === att.memberId);
-                          return (
-                            <div key={idx} className="flex items-center justify-between text-[11px] p-1.5 bg-slate-900 rounded-lg">
-                              <span className="text-slate-200 font-bold">{m?.nickname || m?.firstName || att.memberId}</span>
-                              <span className={att.present ? 'text-emerald-400 font-bold' : 'text-rose-400 font-bold'}>
-                                {att.present ? 'Présent' : 'Absent'}
+                {connectedDepts.length === 0 ? (
+                  <div className="bg-slate-950/80 rounded-2xl border border-slate-800/80 p-8 text-center space-y-2 my-2">
+                    <Clock className="w-8 h-8 text-slate-600 mx-auto animate-pulse" />
+                    <p className="text-xs font-bold text-slate-300">
+                      Aucune connexion administrative enregistrée aujourd'hui pour l'instant.
+                    </p>
+                    <p className="text-[11px] text-slate-500">
+                      Dès qu'un responsable se connecte, son statut passera instantanément à 🟢 En ligne / Passé aujourd'hui.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="space-y-3 max-h-[420px] overflow-y-auto pr-1">
+                    {connectedDepts.map((dept) => (
+                      <div
+                        key={dept.key}
+                        className="bg-slate-950 p-3.5 rounded-2xl border border-emerald-500/30 hover:border-emerald-500/60 transition-all flex items-center justify-between gap-3 shadow-md"
+                      >
+                        <div className="flex items-center gap-3 min-w-0">
+                          <span className="text-2xl p-2 bg-slate-900 rounded-xl border border-slate-800 shrink-0">
+                            {dept.icon}
+                          </span>
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2">
+                              <span className={`px-2 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider ${dept.badgeBg} ${dept.badgeText} border ${dept.borderColor}`}>
+                                {dept.shortName}
+                              </span>
+                              <span className="text-xs font-black text-white truncate">
+                                {dept.name}
                               </span>
                             </div>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )}
+                            <p className="text-[11px] text-slate-400 truncate mt-0.5">
+                              {dept.description}
+                            </p>
+                          </div>
+                        </div>
 
-              {auditItemModal.type === 'BILAN' && (
-                <div className="space-y-3">
-                  <div>
-                    <span className="font-bold text-slate-300 uppercase block mb-1">Synthèse Financière :</span>
-                    <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800 text-slate-200 leading-relaxed whitespace-pre-wrap">
-                      {auditItemModal.item.summary}
+                        <div className="text-right shrink-0">
+                          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-black bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 inline-block" />
+                            <span>{dept.count} session(s)</span>
+                          </span>
+                          {dept.lastLoginTime && (
+                            <span className="block text-[10px] font-mono text-slate-400 mt-1">
+                              Dernier: {dept.lastLoginTime}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* BLOC 2 : ABSENTS */}
+            <div className="bg-slate-900 border border-slate-800 rounded-3xl p-5 sm:p-6 shadow-xl flex flex-col justify-between">
+              <div>
+                <div className="flex items-center justify-between border-b border-slate-800 pb-3 mb-4">
+                  <div className="flex items-center gap-2.5">
+                    <div className="p-2 bg-rose-500/10 rounded-xl border border-rose-500/20 text-rose-400">
+                      <XCircle className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <h4 className="text-sm font-black text-white uppercase tracking-wide">
+                        DÉPARTEMENTS SANS CONNEXION CE JOUR
+                      </h4>
+                      <p className="text-[11px] text-slate-400 font-medium">
+                        Aucune activité constatée sur la plateforme aujourd'hui
+                      </p>
                     </div>
                   </div>
-
-                  {auditItemModal.item.balances && (
-                    <div>
-                      <span className="font-bold text-slate-300 uppercase block mb-1">Soldes des Caisses du Bilan :</span>
-                      <div className="bg-slate-950 p-3 rounded-2xl border border-slate-800 grid grid-cols-2 gap-2 text-mono">
-                        {Object.entries(auditItemModal.item.balances).map(([fund, amt]: any) => (
-                          <div key={fund} className="flex justify-between p-2 bg-slate-900 rounded-lg">
-                            <span className="text-slate-400">{fund}</span>
-                            <span className="text-emerald-400 font-bold">{(amt || 0).toLocaleString('fr-FR')} F</span>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
+                  <span className="bg-rose-500/20 text-rose-300 text-xs font-black px-2.5 py-1 rounded-full border border-rose-500/30">
+                    🔴 {absentDepts.length} Absent(s)
+                  </span>
                 </div>
-              )}
-            </div>
 
-            <div className="pt-3 border-t border-slate-800 flex justify-end">
-              <button
-                type="button"
-                onClick={() => setAuditItemModal(null)}
-                className="px-5 py-2 bg-slate-800 hover:bg-slate-700 text-white font-bold rounded-xl text-xs"
-              >
-                Fermer
-              </button>
+                {absentDepts.length === 0 ? (
+                  <div className="bg-slate-950/80 rounded-2xl border border-emerald-500/30 p-8 text-center space-y-2 my-2">
+                    <CheckCircle className="w-8 h-8 text-emerald-400 mx-auto" />
+                    <p className="text-xs font-black text-emerald-300 uppercase tracking-wide">
+                      Assiduité Parfaite !
+                    </p>
+                    <p className="text-xs text-slate-300">
+                      Tous les départements admins ont enregistré au moins une session aujourd'hui.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="space-y-3 max-h-[420px] overflow-y-auto pr-1">
+                    {absentDepts.map((dept) => {
+                      const contact = getDepartmentContact(dept.key, members);
+                      return (
+                        <div
+                          key={dept.key}
+                          className="bg-slate-950 p-3.5 rounded-2xl border border-rose-500/30 hover:border-rose-500/60 transition-all flex items-center justify-between gap-3 shadow-md"
+                        >
+                          <div className="flex items-center gap-3 min-w-0">
+                            <span className="text-2xl p-2 bg-slate-900 rounded-xl border border-slate-800 shrink-0">
+                              {dept.icon}
+                            </span>
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-2">
+                                <span className={`px-2 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider ${dept.badgeBg} ${dept.badgeText} border ${dept.borderColor}`}>
+                                  {dept.shortName}
+                                </span>
+                                <span className="text-xs font-black text-white truncate">
+                                  {dept.name}
+                                </span>
+                              </div>
+                              <p className="text-[11px] text-slate-400 truncate mt-0.5">
+                                Responsable : <strong className="text-slate-300">{contact.name}</strong> • Tél: {contact.phone}
+                              </p>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-2 shrink-0">
+                            <a
+                              href={`tel:${contact.cleanPhone}`}
+                              className="p-2 bg-slate-900 hover:bg-slate-800 text-slate-300 hover:text-white rounded-xl border border-slate-800 transition-all text-xs"
+                              title={`Appeler ${contact.name}`}
+                            >
+                              <PhoneCall className="w-3.5 h-3.5" />
+                            </a>
+                            <a
+                              href={`https://wa.me/${contact.cleanPhone}?text=${encodeURIComponent(`Bonjour fraternel ${contact.name}. En qualité de Chargé du Suivi du Programme E-ROUAMA, je te sollicite pour une connexion d'étape sur la plateforme.`)}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="p-2 bg-emerald-600/20 hover:bg-emerald-600/40 text-emerald-400 rounded-xl border border-emerald-500/30 transition-all text-xs"
+                              title="Relancer sur WhatsApp"
+                            >
+                              <MessageCircle className="w-3.5 h-3.5" />
+                            </a>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* ========================================================= */}
+      {/* 6. SECTION 4 : VOLET "NAVETTE & DEMANDES D'INFORMATION" */}
+      {/* (CONSERVÉ INTACT ET 100% OPÉRATIONNEL SELON LA RÈGLE STRICTE) */}
+      {/* ========================================================= */}
+      {activeTab === 'NAVETTE' && (
+        <div className="space-y-6 animate-fadeIn">
+          <div className="bg-slate-900 border border-indigo-500/30 rounded-3xl p-5 sm:p-6 shadow-xl">
+            <div className="flex items-center gap-2.5 text-indigo-400 font-black text-sm uppercase tracking-wider mb-2">
+              <Send className="w-4 h-4" />
+              <span>Module Opérationnel de Rédaction &amp; Réponse de la Navette</span>
+            </div>
+            <p className="text-xs text-slate-400">
+              Cet espace permet au Chargé du Suivi du Programme d'émettre des demandes d'information directes et de répondre aux sollicitations des autres départements avec notifications en temps réel.
+            </p>
+          </div>
+
+          <InfoRequestsModule currentRole="SDP" senderNameOverride="Chargé du Suivi du Programme" />
         </div>
       )}
     </div>
   );
 };
+export default SuiviProgrammeConsole;
