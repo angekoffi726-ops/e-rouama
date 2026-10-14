@@ -438,8 +438,12 @@ export interface FinancialBilan {
   id: string;
   title: string;
   period: string;
+  periodType?: 'GLOBAL' | 'PERIODIC';
+  startDate?: string;
+  endDate?: string;
   totalIn: number;
   totalOut: number;
+  totalBalance?: number;
   balances: Record<FundType, number>;
   summary: string;
   date: string;

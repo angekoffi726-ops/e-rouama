@@ -35,6 +35,7 @@ import {
 import { INITIAL_ROUAMA_MEMBERS, ADMIN_USERS, isMemberActive, getRegisteredMembersCount } from '../data/membersData';
 import { getDefaultRolesForMember } from '../data/departmentMapping';
 import { sendEmailBroadcastAsync } from '../utils/emailService';
+import { computeBilanData, extractBilanPeriodParams } from '../utils/bilanCalculator';
 import {
   collection,
   doc,
@@ -222,7 +223,16 @@ interface AppContextType {
   approvePVPayor: (pvId: string) => void;
   publishPVCOM: (pvId: string) => void;
 
-  createFinancialBilan: (title: string, period: string, summary: string) => FinancialBilan;
+  createFinancialBilan: (
+    title: string,
+    period: string,
+    summary: string,
+    options?: {
+      periodType?: 'GLOBAL' | 'PERIODIC';
+      startDate?: string;
+      endDate?: string;
+    }
+  ) => FinancialBilan;
   updateFinancialBilan: (bilanId: string, updates: Partial<FinancialBilan>) => void;
   returnBilanForCorrectionPayor: (bilanId: string, feedback: string) => void;
   deleteFinancialBilan: (bilanId: string) => void;
@@ -566,12 +576,34 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           setDoc(doc(db, 'members', '1', 'cotisations', 'summary'), wilfriedProfileUpdate, { merge: true }),
         ]);
 
-        // 0.ter Rétro-actualisation automatique des bilans générés et dossiers pour WOYA SYLAS (LE PAYOR) avec /SS.png
+        // 0.ter Rétro-actualisation automatique du Payor (WOYA SYLAS) + Recalcul & Synchronisation intégrale de TOUS les bilans financiers (Global & Périodique)
         try {
-          const bilansSnap = await getDocs(collection(db, 'secretary_bilans'));
+          const [bilansSnap, receiptsSnap, withdrawalsSnap] = await Promise.all([
+            getDocs(collection(db, 'secretary_bilans')),
+            getDocs(collection(db, 'receipts')),
+            getDocs(collection(db, 'withdrawals')),
+          ]);
+
+          const allDecls: PaymentDeclaration[] = [];
+          receiptsSnap.forEach((d) => allDecls.push({ id: d.id, ...(d.data() as any) }));
+
+          const allWithdrawals: WithdrawalRequest[] = [];
+          withdrawalsSnap.forEach((w) => allWithdrawals.push({ id: w.id, ...(w.data() as any) }));
+
           bilansSnap.forEach((bDoc) => {
-            const bData = bDoc.data();
-            const needsUpdate =
+            const bData = bDoc.data() as any;
+            const b: FinancialBilan = { id: bDoc.id, ...bData };
+            const periodParams = extractBilanPeriodParams(b);
+            const computed = computeBilanData({
+              declarations: allDecls,
+              withdrawals: allWithdrawals,
+              periodMode: periodParams.periodMode,
+              startDate: periodParams.startDate,
+              endDate: periodParams.endDate,
+              maxDate: b.date,
+            });
+
+            const needsPayorUpdate =
               bData.payorName?.includes('NDEPO') ||
               bData.payorName?.includes("N'DEPO") ||
               bData.payorSignatureName?.includes('NDEPO') ||
@@ -582,18 +614,34 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               bData.payorSignature?.signedBy?.includes("N'DEPO") ||
               bData.status === 'APPROVED_PAYOR';
 
-            if (needsUpdate) {
+            const needsFinancialSync =
+              bData.totalIn !== computed.totalIn ||
+              bData.totalOut !== computed.totalOut ||
+              bData.periodType !== periodParams.periodMode ||
+              !bData.balances ||
+              JSON.stringify(bData.balances || {}) !== JSON.stringify(computed.balances);
+
+            if (needsPayorUpdate || needsFinancialSync) {
               const updates: any = {
-                payorName: 'WOYA SYLAS',
-                payorSignatureName: 'WOYA SYLAS',
-                payorStampUrl: '/SS.png',
+                totalIn: computed.totalIn,
+                totalOut: computed.totalOut,
+                totalBalance: computed.totalSolde,
+                balances: computed.balances,
+                periodType: periodParams.periodMode,
+                startDate: periodParams.startDate || '',
+                endDate: periodParams.endDate || '',
               };
-              if (bData.payorSignature) {
-                updates.payorSignature = {
-                  ...bData.payorSignature,
-                  signedBy: 'WOYA SYLAS (LE PAYOR)',
-                  stampUrl: '/SS.png',
-                };
+              if (needsPayorUpdate) {
+                updates.payorName = 'WOYA SYLAS';
+                updates.payorSignatureName = 'WOYA SYLAS';
+                updates.payorStampUrl = '/SS.png';
+                if (bData.payorSignature) {
+                  updates.payorSignature = {
+                    ...bData.payorSignature,
+                    signedBy: 'WOYA SYLAS (LE PAYOR)',
+                    stampUrl: '/SS.png',
+                  };
+                }
               }
               updateDoc(bDoc.ref, updates).catch(() => {});
             }
@@ -3818,9 +3866,27 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setPvs(prev => prev.filter(p => p.id !== pvId));
   };
 
-  const createFinancialBilan = (title: string, period: string, summary: string): FinancialBilan => {
-    const totalIn = transactions.filter(t => t.type === 'DEPOT').reduce((sum, t) => sum + t.amount, 0);
-    const totalOut = transactions.filter(t => t.type === 'DECAISSEMENT').reduce((sum, t) => sum + t.amount, 0);
+  const createFinancialBilan = (
+    title: string,
+    period: string,
+    summary: string,
+    options?: {
+      periodType?: 'GLOBAL' | 'PERIODIC';
+      startDate?: string;
+      endDate?: string;
+    }
+  ): FinancialBilan => {
+    const periodMode = options?.periodType || (period.includes('Du ') ? 'PERIODIC' : 'GLOBAL');
+    const startDate = options?.startDate;
+    const endDate = options?.endDate;
+
+    const computed = computeBilanData({
+      declarations,
+      withdrawals,
+      periodMode,
+      startDate,
+      endDate,
+    });
 
     const now = new Date();
     const dateStr = now.toLocaleDateString('fr-FR');
@@ -3831,9 +3897,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       id: 'BILAN-' + Date.now(),
       title,
       period,
-      totalIn,
-      totalOut,
-      balances: { ...fundBalances },
+      periodType: periodMode,
+      startDate: startDate || '',
+      endDate: endDate || '',
+      totalIn: computed.totalIn,
+      totalOut: computed.totalOut,
+      totalBalance: computed.totalSolde,
+      balances: computed.balances,
       summary,
       date: dateStr,
       status: 'PENDING_PAYOR',
@@ -3867,8 +3937,32 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const updateFinancialBilan = (bilanId: string, updates: Partial<FinancialBilan>) => {
-    setDoc(doc(db, 'secretary_bilans', bilanId), sanitizeFirestore(updates), { merge: true }).catch(console.warn);
-    setBilans(prev => prev.map(b => (b.id === bilanId ? { ...b, ...updates } : b)));
+    const target = bilans.find(b => b.id === bilanId);
+    let finalUpdates = { ...updates };
+    if (updates.period || updates.startDate || updates.endDate || updates.periodType) {
+      const merged = { ...target, ...updates };
+      const periodParams = extractBilanPeriodParams(merged);
+      const computed = computeBilanData({
+        declarations,
+        withdrawals,
+        periodMode: periodParams.periodMode,
+        startDate: periodParams.startDate,
+        endDate: periodParams.endDate,
+        maxDate: merged.date,
+      });
+      finalUpdates = {
+        ...finalUpdates,
+        periodType: periodParams.periodMode,
+        startDate: periodParams.startDate || '',
+        endDate: periodParams.endDate || '',
+        totalIn: computed.totalIn,
+        totalOut: computed.totalOut,
+        totalBalance: computed.totalSolde,
+        balances: computed.balances,
+      };
+    }
+    setDoc(doc(db, 'secretary_bilans', bilanId), sanitizeFirestore(finalUpdates), { merge: true }).catch(console.warn);
+    setBilans(prev => prev.map(b => (b.id === bilanId ? { ...b, ...finalUpdates } : b)));
   };
 
   const returnBilanForCorrectionPayor = (bilanId: string, feedback: string) => {

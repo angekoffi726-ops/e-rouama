@@ -10,6 +10,7 @@ import { sendEmailBroadcastAsync } from '../../utils/emailService';
 import { dispatchPushNotification } from '../../utils/pushNotificationService';
 import { fetchAELFDailyReadings, AELFDayData } from '../../utils/aelfService';
 import { getDailyVerseForDate, PRAYER_ROUAMA } from '../../utils/versesData';
+import { computeBilanData, extractBilanPeriodParams } from '../../utils/bilanCalculator';
 import { RbacWarningBanner } from './RbacWarningBanner';
 import { CerveauMembersCredentialsViewer } from './CerveauMembersCredentialsViewer';
 import { SuiviProgrammeConsole } from './SuiviProgrammeConsole';
@@ -2050,8 +2051,23 @@ export const AdminPortal: React.FC = () => {
 
     const isApprovedByPayor = bilan.status === 'APPROVED_PAYOR';
 
-    const filteredApprovedDeclarations = declarations.filter(d => d.status === 'APPROVED');
-    const filteredApprovedWithdrawals = withdrawals.filter(w => w.status === 'APPROVED');
+    // Extraction dynamique de la période (GLOBAL ou PERIODIC) et calcul rigoureux de 100% des transactions
+    const periodParams = extractBilanPeriodParams(bilan);
+    const computed = computeBilanData({
+      declarations,
+      withdrawals,
+      periodMode: periodParams.periodMode,
+      startDate: periodParams.startDate,
+      endDate: periodParams.endDate,
+      maxDate: bilan.date,
+    });
+
+    const filteredApprovedDeclarations = computed.filteredDeclarations;
+    const filteredApprovedWithdrawals = computed.filteredWithdrawals;
+    const totalIn = computed.totalIn;
+    const totalOut = computed.totalOut;
+    const totalSolde = computed.totalSolde;
+    const balances = computed.balances;
 
     const htmlContent = `
       <!DOCTYPE html>
@@ -2116,15 +2132,15 @@ export const AdminPortal: React.FC = () => {
         <div class="cards-grid">
           <div class="card">
             <div class="card-title">Solde Caisse Total</div>
-            <div class="card-value" style="color:#166534;">${totalFundBalance.toLocaleString('fr-FR')} F CFA</div>
+            <div class="card-value" style="color:#166534;">${totalSolde.toLocaleString('fr-FR')} F CFA</div>
           </div>
           <div class="card">
             <div class="card-title">Entrées Validées</div>
-            <div class="card-value" style="color:#0284c7;">${bilan.totalIn.toLocaleString('fr-FR')} F CFA</div>
+            <div class="card-value" style="color:#0284c7;">${totalIn.toLocaleString('fr-FR')} F CFA</div>
           </div>
           <div class="card">
             <div class="card-title">Sorties Approuvées</div>
-            <div class="card-value" style="color:#e11d48;">${bilan.totalOut.toLocaleString('fr-FR')} F CFA</div>
+            <div class="card-value" style="color:#e11d48;">${totalOut.toLocaleString('fr-FR')} F CFA</div>
           </div>
         </div>
 
@@ -2133,28 +2149,28 @@ export const AdminPortal: React.FC = () => {
           <div class="sub-balances-grid">
             <div class="sub-card">
               <div class="sub-card-title">Cotisation Mensuelle</div>
-              <div class="sub-card-val">${((bilan.balances && bilan.balances.COTISATION) || fundBalances.COTISATION || 0).toLocaleString('fr-FR')} F</div>
+              <div class="sub-card-val">${(balances.COTISATION || 0).toLocaleString('fr-FR')} F</div>
             </div>
             <div class="sub-card">
               <div class="sub-card-title">Anniversaire (21 Mars)</div>
-              <div class="sub-card-val">${((bilan.balances && bilan.balances.ANNIVERSAIRE) || fundBalances.ANNIVERSAIRE || 0).toLocaleString('fr-FR')} F</div>
+              <div class="sub-card-val">${(balances.ANNIVERSAIRE || 0).toLocaleString('fr-FR')} F</div>
             </div>
             <div class="sub-card">
               <div class="sub-card-title">Sorties & Loisirs</div>
-              <div class="sub-card-val">${((bilan.balances && bilan.balances.LOISIRS) || fundBalances.LOISIRS || 0).toLocaleString('fr-FR')} F</div>
+              <div class="sub-card-val">${(balances.LOISIRS || 0).toLocaleString('fr-FR')} F</div>
             </div>
             <div class="sub-card">
               <div class="sub-card-title">Projets AGR</div>
-              <div class="sub-card-val">${((bilan.balances && bilan.balances.AGR) || fundBalances.AGR || 0).toLocaleString('fr-FR')} F</div>
+              <div class="sub-card-val">${(balances.AGR || 0).toLocaleString('fr-FR')} F</div>
             </div>
             <div class="sub-card">
               <div class="sub-card-title">Cas Sociaux</div>
-              <div class="sub-card-val">${((bilan.balances && bilan.balances.CAS_SOCIAUX) || fundBalances.CAS_SOCIAUX || 0).toLocaleString('fr-FR')} F</div>
+              <div class="sub-card-val">${(balances.CAS_SOCIAUX || 0).toLocaleString('fr-FR')} F</div>
             </div>
           </div>
         </div>
 
-        <div class="section-title">1. Historique des Entrées Validées (Encaissements)</div>
+        <div class="section-title">1. Historique des Entrées Validées (${filteredApprovedDeclarations.length} transaction${filteredApprovedDeclarations.length > 1 ? 's' : ''})</div>
         <table>
           <thead>
             <tr>
@@ -2168,15 +2184,14 @@ export const AdminPortal: React.FC = () => {
           <tbody>
             ${
               filteredApprovedDeclarations.length === 0
-                ? '<tr><td colspan="5" style="text-align:center;">Aucun encaissement validé enregistré.</td></tr>'
+                ? '<tr><td colspan="5" style="text-align:center;">Aucun encaissement validé enregistré sur cette période.</td></tr>'
                 : filteredApprovedDeclarations
-                    .slice(0, 15)
                     .map(
                       d => `
                 <tr>
                   <td><strong>${d.memberNickname}</strong></td>
                   <td>${d.date}</td>
-                  <td>${FUND_LABELS[d.fund]}</td>
+                  <td>${FUND_LABELS[d.fund] || d.fund}</td>
                   <td style="font-weight:bold; color:#166534;">+${d.amount.toLocaleString('fr-FR')} F CFA</td>
                   <td>${d.reference}</td>
                 </tr>
@@ -2187,7 +2202,7 @@ export const AdminPortal: React.FC = () => {
           </tbody>
         </table>
 
-        <div class="section-title">2. Historique des Sorties Approuvées (Décaissements)</div>
+        <div class="section-title">2. Historique des Sorties Approuvées (${filteredApprovedWithdrawals.length} décaissement${filteredApprovedWithdrawals.length > 1 ? 's' : ''})</div>
         <table>
           <thead>
             <tr>
@@ -2201,15 +2216,14 @@ export const AdminPortal: React.FC = () => {
           <tbody>
             ${
               filteredApprovedWithdrawals.length === 0
-                ? '<tr><td colspan="5" style="text-align:center;">Aucun décaissement approuvé enregistré.</td></tr>'
+                ? '<tr><td colspan="5" style="text-align:center;">Aucun décaissement approuvé enregistré sur cette période.</td></tr>'
                 : filteredApprovedWithdrawals
-                    .slice(0, 15)
                     .map(
                       w => `
                 <tr>
                   <td><strong>${w.reason}</strong></td>
                   <td>${w.date}</td>
-                  <td>${FUND_LABELS[w.fund]}</td>
+                  <td>${FUND_LABELS[w.fund] || w.fund}</td>
                   <td style="font-weight:bold; color:#e11d48;">-${w.amount.toLocaleString('fr-FR')} F CFA</td>
                   <td>${w.requestedBy} (Validé CERVEAU)</td>
                 </tr>
@@ -2270,21 +2284,39 @@ export const AdminPortal: React.FC = () => {
 
   // Generate & Download PDF Bilan Handler (Trésorier)
   const handleGeneratePDFBilan = () => {
+    if (bilanPeriodMode === 'PERIODIC') {
+      if (!bilanStartDate || !bilanEndDate) {
+        alert("Veuillez sélectionner la Date de Début et la Date de Fin pour générer un Bilan Financier Périodique.");
+        return;
+      }
+      if (bilanStartDate > bilanEndDate) {
+        alert("La Date de Début ne peut pas être postérieure à la Date de Fin.");
+        return;
+      }
+    }
+
     const periodLabel =
       bilanPeriodMode === 'GLOBAL'
         ? 'Bilan Global (Intégralité des données)'
-        : bilanStartDate && bilanEndDate
-        ? `Du ${bilanStartDate} au ${bilanEndDate}`
-        : 'Période Sélectionnée';
+        : `Du ${bilanStartDate} au ${bilanEndDate}`;
 
     const title = bilanTitle.trim()
       ? bilanTitle
       : `Bilan Financier E-ROUAMA (${bilanPeriodMode === 'GLOBAL' ? 'Global' : 'Périodique'})`;
 
+    const options = {
+      periodType: bilanPeriodMode,
+      startDate: bilanPeriodMode === 'PERIODIC' ? bilanStartDate : undefined,
+      endDate: bilanPeriodMode === 'PERIODIC' ? bilanEndDate : undefined,
+    };
+
     if (editingBilanId) {
       updateFinancialBilan(editingBilanId, {
         title,
         period: periodLabel,
+        periodType: bilanPeriodMode,
+        startDate: options.startDate || '',
+        endDate: options.endDate || '',
         status: 'PENDING_PAYOR',
         payorFeedback: '',
       });
@@ -2294,6 +2326,9 @@ export const AdminPortal: React.FC = () => {
           ...updatedBilan,
           title,
           period: periodLabel,
+          periodType: bilanPeriodMode,
+          startDate: options.startDate || '',
+          endDate: options.endDate || '',
           status: 'PENDING_PAYOR',
           payorFeedback: '',
         });
@@ -2305,7 +2340,7 @@ export const AdminPortal: React.FC = () => {
     }
 
     // 1. Record Bilan in state with status 'PENDING_PAYOR' & Trésorier signature
-    const newBilan = createFinancialBilan(title, periodLabel, '');
+    const newBilan = createFinancialBilan(title, periodLabel, '', options);
 
     // 2. Open PDF with Trésorier signature (SIMAHO.png) and Payor watermark
     renderAndPrintBilanPDF(newBilan);
@@ -10212,6 +10247,15 @@ export const AdminPortal: React.FC = () => {
 
                 {payorViewingOfficialDoc.type === 'BILAN' && (() => {
                   const b = payorViewingOfficialDoc.data as FinancialBilan;
+                  const periodParams = extractBilanPeriodParams(b);
+                  const computed = computeBilanData({
+                    declarations,
+                    withdrawals,
+                    periodMode: periodParams.periodMode,
+                    startDate: periodParams.startDate,
+                    endDate: periodParams.endDate,
+                    maxDate: b.date,
+                  });
                   return (
                     <div className="space-y-5 text-xs text-slate-800">
                       <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 flex flex-wrap items-center justify-between gap-3">
@@ -10228,17 +10272,48 @@ export const AdminPortal: React.FC = () => {
                       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                         <div className="bg-emerald-50 p-3.5 rounded-xl border border-emerald-200">
                           <span className="text-[10px] uppercase font-bold text-emerald-700 block">Total Entrées Validées</span>
-                          <span className="font-black text-emerald-900 text-base">+{b.totalIn.toLocaleString('fr-FR')} F CFA</span>
+                          <span className="font-black text-emerald-900 text-base">+{computed.totalIn.toLocaleString('fr-FR')} F CFA</span>
+                          <span className="text-[10px] text-emerald-700 block mt-0.5">{computed.filteredDeclarations.length} transaction(s)</span>
                         </div>
                         <div className="bg-rose-50 p-3.5 rounded-xl border border-rose-200">
                           <span className="text-[10px] uppercase font-bold text-rose-700 block">Total Dépenses Approuvées</span>
-                          <span className="font-black text-rose-900 text-base">-{b.totalOut.toLocaleString('fr-FR')} F CFA</span>
+                          <span className="font-black text-rose-900 text-base">-{computed.totalOut.toLocaleString('fr-FR')} F CFA</span>
+                          <span className="text-[10px] text-rose-700 block mt-0.5">{computed.filteredWithdrawals.length} décaissement(s)</span>
                         </div>
                         <div className="bg-amber-50 p-3.5 rounded-xl border border-amber-200">
-                          <span className="text-[10px] uppercase font-bold text-amber-800 block">Solde Net de l'Exercice</span>
+                          <span className="text-[10px] uppercase font-bold text-amber-800 block">Solde Caisse Total</span>
                           <span className="font-black text-amber-950 text-base">
-                            {(b.totalIn - b.totalOut).toLocaleString('fr-FR')} F CFA
+                            {(computed.totalIn - computed.totalOut).toLocaleString('fr-FR')} F CFA
                           </span>
+                          <span className="text-[10px] text-amber-800 block mt-0.5">Solde Net Calculé</span>
+                        </div>
+                      </div>
+
+                      <div className="bg-slate-50 border border-slate-200 rounded-xl p-3.5">
+                        <span className="font-bold text-slate-700 block mb-2 text-[11px] uppercase tracking-wide">
+                          📊 Répartition des 5 Sous-Soldes par Caisse :
+                        </span>
+                        <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 text-center">
+                          <div className="bg-white p-2.5 rounded-lg border border-slate-200">
+                            <span className="text-[10px] text-slate-500 font-bold block">Cotisations</span>
+                            <span className="font-black text-emerald-800">{(computed.balances.COTISATION || 0).toLocaleString('fr-FR')} F</span>
+                          </div>
+                          <div className="bg-white p-2.5 rounded-lg border border-slate-200">
+                            <span className="text-[10px] text-slate-500 font-bold block">Anniversaire</span>
+                            <span className="font-black text-emerald-800">{(computed.balances.ANNIVERSAIRE || 0).toLocaleString('fr-FR')} F</span>
+                          </div>
+                          <div className="bg-white p-2.5 rounded-lg border border-slate-200">
+                            <span className="text-[10px] text-slate-500 font-bold block">Sorties & Loisirs</span>
+                            <span className="font-black text-emerald-800">{(computed.balances.LOISIRS || 0).toLocaleString('fr-FR')} F</span>
+                          </div>
+                          <div className="bg-white p-2.5 rounded-lg border border-slate-200">
+                            <span className="text-[10px] text-slate-500 font-bold block">Projets AGR</span>
+                            <span className="font-black text-emerald-800">{(computed.balances.AGR || 0).toLocaleString('fr-FR')} F</span>
+                          </div>
+                          <div className="bg-white p-2.5 rounded-lg border border-slate-200">
+                            <span className="text-[10px] text-slate-500 font-bold block">Cas Sociaux</span>
+                            <span className="font-black text-emerald-800">{(computed.balances.CAS_SOCIAUX || 0).toLocaleString('fr-FR')} F</span>
+                          </div>
                         </div>
                       </div>
                     </div>
