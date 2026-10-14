@@ -3,7 +3,7 @@ import emailjs from '@emailjs/browser';
 import { doc, deleteDoc, updateDoc, setDoc, collection, onSnapshot } from 'firebase/firestore';
 import { db } from '../../firebase';
 import { useApp } from '../../context/AppContext';
-import { AdminRole, FundType, FUND_LABELS, TargetAudience, Committee, AgrProject, FinancialBilan, SecretaryPV, NewsItem, AdHocCommitteeRoles, EventActivity, RouamaMember } from '../../types';
+import { AdminRole, FundType, FUND_LABELS, TargetAudience, Committee, AgrProject, FinancialBilan, SecretaryPV, NewsItem, AdHocCommitteeRoles, EventActivity, RouamaMember, PaymentDeclaration, WithdrawalRequest } from '../../types';
 import { ADMIN_USERS } from '../../data/membersData';
 import { getDefaultRolesForMember } from '../../data/departmentMapping';
 import { sendEmailBroadcastAsync } from '../../utils/emailService';
@@ -815,6 +815,21 @@ export const AdminPortal: React.FC = () => {
   const [bilanEndDate, setBilanEndDate] = useState<string>('');
   const [selectedPayorExportBilanId, setSelectedPayorExportBilanId] = useState<string>('');
   const [editingBilanId, setEditingBilanId] = useState<string | null>(null);
+  const [treasurerPreviewBilan, setTreasurerPreviewBilan] = useState<{
+    title: string;
+    period: string;
+    periodType: 'GLOBAL' | 'PERIODIC';
+    startDate?: string;
+    endDate?: string;
+    totalIn: number;
+    totalOut: number;
+    totalSolde: number;
+    balances: Record<FundType, number>;
+    filteredDeclarations: PaymentDeclaration[];
+    filteredWithdrawals: WithdrawalRequest[];
+    isEditing?: boolean;
+    editingId?: string | null;
+  } | null>(null);
 
   // 2. Secrétariat Forms
   const [pvTitle, setPvTitle] = useState<string>('');
@@ -2282,11 +2297,11 @@ export const AdminPortal: React.FC = () => {
     printWin.document.close();
   };
 
-  // Generate & Download PDF Bilan Handler (Trésorier)
-  const handleGeneratePDFBilan = () => {
+  // Étape 1 : Prévisualisation sans signature ni transmission (Contrôle préalable Trésorier)
+  const handlePreviewBilan = () => {
     if (bilanPeriodMode === 'PERIODIC') {
       if (!bilanStartDate || !bilanEndDate) {
-        alert("Veuillez sélectionner la Date de Début et la Date de Fin pour générer un Bilan Financier Périodique.");
+        alert("Veuillez sélectionner la Date de Début et la Date de Fin pour prévisualiser le Bilan Périodique.");
         return;
       }
       if (bilanStartDate > bilanEndDate) {
@@ -2304,49 +2319,90 @@ export const AdminPortal: React.FC = () => {
       ? bilanTitle
       : `Bilan Financier E-ROUAMA (${bilanPeriodMode === 'GLOBAL' ? 'Global' : 'Périodique'})`;
 
-    const options = {
+    const computed = computeBilanData({
+      declarations,
+      withdrawals,
+      periodMode: bilanPeriodMode,
+      startDate: bilanPeriodMode === 'PERIODIC' ? bilanStartDate : undefined,
+      endDate: bilanPeriodMode === 'PERIODIC' ? bilanEndDate : undefined,
+    });
+
+    setTreasurerPreviewBilan({
+      title,
+      period: periodLabel,
       periodType: bilanPeriodMode,
       startDate: bilanPeriodMode === 'PERIODIC' ? bilanStartDate : undefined,
       endDate: bilanPeriodMode === 'PERIODIC' ? bilanEndDate : undefined,
+      totalIn: computed.totalIn,
+      totalOut: computed.totalOut,
+      totalSolde: computed.totalSolde,
+      balances: computed.balances,
+      filteredDeclarations: computed.filteredDeclarations,
+      filteredWithdrawals: computed.filteredWithdrawals,
+      isEditing: !!editingBilanId,
+      editingId: editingBilanId,
+    });
+  };
+
+  // Étape 2 : Confirmation définitive, signature officielle Trésorier (SIMAHO.png) et transmission au Payor
+  const handleConfirmAndSignBilan = () => {
+    if (!treasurerPreviewBilan) return;
+
+    const {
+      title,
+      period,
+      periodType,
+      startDate,
+      endDate,
+      isEditing,
+      editingId,
+    } = treasurerPreviewBilan;
+
+    const options = {
+      periodType,
+      startDate,
+      endDate,
     };
 
-    if (editingBilanId) {
-      updateFinancialBilan(editingBilanId, {
+    if (isEditing && editingId) {
+      updateFinancialBilan(editingId, {
         title,
-        period: periodLabel,
-        periodType: bilanPeriodMode,
+        period,
+        periodType,
         startDate: options.startDate || '',
         endDate: options.endDate || '',
         status: 'PENDING_PAYOR',
         payorFeedback: '',
       });
-      const updatedBilan = bilans.find(b => b.id === editingBilanId);
+      const updatedBilan = bilans.find(b => b.id === editingId);
       if (updatedBilan) {
         renderAndPrintBilanPDF({
           ...updatedBilan,
           title,
-          period: periodLabel,
-          periodType: bilanPeriodMode,
+          period,
+          periodType,
           startDate: options.startDate || '',
           endDate: options.endDate || '',
           status: 'PENDING_PAYOR',
           payorFeedback: '',
         });
       }
-      setToastMessage("✍️ Bilan Financier mis à jour et re-transmis au Payor pour visa !");
+      setToastMessage("✍️ Bilan Financier signé avec la griffe du Trésorier et re-transmis au Payor pour visa !");
       setEditingBilanId(null);
       setBilanTitle('');
+      setTreasurerPreviewBilan(null);
       return;
     }
 
-    // 1. Record Bilan in state with status 'PENDING_PAYOR' & Trésorier signature
-    const newBilan = createFinancialBilan(title, periodLabel, '', options);
+    // 1. Enregistrement officiel en base avec statut 'PENDING_PAYOR' & signature du Trésorier
+    const newBilan = createFinancialBilan(title, period, '', options);
 
-    // 2. Open PDF with Trésorier signature (SIMAHO.png) and Payor watermark
+    // 2. Génération PDF avec signature Trésorier (SIMAHO.png)
     renderAndPrintBilanPDF(newBilan);
 
-    setToastMessage("✍️ Bilan Financier généré avec la signature SIMAHO.png et transmis au Payor pour visa !");
+    setToastMessage("✍️ Bilan Financier signé avec la signature SIMAHO.png et transmis au Payor pour visa !");
     setBilanTitle('');
+    setTreasurerPreviewBilan(null);
   };
 
   // LOGIQUE DE SÉCURITÉ DE LA FONCTION D'IMPRESSION DU RAPPORT FINANCIER PAYOR (handleExportPDF) :
@@ -5516,14 +5572,14 @@ export const AdminPortal: React.FC = () => {
                 />
               </div>
 
-              {/* Action de Génération PDF avec Signature SIMAHO.png */}
+              {/* Action : Étape 1 - Prévisualisation sans signature ni transmission */}
               <button
                 type="button"
-                onClick={handleGeneratePDFBilan}
+                onClick={handlePreviewBilan}
                 className="w-full bg-[#E67E22] hover:bg-[#D35400] text-white font-black py-4 px-6 rounded-2xl shadow-xl text-base flex items-center justify-center gap-3 transition-all active:scale-98 cursor-pointer"
               >
-                <Printer className="w-5 h-5" />
-                <span>{editingBilanId ? '💾 ENREGISTRER & RE-TRANSMETTRE AU PAYOR' : '✍️ GÉNÉRER ET TRANSMETTRE AU PAYOR'}</span>
+                <Eye className="w-5 h-5" />
+                <span>{editingBilanId ? '👁️ APERÇU / PRÉVISUALISER LE BILAN MODIFIÉ' : '👁️ APERÇU / PRÉVISUALISER LE BILAN'}</span>
               </button>
 
               {/* List of generated bilans & Payor approval status */}
@@ -10045,6 +10101,263 @@ export const AdminPortal: React.FC = () => {
               >
                 <CheckCircle2 className="w-4 h-4" />
                 <span>Compris & Fermer</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL TRÉSORIER : ÉTAPE 1 - APERÇU PRÉALABLE & VÉRIFICATION DU BILAN SANS SIGNATURE */}
+      {treasurerPreviewBilan && (
+        <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-3 sm:p-6 overflow-y-auto animate-fadeIn">
+          <div className="bg-slate-900 border-2 border-amber-500/70 rounded-3xl max-w-4xl w-full max-h-[92vh] flex flex-col shadow-2xl my-auto overflow-hidden">
+            {/* Modal Top Bar */}
+            <div className="p-4 sm:p-5 border-b border-slate-800 flex items-center justify-between gap-3 bg-slate-950">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-400 font-bold">
+                  <Eye className="w-5 h-5 text-amber-400" />
+                </div>
+                <div>
+                  <h3 className="text-base font-black text-white flex items-center gap-2">
+                    <span>Étape 1 : Aperçu & Contrôle Préalable du Trésorier</span>
+                  </h3>
+                  <p className="text-xs text-amber-400/90 font-mono">
+                    Mode : {treasurerPreviewBilan.periodType === 'GLOBAL' ? 'Bilan Global (Depuis l’origine)' : 'Bilan Périodique'} • ⏳ Document non encore signé ni transmis
+                  </p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setTreasurerPreviewBilan(null)}
+                className="text-slate-400 hover:text-white p-2 rounded-xl hover:bg-slate-800 transition-colors cursor-pointer"
+                title="Fermer l'aperçu"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Warning Banner */}
+            <div className="bg-amber-500/15 border-b border-amber-500/30 px-5 py-3 text-xs text-amber-200 flex items-center gap-2.5">
+              <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+              <span>
+                <strong>CONTRÔLE PRÉALABLE TRÉSORERIE :</strong> Vérifiez attentivement l'exactitude des chiffres ci-dessous. Aucun document n'est encore enregistré ni transmis au Payor. Cliquez sur <strong>« ✍️ SIGNER ET TRANSMETTRE AU PAYOR »</strong> ci-dessous pour officialiser le bilan.
+              </span>
+            </div>
+
+            {/* Modal Scrollable Body */}
+            <div className="p-4 sm:p-6 overflow-y-auto flex-1 space-y-5 bg-white text-slate-800">
+              {/* Header inside doc */}
+              <div className="text-center pb-4 border-b-2 border-amber-500/30">
+                <img
+                  src="/LOGOPRO.png"
+                  alt="Logo E-ROUAMA"
+                  className="h-12 mx-auto mb-2 object-contain"
+                />
+                <h4 className="text-sm font-black text-amber-600 uppercase tracking-wider">
+                  ASSOCIATION FRATERNELLE E-ROUAMA
+                </h4>
+                <p className="text-[11px] text-[#355E3B] font-bold italic">
+                  « DINIYO ROUAMA, chez nous la mesure de l'amour c'est d'aimer sans mesure »
+                </p>
+                <h3 className="text-lg font-black text-slate-900 mt-1">
+                  {treasurerPreviewBilan.title}
+                </h3>
+              </div>
+
+              {/* Meta information */}
+              <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 flex flex-wrap items-center justify-between gap-3 text-xs">
+                <div>
+                  <span className="text-slate-500 font-bold block">Période Couverte :</span>
+                  <span className="font-black text-emerald-900 text-sm">{treasurerPreviewBilan.period}</span>
+                </div>
+                <div>
+                  <span className="text-slate-500 font-bold block">Date de Vérification :</span>
+                  <span className="font-mono text-slate-700 font-bold">{new Date().toLocaleDateString('fr-FR')}</span>
+                </div>
+                <div>
+                  <span className="text-slate-500 font-bold block">Statut du Document :</span>
+                  <span className="inline-block bg-amber-100 text-amber-800 border border-amber-300 font-black px-2.5 py-0.5 rounded-full text-[10px]">
+                    ⏳ PRÉVISUALISATION (NON SIGNÉ)
+                  </span>
+                </div>
+              </div>
+
+              {/* 3 KPI Cards */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div className="bg-emerald-50 p-3.5 rounded-2xl border border-emerald-200">
+                  <span className="text-[10px] uppercase font-bold text-emerald-700 block">Total Entrées Validées</span>
+                  <span className="font-black text-emerald-900 text-lg">+{treasurerPreviewBilan.totalIn.toLocaleString('fr-FR')} F CFA</span>
+                  <span className="text-[10px] text-emerald-700 block mt-0.5">{treasurerPreviewBilan.filteredDeclarations.length} transaction(s)</span>
+                </div>
+                <div className="bg-rose-50 p-3.5 rounded-2xl border border-rose-200">
+                  <span className="text-[10px] uppercase font-bold text-rose-700 block">Total Dépenses Approuvées</span>
+                  <span className="font-black text-rose-900 text-lg">-{treasurerPreviewBilan.totalOut.toLocaleString('fr-FR')} F CFA</span>
+                  <span className="text-[10px] text-rose-700 block mt-0.5">{treasurerPreviewBilan.filteredWithdrawals.length} décaissement(s)</span>
+                </div>
+                <div className="bg-amber-50 p-3.5 rounded-2xl border border-amber-200">
+                  <span className="text-[10px] uppercase font-bold text-amber-800 block">Solde Caisse Total</span>
+                  <span className="font-black text-amber-950 text-lg">
+                    {treasurerPreviewBilan.totalSolde.toLocaleString('fr-FR')} F CFA
+                  </span>
+                  <span className="text-[10px] text-amber-800 block mt-0.5">Solde Net Calculé</span>
+                </div>
+              </div>
+
+              {/* 5 Sub-balances */}
+              <div className="bg-slate-50 border border-slate-200 rounded-2xl p-3.5">
+                <span className="font-bold text-slate-700 block mb-2 text-[11px] uppercase tracking-wide">
+                  📊 Ventilation des 5 Sous-Soldes par Caisse :
+                </span>
+                <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 text-center text-xs">
+                  <div className="bg-white p-2.5 rounded-xl border border-slate-200">
+                    <span className="text-[10px] text-slate-500 font-bold block">Cotisations</span>
+                    <span className="font-black text-emerald-800">{(treasurerPreviewBilan.balances.COTISATION || 0).toLocaleString('fr-FR')} F</span>
+                  </div>
+                  <div className="bg-white p-2.5 rounded-xl border border-slate-200">
+                    <span className="text-[10px] text-slate-500 font-bold block">Anniversaire</span>
+                    <span className="font-black text-emerald-800">{(treasurerPreviewBilan.balances.ANNIVERSAIRE || 0).toLocaleString('fr-FR')} F</span>
+                  </div>
+                  <div className="bg-white p-2.5 rounded-xl border border-slate-200">
+                    <span className="text-[10px] text-slate-500 font-bold block">Sorties & Loisirs</span>
+                    <span className="font-black text-emerald-800">{(treasurerPreviewBilan.balances.LOISIRS || 0).toLocaleString('fr-FR')} F</span>
+                  </div>
+                  <div className="bg-white p-2.5 rounded-xl border border-slate-200">
+                    <span className="text-[10px] text-slate-500 font-bold block">Projets AGR</span>
+                    <span className="font-black text-emerald-800">{(treasurerPreviewBilan.balances.AGR || 0).toLocaleString('fr-FR')} F</span>
+                  </div>
+                  <div className="bg-white p-2.5 rounded-xl border border-slate-200">
+                    <span className="text-[10px] text-slate-500 font-bold block">Cas Sociaux</span>
+                    <span className="font-black text-emerald-800">{(treasurerPreviewBilan.balances.CAS_SOCIAUX || 0).toLocaleString('fr-FR')} F</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Section 1: Entrées */}
+              <div className="space-y-2">
+                <h5 className="font-black text-slate-900 text-xs uppercase tracking-wide flex items-center justify-between border-b border-slate-200 pb-1">
+                  <span>1. Détail des Entrées Validées ({treasurerPreviewBilan.filteredDeclarations.length})</span>
+                  <span className="text-emerald-700 font-bold">+{treasurerPreviewBilan.totalIn.toLocaleString('fr-FR')} F CFA</span>
+                </h5>
+                <div className="max-h-48 overflow-y-auto border border-slate-200 rounded-xl">
+                  {treasurerPreviewBilan.filteredDeclarations.length === 0 ? (
+                    <p className="p-4 text-center text-slate-400 text-xs italic">
+                      Aucun encaissement validé sur cette période.
+                    </p>
+                  ) : (
+                    <table className="w-full text-left text-xs">
+                      <thead className="bg-[#355E3B] text-white text-[11px] sticky top-0">
+                        <tr>
+                          <th className="p-2">Membre</th>
+                          <th className="p-2">Date</th>
+                          <th className="p-2">Caisse</th>
+                          <th className="p-2 text-right">Montant</th>
+                          <th className="p-2">Référence</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {treasurerPreviewBilan.filteredDeclarations.map(d => (
+                          <tr key={d.id} className="hover:bg-slate-50">
+                            <td className="p-2 font-bold">{d.memberNickname}</td>
+                            <td className="p-2 font-mono text-slate-500">{d.date}</td>
+                            <td className="p-2 text-slate-600">{FUND_LABELS[d.fund] || d.fund}</td>
+                            <td className="p-2 text-right font-black text-emerald-700">+{Number(d.amount).toLocaleString('fr-FR')} F</td>
+                            <td className="p-2 text-slate-500 font-mono text-[11px]">{d.reference}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              </div>
+
+              {/* Section 2: Sorties */}
+              <div className="space-y-2">
+                <h5 className="font-black text-slate-900 text-xs uppercase tracking-wide flex items-center justify-between border-b border-slate-200 pb-1">
+                  <span>2. Détail des Sorties Approuvées ({treasurerPreviewBilan.filteredWithdrawals.length})</span>
+                  <span className="text-rose-700 font-bold">-{treasurerPreviewBilan.totalOut.toLocaleString('fr-FR')} F CFA</span>
+                </h5>
+                <div className="max-h-48 overflow-y-auto border border-slate-200 rounded-xl">
+                  {treasurerPreviewBilan.filteredWithdrawals.length === 0 ? (
+                    <p className="p-4 text-center text-slate-400 text-xs italic">
+                      Aucun décaissement approuvé sur cette période.
+                    </p>
+                  ) : (
+                    <table className="w-full text-left text-xs">
+                      <thead className="bg-[#355E3B] text-white text-[11px] sticky top-0">
+                        <tr>
+                          <th className="p-2">Motif</th>
+                          <th className="p-2">Date</th>
+                          <th className="p-2">Caisse</th>
+                          <th className="p-2 text-right">Montant</th>
+                          <th className="p-2">Valideur</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100">
+                        {treasurerPreviewBilan.filteredWithdrawals.map(w => (
+                          <tr key={w.id} className="hover:bg-slate-50">
+                            <td className="p-2 font-bold">{w.reason}</td>
+                            <td className="p-2 font-mono text-slate-500">{w.date}</td>
+                            <td className="p-2 text-slate-600">{FUND_LABELS[w.fund] || w.fund}</td>
+                            <td className="p-2 text-right font-black text-rose-700">-{Number(w.amount).toLocaleString('fr-FR')} F</td>
+                            <td className="p-2 text-slate-500 font-mono text-[11px]">{w.requestedBy}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              </div>
+
+              {/* Signature Blocks Preview */}
+              <div className="pt-4 border-t-2 border-slate-200 grid grid-cols-2 gap-4 text-xs">
+                {/* Trésorier Block */}
+                <div className="text-center p-3.5 bg-slate-50 rounded-2xl border border-slate-200 flex flex-col items-center justify-between min-h-[120px]">
+                  <div>
+                    <p className="font-black text-slate-900 uppercase">Le Trésorier Général</p>
+                    <p className="text-[10px] text-slate-500 italic">Signature & Cachet Émetteur</p>
+                  </div>
+                  <div className="my-2 border border-dashed border-amber-500/70 bg-amber-50 text-amber-900 px-3 py-1.5 rounded-lg text-[10px] font-bold">
+                    ✍️ Signature SIMAHO.png sera apposée à la confirmation
+                  </div>
+                  <p className="text-[10px] font-bold text-amber-800">
+                    En attente de signature
+                  </p>
+                </div>
+
+                {/* Payor Block */}
+                <div className="text-center p-3.5 bg-slate-50 rounded-2xl border border-slate-200 flex flex-col items-center justify-between min-h-[120px]">
+                  <div>
+                    <p className="font-black text-slate-900 uppercase">LE PAYOR</p>
+                    <p className="text-[10px] text-slate-500 italic">Contre-Signature & Visa d'Audit</p>
+                  </div>
+                  <div className="my-2 border border-dashed border-slate-300 bg-slate-100 text-slate-500 px-3 py-1.5 rounded-lg text-[10px] font-bold">
+                    ⏳ Sera transmis au Payor pour visa
+                  </div>
+                  <p className="text-[10px] font-bold text-slate-500">
+                    Non encore transmis
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {/* Modal Bottom Actions */}
+            <div className="p-4 sm:p-5 border-t border-slate-800 bg-slate-950 flex flex-wrap items-center justify-between gap-3">
+              <button
+                type="button"
+                onClick={() => setTreasurerPreviewBilan(null)}
+                className="bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold px-4 py-3 rounded-2xl text-xs transition-colors cursor-pointer"
+              >
+                ✕ Modifier les paramètres / Fermer l'aperçu
+              </button>
+
+              <button
+                type="button"
+                onClick={handleConfirmAndSignBilan}
+                className="bg-emerald-600 hover:bg-emerald-500 text-white font-black px-6 py-3 rounded-2xl text-sm shadow-xl flex items-center gap-2 transition-all active:scale-95 cursor-pointer"
+              >
+                <CheckCircle2 className="w-4 h-4" />
+                <span>✍️ SIGNER ET TRANSMETTRE AU PAYOR</span>
               </button>
             </div>
           </div>
