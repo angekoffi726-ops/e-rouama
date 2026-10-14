@@ -22,9 +22,9 @@ export const ProjetsTab: React.FC = () => {
 
     const payorSigBlock = proj.payorSignature
       ? `<div style="text-align:center;">
-           <img src="${proj.payorSignature.stampUrl || '/SIDEPO.png'}" alt="Cachet Payor" style="height:65px; margin-bottom:5px; object-fit:contain;" />
+           <img src="${proj.payorSignature.stampUrl && proj.payorSignature.stampUrl !== '/SIDEPO.png' ? proj.payorSignature.stampUrl : '/SS.png'}" alt="Cachet Payor - WOYA SYLAS" style="height:65px; margin-bottom:5px; object-fit:contain;" />
            <div style="font-size:8.5pt; font-weight:800; color:#065f46;">VISA ACCORDÉ & SIGNÉ</div>
-           <div style="font-size:7.5pt; color:#475569;">${proj.payorSignature.signedBy} • ${proj.payorSignature.signedAt}</div>
+           <div style="font-size:7.5pt; color:#475569;">${proj.payorSignature.signedBy && !proj.payorSignature.signedBy.includes('NDEPO') && !proj.payorSignature.signedBy.includes("N'DEPO") ? proj.payorSignature.signedBy : 'WOYA SYLAS (LE PAYOR)'} • ${proj.payorSignature.signedAt}</div>
          </div>`
       : `<div class="sig-line">Visa de Validation</div>`;
 

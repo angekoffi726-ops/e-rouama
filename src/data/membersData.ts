@@ -60,10 +60,10 @@ export const INITIAL_ROUAMA_MEMBERS: RouamaMember[] = [
   },
   {
     id: '5',
-    firstName: 'SYLAS',
-    fullRosterName: 'SYLAS (SYLAS)',
+    firstName: 'WOYA SYLAS',
+    fullRosterName: 'WOYA SYLAS (SYLAS)',
     nickname: 'SYLAS',
-    phone: '2250564281013',
+    phone: '2250703567992',
     email: 'sylastouali156@gmail.com',
     isRegistered: false,
     statut: 'En attente',
@@ -165,7 +165,7 @@ export const ADMIN_USERS: AdminUser[] = [
   {
     id: 'PAYOR',
     loginId: 'PAYOR',
-    roleName: 'Espace Payor',
+    roleName: 'Espace Payor (WOYA SYLAS)',
     pin: '2103',
     description: 'Validation administrative des PV, Règlements, Programmes et Projets avant transmission à la BIC',
   },

@@ -1408,7 +1408,7 @@ export const AdminPortal: React.FC = () => {
 
       // 4. Known local static assets (e.g. in /public)
       if (trimmed.startsWith('/') && /\.(jpg|jpeg|png|webp|gif|svg)($|\?)/i.test(trimmed)) {
-        const knownPublic = ['/LOGOPRO.png', '/PP-CAPELO.jpeg', '/SIDEPO.png', '/SIMAHO.png'];
+        const knownPublic = ['/LOGOPRO.png', '/PP-CAPELO.jpeg', '/SS.png', '/SIMAHO.png', '/SIDEPO.png'];
         if (knownPublic.includes(trimmed) || trimmed.startsWith('/PP-')) {
           return trimmed;
         }
@@ -1766,12 +1766,12 @@ export const AdminPortal: React.FC = () => {
     const payorSignatureBlock = isPayorApproved
       ? `
         <div style="margin-top:10px;">
-          <img src="${proj.payorSignature?.stampUrl || '/SIDEPO.png'}" alt="Visa et Cachet Payor" style="height:70px; object-fit:contain; margin-bottom:5px;" />
+          <img src="${proj.payorSignature?.stampUrl && proj.payorSignature.stampUrl !== '/SIDEPO.png' ? proj.payorSignature.stampUrl : '/SS.png'}" alt="Visa et Cachet Payor - WOYA SYLAS" style="height:70px; object-fit:contain; margin-bottom:5px;" />
           <div style="font-size:9.5pt; font-weight:800; color:#166534; text-transform:uppercase;">
             VISA & ACCORD DÉLIVRÉS
           </div>
           <div style="font-size:8.5pt; font-weight:bold; color:#1e293b;">
-            ${proj.payorSignature?.signedBy || 'LE PAYOR (DIRECTION GÉNÉRALE)'}
+            ${proj.payorSignature?.signedBy && !proj.payorSignature.signedBy.includes('NDEPO') && !proj.payorSignature.signedBy.includes("N'DEPO") ? proj.payorSignature.signedBy : 'WOYA SYLAS (LE PAYOR)'}
           </div>
           <div style="font-size:8pt; color:#64748b;">
             Date : ${proj.payorSignature?.signedAt || proj.date || 'Non spécifiée'}
@@ -2017,6 +2017,7 @@ export const AdminPortal: React.FC = () => {
           </div>
           <div class="sig-box">
             <div class="sig-title">LE PAYOR</div>
+            <div style="font-size:9pt; font-weight:bold; color:#1e293b; margin-top:2px;">WOYA SYLAS</div>
             <div class="sig-line">Visa de Validation</div>
           </div>
         </div>
@@ -2039,7 +2040,7 @@ export const AdminPortal: React.FC = () => {
     printWin.document.close();
   };
 
-  // Reusable PDF Generator with Dual Sequential Signatures (SIMAHO.png & SIDEPO.png)
+  // Reusable PDF Generator with Dual Sequential Signatures (SIMAHO.png & SS.png)
   const renderAndPrintBilanPDF = (bilan: FinancialBilan) => {
     const printWin = window.open('', '_blank');
     if (!printWin) {
@@ -2084,8 +2085,9 @@ export const AdminPortal: React.FC = () => {
           .section-title { font-size: 14px; font-weight: 800; color: #0f172a; margin-top: 25px; margin-bottom: 10px; border-left: 4px solid #e67e22; padding-left: 10px; }
           .signatures { margin-top: 45px; display: flex; justify-content: space-between; padding-top: 20px; border-top: 2px solid #cbd5e1; font-size: 12px; }
           .sig-block { text-align: center; width: 46%; background: #fafafa; border: 1px solid #e2e8f0; padding: 15px; border-radius: 12px; }
-          .sig-title { font-weight: 800; text-transform: uppercase; color: #0f172a; margin-bottom: 8px; font-size: 12px; border-bottom: 1px solid #e2e8f0; padding-bottom: 5px; }
-          .sig-img-box { height: 70px; display: flex; align-items: center; justify-content: center; margin: 8px 0; }
+          .sig-title { font-weight: 800; text-transform: uppercase; color: #0f172a; margin-bottom: 6px; font-size: 12px; border-bottom: 1px solid #e2e8f0; padding-bottom: 5px; }
+          .sig-name { display: none !important; }
+          .sig-img-box { height: 70px; display: flex; align-items: center; justify-content: center; margin: 6px 0; }
           .sig-img { max-height: 65px; object-fit: contain; }
           .sig-date { font-size: 10px; color: #15803d; font-weight: bold; margin-top: 4px; }
           .watermark-box { height: 60px; border: 1.5px dashed #94a3b8; border-radius: 8px; display: flex; align-items: center; justify-content: center; color: #64748b; font-style: italic; font-size: 11px; background: #f1f5f9; width: 100%; }
@@ -2218,7 +2220,7 @@ export const AdminPortal: React.FC = () => {
           </tbody>
         </table>
 
-        <!-- CIRCUIT DE SIGNATURE DUAL (SIMAHO.png & SIDEPO.png) -->
+        <!-- CIRCUIT DE SIGNATURE DUAL (SIMAHO.png & SS.png) SANS REDONDANCE DE TEXTE -->
         <div class="signatures">
           <!-- EMPLACEMENT 1 : TRÉSORIER GÉNÉRAL -->
           <div class="sig-block">
@@ -2231,11 +2233,11 @@ export const AdminPortal: React.FC = () => {
 
           <!-- EMPLACEMENT 2 : LE PAYOR -->
           <div class="sig-block">
-            <div class="sig-title">Le Payor</div>
+            <div class="sig-title">LE PAYOR</div>
             <div class="sig-img-box">
               ${
                 isApprovedByPayor
-                  ? `<img src="/SIDEPO.png" alt="Signature Payor" class="sig-img" />`
+                  ? `<img src="/SS.png" alt="Signature Payor" class="sig-img" />`
                   : `<div class="watermark-box">En attente du visa Payor</div>`
               }
             </div>
@@ -5519,7 +5521,7 @@ export const AdminPortal: React.FC = () => {
                               </span>
                               {isApproved ? (
                                 <span className="bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-2.5 py-0.5 rounded-full text-[10px] font-bold">
-                                  🟢 Bi-Signé (SIMAHO + SIDEPO)
+                                  🟢 Bi-Signé (SIMAHO + SS)
                                 </span>
                               ) : isReturned ? (
                                 <span className="bg-rose-500/20 text-rose-300 border border-rose-500/40 px-2.5 py-0.5 rounded-full text-[10px] font-bold">
@@ -5536,7 +5538,7 @@ export const AdminPortal: React.FC = () => {
                             </p>
                             <p className="text-[10px] text-slate-500">
                               ✍️ Signé Trésorier (SIMAHO.png) le : {b.treasurerSignatureDate || b.date}
-                              {b.payorSignatureDate && ` • 🟢 Visé Payor (SIDEPO.png) le : ${b.payorSignatureDate}`}
+                              {b.payorSignatureDate && ` • 🟢 Visé Payor WOYA SYLAS (SS.png) le : ${b.payorSignatureDate}`}
                             </p>
                           </div>
 
@@ -6838,7 +6840,7 @@ export const AdminPortal: React.FC = () => {
             {/* Validation Bilans Financiers (Double Signature Sequential) */}
             <div className="space-y-3 pt-4 border-t border-slate-800">
               <h3 className="text-xs font-black text-slate-400 uppercase tracking-wider flex items-center justify-between">
-                <span>D. Bilans Financiers (Trésorerie Générale) • Double Signature (SIMAHO.png & SIDEPO.png)</span>
+                <span>D. Bilans Financiers (Trésorerie Générale) • Double Signature (SIMAHO.png & SS.png)</span>
                 <span className="text-[10px] text-amber-400 font-bold bg-amber-500/10 px-2 py-0.5 rounded-full border border-amber-500/20">
                   Audit & Contre-Signature Payor
                 </span>
@@ -6888,7 +6890,7 @@ export const AdminPortal: React.FC = () => {
                           <p className="text-[11px] text-slate-400 flex flex-wrap items-center gap-2">
                             <span>✍️ Signé Trésorier (SIMAHO.png) le : <strong className="text-slate-200">{b.treasurerSignatureDate || b.date}</strong></span>
                             {b.payorSignatureDate && (
-                              <span>• 🟢 Visé Payor (SIDEPO.png) le : <strong className="text-emerald-300">{b.payorSignatureDate}</strong></span>
+                              <span>• 🟢 Visé Payor WOYA SYLAS (SS.png) le : <strong className="text-emerald-300">{b.payorSignatureDate}</strong></span>
                             )}
                           </p>
                         </div>
@@ -6966,7 +6968,7 @@ export const AdminPortal: React.FC = () => {
                                     status: 'APPROVED_PAYOR',
                                     payorSignatureDate: nowStr,
                                   });
-                                  setToastMessage("🟢 Bilan Financier approuvé avec succès ! Signature SIDEPO.png apposée. Document bi-signé transmis au Secrétariat et publié à la BIC.");
+                                  setToastMessage("🟢 Bilan Financier approuvé avec succès ! Signature WOYA SYLAS (SS.png) apposée. Document bi-signé transmis au Secrétariat et publié à la BIC.");
                                 }}
                                 className="bg-emerald-600 hover:bg-emerald-500 text-white font-black px-4 py-2 rounded-xl flex items-center gap-2 shadow-lg active:scale-95 transition-all text-xs cursor-pointer"
                               >
@@ -7043,7 +7045,7 @@ export const AdminPortal: React.FC = () => {
                   >
                     {bilans.map(b => (
                       <option key={b.id} value={b.id}>
-                        {b.title} ({b.period}) — {b.status === 'APPROVED_PAYOR' ? '🟢 Bi-Signé (SIMAHO + SIDEPO)' : '⏳ En attente visa Payor'}
+                        {b.title} ({b.period}) — {b.status === 'APPROVED_PAYOR' ? '🟢 Bi-Signé (SIMAHO + SS)' : '⏳ En attente visa Payor'}
                       </option>
                     ))}
                   </select>
@@ -8768,13 +8770,13 @@ export const AdminPortal: React.FC = () => {
                     {(isApprovedByPayor || isPublished) && p.payorSignature && (
                       <div className="p-3 bg-emerald-500/10 border border-emerald-500/20 rounded-xl flex items-center gap-3">
                         <img
-                          src={p.payorSignature.stampUrl || '/SIDEPO.png'}
-                          alt="Visa Payor"
+                          src={p.payorSignature.stampUrl && p.payorSignature.stampUrl !== '/SIDEPO.png' ? p.payorSignature.stampUrl : '/SS.png'}
+                          alt="Visa Payor - WOYA SYLAS"
                           className="h-10 w-16 object-contain bg-white/10 p-1 rounded border border-emerald-500/30"
                         />
                         <div className="text-xs">
                           <span className="font-bold text-emerald-300 block">
-                            Visa & Accord Officiel Accordés par {p.payorSignature.signedBy || 'Le Payor'}
+                            Visa & Accord Officiel Accordés par {p.payorSignature.signedBy && !p.payorSignature.signedBy.includes('NDEPO') && !p.payorSignature.signedBy.includes("N'DEPO") ? p.payorSignature.signedBy : 'WOYA SYLAS (LE PAYOR)'}
                           </span>
                           <span className="text-[10px] text-slate-400">
                             Validé le {p.payorSignature.signedAt || p.date || 'Récemment'}
@@ -10277,14 +10279,14 @@ export const AdminPortal: React.FC = () => {
                   {/* Signataire de Droite (Le Payor) */}
                   <div className="text-center p-4 bg-slate-50 rounded-xl border border-slate-200 flex flex-col items-center justify-between min-h-[140px]">
                     <div>
-                      <p className="font-black text-slate-900 uppercase">Le Payor Général</p>
+                      <p className="font-black text-slate-900 uppercase">LE PAYOR</p>
                       <p className="text-[10px] text-slate-500 italic">Contre-Signature & Visa d'Audit</p>
                     </div>
 
                     <div className="my-2 h-14 flex items-center justify-center">
                       {payorViewingOfficialDoc.data.status === 'APPROVED_PAYOR' || payorViewingOfficialDoc.data.status === 'approved_by_payor' ? (
                         <img
-                          src="/SIDEPO.png"
+                          src="/SS.png"
                           alt="Signature Payor"
                           className="h-12 object-contain max-w-[120px]"
                         />
@@ -10393,14 +10395,14 @@ export const AdminPortal: React.FC = () => {
                           status: 'APPROVED_PAYOR',
                           payorSignatureDate: nowStr,
                         });
-                        setToastMessage(`🟢 Bilan "${doc.data.title}" approuvé avec visa SIDEPO.png !`);
+                        setToastMessage(`🟢 Bilan "${doc.data.title}" approuvé avec visa WOYA SYLAS (SS.png) !`);
                       }
                       setPayorViewingOfficialDoc(null);
                     }}
                     className="bg-emerald-600 hover:bg-emerald-500 text-white font-black px-5 py-2.5 rounded-xl text-xs flex items-center gap-1.5 shadow-lg active:scale-95 transition-all cursor-pointer"
                   >
                     <CheckCircle2 className="w-4 h-4" />
-                    <span>✅ Approuver & Signer (SIDEPO.png)</span>
+                    <span>✅ Approuver & Signer (SS.png)</span>
                   </button>
                 )}
               </div>

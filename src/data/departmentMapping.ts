@@ -108,7 +108,7 @@ export const OFFICIAL_DEPARTMENTS: DepartmentMappingConfig[] = [
     shortName: 'Payor',
     icon: '⚖️',
     adminRole: 'PAYOR',
-    managerNames: ['Sylas'],
+    managerNames: ['Sylas', 'Woya Sylas'],
     managerMemberIds: ['5'],
     description: 'Flux de paiement et opérations du pôle Payor',
     notificationScope: 'Flux de paiement et opérations du pôle Payor',
@@ -159,8 +159,8 @@ export const getDefaultRolesForMember = (memberId: string | number, firstName?: 
     };
   }
 
-  // 5. Sylas -> Payor
-  if (mId === '5' || fName.includes('SYLAS')) {
+  // 5. Sylas (Woya Sylas) -> Payor
+  if (mId === '5' || fName.includes('SYLAS') || fName.includes('WOYA')) {
     return {
       roles: ['membre', 'payor'],
       departments: ['payor'],

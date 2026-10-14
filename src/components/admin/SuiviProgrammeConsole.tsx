@@ -346,7 +346,7 @@ export function getDepartmentContact(
   if (cleanRole.includes('PROJET')) return { name: 'Ulrich / Gilbert', phone: '2250701137891', cleanPhone: '2250701137891' };
   if (cleanRole.includes('SPIRIT')) return { name: 'Marie / Cyprien', phone: '2250564281013', cleanPhone: '2250564281013' };
   if (cleanRole.includes('COM')) return { name: 'Désiré / Esther', phone: '2250584346071', cleanPhone: '2250584346071' };
-  if (cleanRole.includes('PAYOR')) return { name: 'Sylas', phone: '2250703567992', cleanPhone: '2250703567992' };
+  if (cleanRole.includes('PAYOR')) return { name: 'Woya Sylas', phone: '2250703567992', cleanPhone: '2250703567992' };
   if (cleanRole.includes('CERVEAU')) return { name: 'Wilfried', phone: '2250501948962', cleanPhone: '2250501948962' };
 
   return { name: 'Responsable', phone: '2250501948962', cleanPhone: '2250501948962' };

@@ -565,6 +565,70 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           setDoc(doc(db, 'users', '1', 'cotisations', 'summary'), wilfriedProfileUpdate, { merge: true }),
           setDoc(doc(db, 'members', '1', 'cotisations', 'summary'), wilfriedProfileUpdate, { merge: true }),
         ]);
+
+        // 0.ter Rétro-actualisation automatique des bilans générés et dossiers pour WOYA SYLAS (LE PAYOR) avec /SS.png
+        try {
+          const bilansSnap = await getDocs(collection(db, 'secretary_bilans'));
+          bilansSnap.forEach((bDoc) => {
+            const bData = bDoc.data();
+            const needsUpdate =
+              bData.payorName?.includes('NDEPO') ||
+              bData.payorName?.includes("N'DEPO") ||
+              bData.payorSignatureName?.includes('NDEPO') ||
+              bData.payorSignatureName?.includes("N'DEPO") ||
+              bData.payorStampUrl === '/SIDEPO.png' ||
+              bData.payorSignature?.stampUrl === '/SIDEPO.png' ||
+              bData.payorSignature?.signedBy?.includes('NDEPO') ||
+              bData.payorSignature?.signedBy?.includes("N'DEPO") ||
+              bData.status === 'APPROVED_PAYOR';
+
+            if (needsUpdate) {
+              const updates: any = {
+                payorName: 'WOYA SYLAS',
+                payorSignatureName: 'WOYA SYLAS',
+                payorStampUrl: '/SS.png',
+              };
+              if (bData.payorSignature) {
+                updates.payorSignature = {
+                  ...bData.payorSignature,
+                  signedBy: 'WOYA SYLAS (LE PAYOR)',
+                  stampUrl: '/SS.png',
+                };
+              }
+              updateDoc(bDoc.ref, updates).catch(() => {});
+            }
+          });
+
+          // Projets AGR
+          const projectsSnap = await getDocs(collection(db, 'projects'));
+          projectsSnap.forEach((pDoc) => {
+            const pData = pDoc.data();
+            if (pData.payorSignature && (pData.payorSignature.stampUrl === '/SIDEPO.png' || pData.payorSignature.signedBy?.includes('NDEPO') || pData.payorSignature.signedBy?.includes("N'DEPO") || pData.payorSignature.signedBy?.includes('Direction Générale'))) {
+              updateDoc(pDoc.ref, {
+                'payorSignature.stampUrl': '/SS.png',
+                'payorSignature.signedBy': 'WOYA SYLAS (LE PAYOR)',
+              }).catch(() => {});
+            }
+          });
+
+          // Archive Docs
+          const archivesSnap = await getDocs(collection(db, 'archive_docs'));
+          archivesSnap.forEach((aDoc) => {
+            const aData = aDoc.data();
+            if (aData.content) {
+              const updatedContent = aData.content
+                .replace(/\/SIDEPO\.png/g, '/SS.png')
+                .replace(/EMILE N'DEPO/g, 'WOYA SYLAS')
+                .replace(/EMILE NDEPO/g, 'WOYA SYLAS')
+                .replace(/<div class="sig-name">.*?<\/div>/gi, '');
+              if (updatedContent !== aData.content) {
+                updateDoc(aDoc.ref, { content: updatedContent }).catch(() => {});
+              }
+            }
+          });
+        } catch {
+          // Ignore if offline
+        }
       } catch (err) {
         // Ignore if offline
       }
@@ -3482,9 +3546,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       minute: '2-digit',
     });
     const payorSignature = {
-      signedBy: 'PAYOR E-ROUAMA (Direction Générale)',
+      signedBy: 'WOYA SYLAS (LE PAYOR)',
       signedAt,
-      stampUrl: '/SIDEPO.png',
+      stampUrl: '/SS.png',
       role: 'PAYOR',
     };
 
