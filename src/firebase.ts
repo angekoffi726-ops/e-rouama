@@ -10,37 +10,43 @@ import {
   query,
 } from 'firebase/firestore';
 import { getAuth, signInAnonymously } from 'firebase/auth';
+import firebaseConfigData from '../firebase-applet-config.json';
 
-// Identifiants Firebase officiels du projet E-ROUAMA
+// Identifiants Firebase officiels du projet E-ROUAMA (synchronisés avec firebase-applet-config.json)
 export const firebaseConfig = {
-  apiKey: "AIzaSyCxEO6-cd0Bld5FKxBE8j8KNoP9c7PeNI4",
-  authDomain: "e-rouama-f735a.firebaseapp.com",
-  projectId: "e-rouama-f735a",
-  storageBucket: "e-rouama-f735a.firebasestorage.app",
-  messagingSenderId: "700309956720",
-  appId: "1:700309956720:web:5dc3242ea580b5f39fecb5"
+  apiKey: firebaseConfigData.apiKey,
+  authDomain: firebaseConfigData.authDomain,
+  projectId: firebaseConfigData.projectId,
+  storageBucket: firebaseConfigData.storageBucket,
+  messagingSenderId: firebaseConfigData.messagingSenderId,
+  appId: firebaseConfigData.appId,
 };
 
-// Réduire le niveau de log Firestore pour éviter les alertes de latence intempestives (mode hors-ligne automatique)
+// Réduire le niveau de log Firestore pour éviter les alertes de latence intempestives
 try {
   setLogLevel('error');
 } catch {
   // Ignorer si déjà initialisé
 }
 
-// Initialisation de Firebase avec les clés du projet
+// Initialisation de Firebase avec les clés officielles du projet
 const app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
 
-// Initialisation de Firestore avec long-polling et désactivation de fetchStreams
-// Cela résout définitivement l'erreur "Could not reach Cloud Firestore backend within 10 seconds"
+// Initialisation de Firestore avec long-polling et base de données assignée à l'application
+const databaseId = (firebaseConfigData as any).firestoreDatabaseId || '(default)';
+
 let firestoreInstance;
 try {
-  firestoreInstance = initializeFirestore(app, {
-    experimentalForceLongPolling: true,
-    useFetchStreams: false,
-  } as any);
+  firestoreInstance = initializeFirestore(
+    app,
+    {
+      experimentalForceLongPolling: true,
+      useFetchStreams: false,
+    } as any,
+    databaseId
+  );
 } catch {
-  firestoreInstance = getFirestore(app);
+  firestoreInstance = getFirestore(app, databaseId);
 }
 
 export const db = firestoreInstance;
@@ -64,7 +70,7 @@ export async function testFirestoreConnection(): Promise<boolean> {
       timeoutPromise
     ]);
     if (snap && snap.size >= 0) {
-      console.log('✅ Connexion Firestore opérationnelle sur e-rouama-f735a');
+      console.log('✅ Connexion Firestore opérationnelle sur ' + firebaseConfig.projectId + ' (' + databaseId + ')');
       return true;
     }
     return true;

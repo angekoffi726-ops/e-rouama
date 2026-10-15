@@ -262,6 +262,7 @@ export function computeBilanData({
     LOISIRS: 0,
     AGR: 0,
     CAS_SOCIAUX: 0,
+    EXTRA: 0,
   };
 
   filteredDeclarations.forEach(d => {

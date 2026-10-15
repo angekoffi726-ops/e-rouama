@@ -123,7 +123,7 @@ export interface CurrentUser {
   activeView?: 'MEMBER' | 'ADMIN';
 }
 
-export type FundType = 'COTISATION' | 'ANNIVERSAIRE' | 'SOIREE_ROUAMA' | 'LOISIRS' | 'AGR' | 'CAS_SOCIAUX';
+export type FundType = 'COTISATION' | 'ANNIVERSAIRE' | 'SOIREE_ROUAMA' | 'LOISIRS' | 'AGR' | 'CAS_SOCIAUX' | 'EXTRA';
 
 export const FUND_LABELS: Record<FundType, string> = {
   COTISATION: 'Cotisation Mensuelle',
@@ -132,6 +132,7 @@ export const FUND_LABELS: Record<FundType, string> = {
   LOISIRS: 'Sorties & Loisirs',
   AGR: 'Projets AGR',
   CAS_SOCIAUX: 'Cas Sociaux',
+  EXTRA: 'Caisse Extra',
 };
 
 export type DuesStatus = 'A_JOUR' | 'RETARD' | 'EN_AVANCE';

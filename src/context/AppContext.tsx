@@ -179,6 +179,7 @@ interface AppContextType {
   deleteReceipt: (declarationId: string) => Promise<void>;
   deleteTransaction: (txId: string) => Promise<void>;
 
+  addExtraCaisseEntry: (data: { date: string; reason: string; amount: number }) => Promise<{ success: boolean; message: string }>;
   createWithdrawalRequest: (fund: FundType, amount: number, reason: string) => Promise<void> | void;
   approveWithdrawal: (requestId: string) => Promise<void> | void;
   rejectWithdrawal: (requestId: string) => Promise<void> | void;
@@ -390,6 +391,8 @@ export function saveStoredAdminCredentials(adminUsers: AdminUser[]): void {
   }
 }
 
+let hasRunStartupSync = false;
+
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   // Session utilisateur locale persistée sur ce terminal
   const [currentUser, setCurrentUserState] = useState<CurrentUser | null>(() => {
@@ -469,6 +472,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     LOISIRS: 0,
     AGR: 0,
     CAS_SOCIAUX: 0,
+    EXTRA: 0,
   });
   const [declarations, setDeclarations] = useState<PaymentDeclaration[]>([]);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
@@ -611,8 +615,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               bData.payorStampUrl === '/SIDEPO.png' ||
               bData.payorSignature?.stampUrl === '/SIDEPO.png' ||
               bData.payorSignature?.signedBy?.includes('NDEPO') ||
-              bData.payorSignature?.signedBy?.includes("N'DEPO") ||
-              bData.status === 'APPROVED_PAYOR';
+              bData.payorSignature?.signedBy?.includes("N'DEPO");
 
             const needsFinancialSync =
               bData.totalIn !== computed.totalIn ||
@@ -681,7 +684,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         // Ignore if offline
       }
     };
-    purgeTestDocsAndSyncWilfried();
+    if (!hasRunStartupSync) {
+      hasRunStartupSync = true;
+      purgeTestDocsAndSyncWilfried();
+    }
 
     const unsubscribes: (() => void)[] = [];
 
@@ -771,6 +777,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         )
         .reduce((acc, p) => acc + (Number(p.amount) || Number(p.montant) || 0), 0);
 
+      const extra = validatedPayments
+        .filter(p =>
+          p.type === 'Caisse Extra' ||
+          p.caisse === 'Caisse Extra' ||
+          p.fund === 'EXTRA' ||
+          p.subCategory === 'Caisse Extra'
+        )
+        .reduce((acc, p) => acc + (Number(p.amount) || Number(p.montant) || 0), 0);
+
       const computed: Record<FundType, number> = {
         COTISATION: cotisations,
         ANNIVERSAIRE: anniversaire,
@@ -778,15 +793,21 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         AGR: agr,
         CAS_SOCIAUX: casSociaux,
         SOIREE_ROUAMA: 0,
+        EXTRA: extra,
       };
 
-      setFundBalances(prev => ({
-        ...prev,
-        ...computed,
-      }));
-
-      // Synchronisation sur Firestore
-      setDoc(doc(db, 'treasury', 'balances'), sanitizeFirestore(computed), { merge: true }).catch(() => {});
+      setFundBalances(prev => {
+        const isDifferent = Object.entries(computed).some(
+          ([k, v]) => (prev as any)[k] !== v
+        );
+        if (isDifferent) {
+          setDoc(doc(db, 'treasury', 'balances'), sanitizeFirestore(computed), { merge: true }).catch(() => {});
+        }
+        return {
+          ...prev,
+          ...computed,
+        };
+      });
 
       // Synchronisation réactive unifiée : l'état des déclarations reflète la validation en temps réel
       setDeclarations(allDecls);
@@ -3138,6 +3159,98 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }).catch(console.warn);
   };
 
+  // Entrée manuelle Trésorier dans la Caisse Extra (fonds antérieurs, amendes, entrées libres)
+  const addExtraCaisseEntry = async (data: { date: string; reason: string; amount: number }) => {
+    const amountVal = Number(data.amount) || 0;
+    if (amountVal <= 0) {
+      return { success: false, message: 'Le montant doit être supérieur à zéro.' };
+    }
+    const cleanReason = (data.reason || '').trim();
+    if (!cleanReason) {
+      return { success: false, message: 'Veuillez préciser le motif de l’entrée.' };
+    }
+    const entryDate = data.date || new Date().toISOString().split('T')[0];
+
+    const newEntryPayload: any = {
+      type: 'Caisse Extra',
+      caisse: 'Caisse Extra',
+      fund: 'EXTRA',
+      subCategory: 'Caisse Extra',
+      amount: amountVal,
+      montant: amountVal,
+      reason: cleanReason,
+      motif: cleanReason,
+      reference: cleanReason,
+      date: entryDate,
+      month: new Date(entryDate).toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' }),
+      status: 'valide',
+      statut: 'valide',
+      statutDemande: 'valide',
+      statusLabel: 'Validé',
+      isValidated: true,
+      isApproved: true,
+      memberId: 'TRESORERIE',
+      memberName: 'Trésorerie Générale',
+      memberNickname: 'Trésorerie',
+      validatedAt: new Date().toISOString(),
+      approvedAt: new Date().toISOString(),
+      createdAt: Date.now(),
+      createdBy: 'TRÉSORIER',
+    };
+
+    try {
+      // 1. Ajouter dans 'payments' (pour synchronisation temps réel des soldes trésorerie)
+      const docRef = await addDoc(collection(db, 'payments'), sanitizeFirestore(newEntryPayload));
+      const entryId = docRef.id;
+      await updateDoc(docRef, { id: entryId }).catch(() => {});
+
+      const fullDoc = { ...newEntryPayload, id: entryId };
+      await Promise.allSettled([
+        setDoc(doc(db, 'receipts', entryId), sanitizeFirestore(fullDoc), { merge: true }),
+        setDoc(doc(db, 'declarations', entryId), sanitizeFirestore(fullDoc), { merge: true }),
+      ]);
+
+      // 2. Transaction Firestore (DEPOT)
+      try {
+        const txRef = await addDoc(collection(db, 'transactions'), sanitizeFirestore({
+          type: 'DEPOT',
+          fund: 'EXTRA',
+          amount: amountVal,
+          description: `Entrée Caisse Extra (${cleanReason})`,
+          date: entryDate,
+          memberNickname: 'Trésorerie',
+          createdBy: 'TRÉSORIER',
+          createdAt: Date.now(),
+        }));
+        await updateDoc(txRef, { id: txRef.id }).catch(() => {});
+      } catch (txErr) {
+        console.warn('Erreur addDoc transaction Caisse Extra:', txErr);
+      }
+
+      // 3. Mise à jour instantanée du solde
+      const updatedBalances: Record<FundType, number> = {
+        ...fundBalances,
+        EXTRA: (fundBalances.EXTRA || 0) + amountVal,
+      };
+      await setDoc(doc(db, 'treasury', 'balances'), sanitizeFirestore(updatedBalances), { merge: true }).catch(console.warn);
+      setFundBalances(updatedBalances);
+
+      // 4. Mettre à jour l'état local des déclarations
+      setDeclarations(prev => [fullDoc as any, ...prev]);
+
+      return {
+        success: true,
+        message: `Entrée de ${amountVal.toLocaleString('fr-FR')} F CFA enregistrée avec succès dans la Caisse Extra !`,
+      };
+    } catch (err: any) {
+      console.error('Erreur addExtraCaisseEntry:', err);
+      return {
+        success: false,
+        message: `Erreur lors de l’enregistrement : ${err?.message || 'Erreur inconnue'}`,
+      };
+    }
+  };
+
   // Décaissements (Sauvegarde addDoc avec identifiant unique Firestore)
   const createWithdrawalRequest = async (fund: FundType, amount: number, reason: string) => {
     try {
@@ -4545,6 +4658,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         hideReceipt,
         deleteReceipt,
         deleteTransaction,
+        addExtraCaisseEntry,
         createWithdrawalRequest,
         approveWithdrawal,
         rejectWithdrawal,

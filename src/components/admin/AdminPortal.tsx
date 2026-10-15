@@ -32,6 +32,7 @@ import {
   Archive,
   Eye,
   Plus,
+  PlusCircle,
   RefreshCw,
   Printer,
   KeyRound,
@@ -376,6 +377,7 @@ export const AdminPortal: React.FC = () => {
     approvePayment,
     rejectPayment,
     deleteReceipt,
+    addExtraCaisseEntry,
     withdrawals,
     createWithdrawalRequest,
     approveWithdrawal,
@@ -628,7 +630,16 @@ export const AdminPortal: React.FC = () => {
       )
       .reduce((acc, p) => acc + (Number(p.amount) || Number(p.montant) || 0), 0);
 
-    return { total, cotisations, anniversaire, sorties, agr, casSociaux };
+    const extra = validatedPayments
+      .filter(p => 
+        p.type === 'Caisse Extra' || 
+        p.caisse === 'Caisse Extra' || 
+        p.fund === 'EXTRA' ||
+        p.subCategory === 'Caisse Extra'
+      )
+      .reduce((acc, p) => acc + (Number(p.amount) || Number(p.montant) || 0), 0);
+
+    return { total, cotisations, anniversaire, sorties, agr, casSociaux, extra };
   };
 
   // 2. ÉCOUTE EN TEMPS RÉEL (onSnapshot) DE LA COLLECTION 'payments'
@@ -663,6 +674,9 @@ export const AdminPortal: React.FC = () => {
             } else if (data.fund === 'CAS_SOCIAUX') {
               type = 'Cas Sociaux';
               caisse = 'Cas Sociaux';
+            } else if (data.fund === 'EXTRA') {
+              type = 'Caisse Extra';
+              caisse = 'Caisse Extra';
             }
           }
           loaded.push({
@@ -708,6 +722,9 @@ export const AdminPortal: React.FC = () => {
           } else if (d.fund === 'CAS_SOCIAUX') {
             type = 'Cas Sociaux';
             caisse = 'Cas Sociaux';
+          } else if (d.fund === 'EXTRA') {
+            type = 'Caisse Extra';
+            caisse = 'Caisse Extra';
           }
         }
         map.set(pId, {
@@ -743,6 +760,7 @@ export const AdminPortal: React.FC = () => {
     AGR: treasuryBalances.agr,
     CAS_SOCIAUX: treasuryBalances.casSociaux,
     SOIREE_ROUAMA: fundBalances.SOIREE_ROUAMA || 0,
+    EXTRA: treasuryBalances.extra !== undefined ? treasuryBalances.extra : (fundBalances.EXTRA || 0),
   }), [treasuryBalances, fundBalances]);
 
   // Vérificateur unifié de statut validé (insensible à la casse/format)
@@ -808,6 +826,13 @@ export const AdminPortal: React.FC = () => {
   const [withAmountInput, setWithAmountInput] = useState<string>('');
   const [withReason, setWithReason] = useState<string>('');
   const [withProofRef, setWithProofRef] = useState<string>('');
+
+  // États pour le formulaire d'entrée dédiée dans la Caisse Extra
+  const [showExtraDepositModal, setShowExtraDepositModal] = useState<boolean>(false);
+  const [extraDepositDate, setExtraDepositDate] = useState<string>(() => new Date().toISOString().split('T')[0]);
+  const [extraDepositReason, setExtraDepositReason] = useState<string>('');
+  const [extraDepositAmount, setExtraDepositAmount] = useState<string>('');
+  const [isSubmittingExtra, setIsSubmittingExtra] = useState<boolean>(false);
 
   const [bilanTitle, setBilanTitle] = useState<string>('');
   const [bilanPeriodMode, setBilanPeriodMode] = useState<'GLOBAL' | 'PERIODIC'>('GLOBAL');
@@ -2160,7 +2185,7 @@ export const AdminPortal: React.FC = () => {
         </div>
 
         <div class="sub-balances">
-          <h3 style="font-size:12px; margin-bottom:8px; font-weight:bold;">Répartition des 5 Sous-Soldes par Caisse :</h3>
+          <h3 style="font-size:12px; margin-bottom:8px; font-weight:bold;">Répartition des Sous-Soldes par Caisse :</h3>
           <div class="sub-balances-grid">
             <div class="sub-card">
               <div class="sub-card-title">Cotisation Mensuelle</div>
@@ -2181,6 +2206,10 @@ export const AdminPortal: React.FC = () => {
             <div class="sub-card">
               <div class="sub-card-title">Cas Sociaux</div>
               <div class="sub-card-val">${(balances.CAS_SOCIAUX || 0).toLocaleString('fr-FR')} F</div>
+            </div>
+            <div class="sub-card">
+              <div class="sub-card-title">Caisse Extra</div>
+              <div class="sub-card-val">${(balances.EXTRA || 0).toLocaleString('fr-FR')} F</div>
             </div>
           </div>
         </div>
@@ -3288,14 +3317,14 @@ export const AdminPortal: React.FC = () => {
               </div>
             </div>
 
-            {/* Cartes / Blocs Secondaires : 5 Sous-Soldes Caisse Spécifiques */}
+            {/* Cartes / Blocs Secondaires : Décomposition des Sous-Soldes de Caisse */}
             <div>
               <h3 className="text-xs font-black text-slate-400 uppercase tracking-wider mb-3 flex items-center gap-2">
                 <PieChart className="w-4 h-4 text-amber-400" />
-                <span>Décomposition des 5 Sous-Soldes de Caisse</span>
+                <span>Décomposition des Sous-Soldes de Caisse</span>
               </h3>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3">
                 {/* Sous-Solde 1 : Cotisation Mensuelle */}
                 <div className="bg-slate-950 border border-slate-800/80 rounded-2xl p-4 space-y-1 hover:border-emerald-500/40 transition-all">
                   <span className="text-[11px] font-bold text-slate-400 block truncate">
@@ -3349,6 +3378,37 @@ export const AdminPortal: React.FC = () => {
                     {(liveFundBalances.CAS_SOCIAUX || 0).toLocaleString('fr-FR')} <span className="text-xs font-bold text-slate-400">F CFA</span>
                   </p>
                   <span className="text-[10px] text-slate-500 block font-medium">Mariage, Naissances, Décès</span>
+                </div>
+
+                {/* Sous-Solde 6 : Caisse Extra (Entrées libres, amendes & fonds antérieurs) */}
+                <div className="bg-slate-950 border border-amber-500/30 rounded-2xl p-4 space-y-2 hover:border-amber-500/60 transition-all flex flex-col justify-between">
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] font-bold text-amber-300 block truncate">
+                        Caisse Extra
+                      </span>
+                      <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 font-bold border border-amber-500/30">
+                        Libre
+                      </span>
+                    </div>
+                    <p className="text-xl font-black text-amber-400">
+                      {(liveFundBalances.EXTRA || 0).toLocaleString('fr-FR')} <span className="text-xs font-bold text-slate-400">F CFA</span>
+                    </p>
+                    <span className="text-[10px] text-slate-500 block font-medium">Fonds antérieurs, amendes...</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setExtraDepositDate(new Date().toISOString().split('T')[0]);
+                      setExtraDepositReason('');
+                      setExtraDepositAmount('');
+                      setShowExtraDepositModal(true);
+                    }}
+                    className="w-full mt-2 py-1.5 px-2.5 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 text-white rounded-xl text-xs font-black flex items-center justify-center gap-1.5 shadow-md shadow-amber-500/20 transition-all active:scale-95 cursor-pointer"
+                  >
+                    <PlusCircle className="w-3.5 h-3.5" />
+                    <span>Faire une entrée</span>
+                  </button>
                 </div>
               </div>
             </div>
@@ -5203,11 +5263,19 @@ export const AdminPortal: React.FC = () => {
                     onChange={e => setWithFund(e.target.value as FundType)}
                     className="w-full bg-slate-950 border border-slate-800 rounded-2xl px-4 py-3 text-sm font-bold text-white focus:outline-none focus:border-amber-500"
                   >
-                    {Object.entries(FUND_LABELS).map(([key, label]) => (
-                      <option key={key} value={key}>
-                        {label}
-                      </option>
-                    ))}
+                    <option value="COTISATION">Cotisation Mensuelle ({(liveFundBalances.COTISATION || 0).toLocaleString('fr-FR')} F)</option>
+                    <option value="ANNIVERSAIRE">Anniversaire 21 Mars ({(liveFundBalances.ANNIVERSAIRE || 0).toLocaleString('fr-FR')} F)</option>
+                    <option value="LOISIRS">Sorties & Loisirs ({(liveFundBalances.LOISIRS || 0).toLocaleString('fr-FR')} F)</option>
+                    <option value="AGR">Projets AGR ({(liveFundBalances.AGR || 0).toLocaleString('fr-FR')} F)</option>
+                    <option value="CAS_SOCIAUX">Cas Sociaux ({(liveFundBalances.CAS_SOCIAUX || 0).toLocaleString('fr-FR')} F)</option>
+                    <option value="EXTRA">Caisse Extra ({(liveFundBalances.EXTRA || 0).toLocaleString('fr-FR')} F)</option>
+                    {Object.entries(FUND_LABELS)
+                      .filter(([key]) => !['COTISATION', 'ANNIVERSAIRE', 'LOISIRS', 'AGR', 'CAS_SOCIAUX', 'EXTRA'].includes(key))
+                      .map(([key, label]) => (
+                        <option key={key} value={key}>
+                          {label} ({(liveFundBalances[key as FundType] || 0).toLocaleString('fr-FR')} F)
+                        </option>
+                      ))}
                   </select>
                 </div>
 
@@ -10107,6 +10175,202 @@ export const AdminPortal: React.FC = () => {
         </div>
       )}
 
+      {/* ========================================================= */}
+      {/* MODAL TRÉSORIER : ENTRÉE DÉDIÉE CAISSE EXTRA */}
+      {/* ========================================================= */}
+      {showExtraDepositModal && (
+        <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-3 sm:p-6 overflow-y-auto animate-fadeIn">
+          <div className="bg-slate-900 border-2 border-amber-500/70 rounded-3xl max-w-lg w-full flex flex-col shadow-2xl my-auto overflow-hidden">
+            {/* Modal Header */}
+            <div className="p-4 sm:p-5 border-b border-slate-800 flex items-center justify-between gap-3 bg-slate-950">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-400 font-bold">
+                  <PlusCircle className="w-5 h-5 text-amber-400" />
+                </div>
+                <div>
+                  <h3 className="text-base font-black text-white flex items-center gap-2">
+                    <span>Faire une Entrée — Caisse Extra</span>
+                  </h3>
+                  <p className="text-xs text-amber-400/90 font-mono">
+                    Entrées libres, amendes et fonds antérieurs
+                  </p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setShowExtraDepositModal(false)}
+                className="text-slate-400 hover:text-white p-2 rounded-xl hover:bg-slate-800 transition-colors cursor-pointer"
+                title="Fermer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Modal Form */}
+            <form
+              onSubmit={async (e) => {
+                e.preventDefault();
+                const amt = Number(extraDepositAmount);
+                if (!amt || amt <= 0) {
+                  alert('Veuillez saisir une somme valide supérieure à 0 F CFA.');
+                  return;
+                }
+                if (!extraDepositReason.trim()) {
+                  alert('Veuillez renseigner le motif du dépôt.');
+                  return;
+                }
+
+                setIsSubmittingExtra(true);
+                try {
+                  const res = await addExtraCaisseEntry({
+                    date: extraDepositDate,
+                    reason: extraDepositReason.trim(),
+                    amount: amt,
+                  });
+
+                  if (res.success) {
+                    // Actualisation réactive instantanée des paiements locaux pour mise à jour immédiate à l'écran
+                    const localDoc = {
+                      id: 'extra_' + Date.now(),
+                      fund: 'EXTRA',
+                      type: 'Caisse Extra',
+                      caisse: 'Caisse Extra',
+                      amount: amt,
+                      montant: amt,
+                      date: extraDepositDate,
+                      reason: extraDepositReason.trim(),
+                      motif: extraDepositReason.trim(),
+                      reference: extraDepositReason.trim(),
+                      status: 'valide',
+                      isValidated: true,
+                      isApproved: true,
+                    };
+                    setFirestorePayments(prev => [localDoc, ...prev]);
+
+                    alert(res.message);
+                    setShowExtraDepositModal(false);
+                    setExtraDepositReason('');
+                    setExtraDepositAmount('');
+                  } else {
+                    alert(res.message);
+                  }
+                } catch (err: any) {
+                  alert('Erreur lors de l’enregistrement : ' + (err?.message || 'Erreur inconnue'));
+                } finally {
+                  setIsSubmittingExtra(false);
+                }
+              }}
+              className="p-5 sm:p-6 space-y-4 text-xs"
+            >
+              {/* 1. Date de l'entrée */}
+              <div>
+                <label className="block text-xs font-bold text-slate-300 uppercase mb-2">
+                  📅 Date de l'entrée *
+                </label>
+                <input
+                  type="date"
+                  required
+                  value={extraDepositDate}
+                  onChange={(e) => setExtraDepositDate(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-2xl px-4 py-3 text-sm font-bold text-white focus:outline-none focus:border-amber-500"
+                />
+              </div>
+
+              {/* 2. Motif du dépôt */}
+              <div>
+                <label className="block text-xs font-bold text-slate-300 uppercase mb-2">
+                  📝 Motif du dépôt *
+                </label>
+                <input
+                  type="text"
+                  required
+                  placeholder="Ex: Fonds antérieurs d'activité, amende pour indiscipline..."
+                  value={extraDepositReason}
+                  onChange={(e) => setExtraDepositReason(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-2xl px-4 py-3 text-sm font-bold text-white focus:outline-none focus:border-amber-500"
+                />
+                {/* Suggestions rapides */}
+                <div className="flex flex-wrap gap-1.5 mt-2">
+                  {[
+                    "Fonds antérieurs d'activité",
+                    "Amende pour indiscipline",
+                    "Donation libre",
+                    "Reliquat d'activité",
+                  ].map((sug) => (
+                    <button
+                      key={sug}
+                      type="button"
+                      onClick={() => setExtraDepositReason(sug)}
+                      className="text-[10px] font-bold px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg border border-slate-700 transition-all cursor-pointer"
+                    >
+                      + {sug}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* 3. Somme à déposer */}
+              <div>
+                <label className="block text-xs font-bold text-slate-300 uppercase mb-2">
+                  💰 Somme à déposer (F CFA) *
+                </label>
+                <input
+                  type="number"
+                  required
+                  min="1"
+                  placeholder="Ex: 50000"
+                  value={extraDepositAmount}
+                  onChange={(e) => setExtraDepositAmount(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-2xl px-4 py-3 text-sm font-bold text-white focus:outline-none focus:border-amber-500"
+                />
+              </div>
+
+              {/* Impact Card */}
+              <div className="bg-slate-950/80 border border-slate-800 rounded-2xl p-4 space-y-2">
+                <div className="flex justify-between text-slate-400">
+                  <span>Solde actuel Caisse Extra :</span>
+                  <span className="font-bold text-white">{(liveFundBalances.EXTRA || 0).toLocaleString('fr-FR')} F CFA</span>
+                </div>
+                <div className="flex justify-between text-amber-400">
+                  <span>Montant de l'entrée :</span>
+                  <span className="font-bold">+{Number(extraDepositAmount || 0).toLocaleString('fr-FR')} F CFA</span>
+                </div>
+                <div className="flex justify-between text-emerald-400 pt-1.5 border-t border-slate-800 font-black">
+                  <span>Nouveau solde Caisse Extra :</span>
+                  <span>{((liveFundBalances.EXTRA || 0) + Number(extraDepositAmount || 0)).toLocaleString('fr-FR')} F CFA</span>
+                </div>
+              </div>
+
+              {/* Actions */}
+              <div className="flex items-center justify-end gap-3 pt-3">
+                <button
+                  type="button"
+                  onClick={() => setShowExtraDepositModal(false)}
+                  className="px-5 py-3 rounded-2xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-xs transition-all cursor-pointer"
+                >
+                  Annuler
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSubmittingExtra}
+                  className="px-6 py-3 rounded-2xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 text-white font-black text-xs flex items-center gap-2 shadow-lg shadow-amber-500/20 transition-all active:scale-95 disabled:opacity-50 cursor-pointer"
+                >
+                  {isSubmittingExtra ? (
+                    <span>Enregistrement en cours...</span>
+                  ) : (
+                    <>
+                      <CheckCircle2 className="w-4 h-4" />
+                      <span>Valider et Créditer la Caisse Extra</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
       {/* MODAL TRÉSORIER : ÉTAPE 1 - APERÇU PRÉALABLE & VÉRIFICATION DU BILAN SANS SIGNATURE */}
       {treasurerPreviewBilan && (
         <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-3 sm:p-6 overflow-y-auto animate-fadeIn">
@@ -10204,12 +10468,12 @@ export const AdminPortal: React.FC = () => {
                 </div>
               </div>
 
-              {/* 5 Sub-balances */}
+              {/* Ventilation des Sous-Soldes par Caisse */}
               <div className="bg-slate-50 border border-slate-200 rounded-2xl p-3.5">
                 <span className="font-bold text-slate-700 block mb-2 text-[11px] uppercase tracking-wide">
-                  📊 Ventilation des 5 Sous-Soldes par Caisse :
+                  📊 Ventilation des Sous-Soldes par Caisse :
                 </span>
-                <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 text-center text-xs">
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2 text-center text-xs">
                   <div className="bg-white p-2.5 rounded-xl border border-slate-200">
                     <span className="text-[10px] text-slate-500 font-bold block">Cotisations</span>
                     <span className="font-black text-emerald-800">{(treasurerPreviewBilan.balances.COTISATION || 0).toLocaleString('fr-FR')} F</span>
@@ -10229,6 +10493,10 @@ export const AdminPortal: React.FC = () => {
                   <div className="bg-white p-2.5 rounded-xl border border-slate-200">
                     <span className="text-[10px] text-slate-500 font-bold block">Cas Sociaux</span>
                     <span className="font-black text-emerald-800">{(treasurerPreviewBilan.balances.CAS_SOCIAUX || 0).toLocaleString('fr-FR')} F</span>
+                  </div>
+                  <div className="bg-white p-2.5 rounded-xl border border-slate-200">
+                    <span className="text-[10px] text-slate-500 font-bold block">Caisse Extra</span>
+                    <span className="font-black text-emerald-800">{(treasurerPreviewBilan.balances.EXTRA || 0).toLocaleString('fr-FR')} F</span>
                   </div>
                 </div>
               </div>
@@ -10604,9 +10872,9 @@ export const AdminPortal: React.FC = () => {
 
                       <div className="bg-slate-50 border border-slate-200 rounded-xl p-3.5">
                         <span className="font-bold text-slate-700 block mb-2 text-[11px] uppercase tracking-wide">
-                          📊 Répartition des 5 Sous-Soldes par Caisse :
+                          📊 Répartition des Sous-Soldes par Caisse :
                         </span>
-                        <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 text-center">
+                        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2 text-center">
                           <div className="bg-white p-2.5 rounded-lg border border-slate-200">
                             <span className="text-[10px] text-slate-500 font-bold block">Cotisations</span>
                             <span className="font-black text-emerald-800">{(computed.balances.COTISATION || 0).toLocaleString('fr-FR')} F</span>
@@ -10626,6 +10894,10 @@ export const AdminPortal: React.FC = () => {
                           <div className="bg-white p-2.5 rounded-lg border border-slate-200">
                             <span className="text-[10px] text-slate-500 font-bold block">Cas Sociaux</span>
                             <span className="font-black text-emerald-800">{(computed.balances.CAS_SOCIAUX || 0).toLocaleString('fr-FR')} F</span>
+                          </div>
+                          <div className="bg-white p-2.5 rounded-lg border border-slate-200">
+                            <span className="text-[10px] text-slate-500 font-bold block">Caisse Extra</span>
+                            <span className="font-black text-emerald-800">{(computed.balances.EXTRA || 0).toLocaleString('fr-FR')} F</span>
                           </div>
                         </div>
                       </div>
