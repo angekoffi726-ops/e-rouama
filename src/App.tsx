@@ -203,19 +203,39 @@ function MainLayout() {
 
   const messagesList = gbairaiMessages || newsItems || [];
   const activeGbairaiMessages = messagesList.filter(msg => {
+    if (!msg) return false;
     if (msg.dispatchChannel === 'MAIL') return false;
 
-    // Filtrage strict par targetMemberIds (Ciblage des destinataires)
-    const isSpecificallyTargeted = Boolean(
-      msg.targetMemberIds &&
-      !msg.targetMemberIds.includes('ALL') &&
-      ((memberId && msg.targetMemberIds.includes(memberId)) ||
-       (currentUser?.id && msg.targetMemberIds.includes(currentUser.id)))
-    );
+    // Exclusion stricte des messages supprimés
+    if (
+      msg.isDeleted === true ||
+      msg.deleted === true ||
+      msg.status === 'deleted' ||
+      msg.status === 'supprime' ||
+      msg.status === 'hidden' ||
+      msg.isHidden === true
+    ) {
+      return false;
+    }
 
-    if (msg.targetMemberIds && msg.targetMemberIds.length > 0) {
-      const isForEveryone = msg.targetMemberIds.includes('ALL');
-      if (!isForEveryone && currentUser?.type === 'MEMBER' && !isSpecificallyTargeted) {
+    // Filtrage strict par destinataire (recipientId, targetMembers, targetMemberIds)
+    const targetIds: string[] = [];
+    if (msg.recipientId) targetIds.push(String(msg.recipientId));
+    if (msg.targetMemberId) targetIds.push(String(msg.targetMemberId));
+    if (Array.isArray(msg.targetMembers)) msg.targetMembers.forEach((id: any) => targetIds.push(String(id)));
+    if (Array.isArray(msg.targetMemberIds)) msg.targetMemberIds.forEach((id: any) => targetIds.push(String(id)));
+
+    const currentIds = [memberId, currentUser?.id].filter(Boolean).map(String);
+    const hasSpecificTargeting =
+      targetIds.length > 0 &&
+      !targetIds.includes('ALL') &&
+      !targetIds.includes('TOUS') &&
+      !targetIds.includes('PUBLIC');
+
+    const isSpecificallyTargeted = Boolean(hasSpecificTargeting && targetIds.some(id => currentIds.includes(id)));
+
+    if (hasSpecificTargeting) {
+      if (currentUser?.type === 'MEMBER' && !isSpecificallyTargeted) {
         return false;
       }
     }

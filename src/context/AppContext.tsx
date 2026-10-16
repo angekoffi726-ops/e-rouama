@@ -963,6 +963,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const loaded: NewsItem[] = [];
         snapshot.forEach(d => {
           const item = { id: d.id, ...(d.data() as any) };
+          // Exclusion stricte des messages supprimés ou masqués
+          if (
+            item.deleted === true ||
+            item.isDeleted === true ||
+            item.status === 'deleted' ||
+            item.status === 'supprime' ||
+            item.status === 'hidden' ||
+            item.isHidden === true
+          ) {
+            return;
+          }
           // Séparation stricte : filtrer les messages exclusifs au canal MAIL
           if (item.dispatchChannel !== 'MAIL') {
             loaded.push(item);
@@ -3498,14 +3509,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const deleteNewsItem = async (newsId: string) => {
     try {
+      await updateDoc(doc(db, 'news', newsId), { deleted: true, isDeleted: true, status: 'deleted', isHidden: true }).catch(() => {});
       await deleteDoc(doc(db, 'news', newsId));
     } catch (err) {
       console.warn('Erreur lors de la suppression Firestore du communiqué (news) :', err);
     }
     try {
+      await updateDoc(doc(db, 'announcements', newsId), { deleted: true, isDeleted: true, status: 'deleted', isHidden: true }).catch(() => {});
       await deleteDoc(doc(db, 'announcements', newsId));
     } catch (_) {}
     setNewsItems(prev => prev.filter(n => n.id !== newsId));
+    try {
+      window.dispatchEvent(new Event('storage'));
+    } catch (_) {}
   };
 
   const dismissNewsForMember = (newsId: string) => {
@@ -3538,6 +3554,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setNewsItems(prev =>
       prev.map(n => (n.id === newsId ? { ...n, dismissedBy: updatedDismissedBy, readBy: updatedReadBy } : n))
     );
+    try {
+      window.dispatchEvent(new Event('storage'));
+    } catch (_) {}
   };
 
   // Activités & Sorties

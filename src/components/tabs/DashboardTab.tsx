@@ -1,4 +1,4 @@
-import React, { useRef, useState, useEffect } from 'react';
+import React, { useRef, useState, useEffect, useMemo } from 'react';
 import { useApp } from '../../context/AppContext';
 import { TabType } from '../Navigation';
 import { doc, setDoc, getDoc, updateDoc } from 'firebase/firestore';
@@ -31,7 +31,18 @@ interface DashboardTabProps {
 }
 
 export const DashboardTab: React.FC<DashboardTabProps> = ({ onNavigateTab }) => {
-  const { currentUser, members, updateMemberProfile, updateMemberAvatar, getMemberDuesDetail, newsItems, activities, verseOfTheDay } = useApp();
+  const {
+    currentUser,
+    members,
+    updateMemberProfile,
+    updateMemberAvatar,
+    getMemberDuesDetail,
+    getMemberDuesStatus,
+    newsItems,
+    gbairaiMessages,
+    activities,
+    verseOfTheDay,
+  } = useApp();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [uploadSuccess, setUploadSuccess] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
@@ -86,9 +97,138 @@ export const DashboardTab: React.FC<DashboardTabProps> = ({ onNavigateTab }) => 
 
   // Dues status detail for members
   const duesDetail = isMember ? getMemberDuesDetail(memberId) : null;
+  const memberDuesStatus = memberId && getMemberDuesStatus ? getMemberDuesStatus(memberId) : 'RETARD';
 
-  // Latest news
-  const latestNews = newsItems && newsItems.length > 0 ? newsItems[0] : null;
+  // Suivi en temps réel des messages supprimés/masqués localement par le membre
+  const [localDismissedNewsIds, setLocalDismissedNewsIds] = useState<string[]>(() => {
+    if (!memberId) return [];
+    try {
+      const stored = localStorage.getItem(`erouama_dismissed_news_${memberId}`);
+      return stored ? JSON.parse(stored) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  // Écoute de l'événement storage ou synchronisation pour actualisation instantanée si le membre supprime un message dans Gbairai
+  useEffect(() => {
+    const handleStorageChange = () => {
+      if (!memberId) return;
+      try {
+        const stored = localStorage.getItem(`erouama_dismissed_news_${memberId}`);
+        setLocalDismissedNewsIds(stored ? JSON.parse(stored) : []);
+      } catch (_) {}
+    };
+    window.addEventListener('storage', handleStorageChange);
+    const interval = setInterval(handleStorageChange, 1500);
+    return () => {
+      window.removeEventListener('storage', handleStorageChange);
+      clearInterval(interval);
+    };
+  }, [memberId]);
+
+  // Filtrage strict des communiqués pour le "Flash Info Fraternité"
+  // 1. Confidentialité : Message public pour TOUS ou ciblé directement pour le membre connecté
+  // 2. Suppression : Exclusion immédiate des messages supprimés (base ou relation membre)
+  const eligibleNewsList = useMemo(() => {
+    const rawList = gbairaiMessages || newsItems || [];
+    const currentMemberIdStr = String(memberId || '');
+    const currentUserIdStr = String(currentUser?.id || '');
+    const userIds = [currentMemberIdStr, currentUserIdStr].filter(Boolean);
+
+    return rawList.filter(msg => {
+      if (!msg) return false;
+
+      // =========================================================================
+      // 1. EXCLUSION STRICTE DES MESSAGES SUPPRIMÉS (Temps Réel)
+      // =========================================================================
+      // Statuts de suppression explicites
+      if (
+        msg.isDeleted === true ||
+        msg.deleted === true ||
+        msg.status === 'deleted' ||
+        msg.status === 'supprime' ||
+        msg.status === 'hidden' ||
+        msg.isHidden === true
+      ) {
+        return false;
+      }
+
+      // Canal exclusif courriel (ne pas afficher dans le bandeau de l'App)
+      if (msg.dispatchChannel === 'MAIL') {
+        return false;
+      }
+
+      // Relation de suppression / masquage par le membre dans Firestore
+      if (Array.isArray(msg.dismissedBy) && msg.dismissedBy.some((id: any) => userIds.includes(String(id)))) {
+        return false;
+      }
+
+      // Relation de suppression dans le cache local du membre
+      if (localDismissedNewsIds.includes(msg.id)) {
+        return false;
+      }
+
+      // Membres exclus du message (ex: payeur masqué pour sa propre annonce)
+      if (Array.isArray(msg.excludedMemberIds) && msg.excludedMemberIds.some((id: any) => userIds.includes(String(id)))) {
+        return false;
+      }
+
+      // =========================================================================
+      // 2. FILTRAGE PAR DESTINATAIRE (CONFIDENTIALITÉ STRICTE)
+      // =========================================================================
+      // Collecte de tous les champs de ciblage de destinataires possibles
+      const targetIds: string[] = [];
+
+      if (msg.recipientId) {
+        targetIds.push(String(msg.recipientId));
+      }
+      if (msg.targetMemberId) {
+        targetIds.push(String(msg.targetMemberId));
+      }
+      if (Array.isArray(msg.targetMembers)) {
+        msg.targetMembers.forEach((id: any) => targetIds.push(String(id)));
+      }
+      if (Array.isArray(msg.targetMemberIds)) {
+        msg.targetMemberIds.forEach((id: any) => targetIds.push(String(id)));
+      }
+
+      // Détermine si le message est restreint à des destinataires spécifiques
+      const hasSpecificRecipientTargeting =
+        targetIds.length > 0 &&
+        !targetIds.includes('ALL') &&
+        !targetIds.includes('TOUS') &&
+        !targetIds.includes('PUBLIC');
+
+      if (hasSpecificRecipientTargeting) {
+        // Le message est CIBLÉ / PRIVÉ :
+        // Le membre connecté DOIT obligatoirement être parmi les destinataires légitimes
+        const isLegitimateRecipient = targetIds.some(id => userIds.includes(id));
+        if (!isLegitimateRecipient) {
+          // EXCLUSION : ce message privé n'est pas destiné au membre connecté
+          return false;
+        }
+        return true;
+      }
+
+      // Si le message n'a pas de restriction de destinataire spécifique, il est PUBLIC / GÉNÉRAL :
+      // Vérification du statut de cotisation si le ciblage par statut est requis
+      if (isMember && msg.targetAudience && msg.targetAudience !== 'TOUS') {
+        if (msg.targetAudience !== memberDuesStatus) {
+          return false;
+        }
+      }
+
+      // Masquage de courtoisie si l'utilisateur est le payeur d'un versement
+      if (msg.payerId && userIds.includes(String(msg.payerId))) {
+        return false;
+      }
+
+      return true;
+    });
+  }, [gbairaiMessages, newsItems, memberId, currentUser?.id, isMember, memberDuesStatus, localDismissedNewsIds]);
+
+  const latestNews = eligibleNewsList.length > 0 ? eligibleNewsList[0] : null;
 
   // Next activity
   const nextActivity = activities && activities.length > 0

@@ -231,8 +231,13 @@ export interface NewsItem {
   targetDocId?: string;
   payerId?: string;
   targetMemberIds?: string[];
+  targetMembers?: string[];
+  recipientId?: string;
+  targetMemberId?: string;
   excludedMemberIds?: string[];
   deleted?: boolean;
+  isDeleted?: boolean;
+  isHidden?: boolean;
   status?: string;
 }
 

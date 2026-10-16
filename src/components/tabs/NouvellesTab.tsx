@@ -54,24 +54,40 @@ export const NouvellesTab: React.FC<NouvellesTabProps> = ({ onNavigateTab }) => 
   const currentNick = currentUser?.member?.nickname || currentUser?.nickname;
 
   const visibleMessages = sourceMessages.filter(msg => {
+    if (!msg) return false;
     if (msg.dispatchChannel === 'MAIL') return false;
 
-    // A. Filtrage strict par targetMemberIds (Ciblage des destinataires dans l'App) :
-    // Ne filtre et n'affiche l'alerte que si targetMemberIds contient l'ID du membre connecté, ou si le message est destiné à 'ALL' (ou non spécifié)
-    const isSpecificallyTargeted = Boolean(
-      msg.targetMemberIds &&
-      !msg.targetMemberIds.includes('ALL') &&
-      ((currentMemberId && msg.targetMemberIds.includes(currentMemberId)) ||
-       (currentUser?.id && msg.targetMemberIds.includes(currentUser.id)))
-    );
+    // 0. Exclusion stricte des messages supprimés ou masqués
+    if (
+      msg.isDeleted === true ||
+      msg.deleted === true ||
+      msg.status === 'deleted' ||
+      msg.status === 'supprime' ||
+      msg.status === 'hidden' ||
+      msg.isHidden === true
+    ) {
+      return false;
+    }
 
-    if (msg.targetMemberIds && msg.targetMemberIds.length > 0) {
-      const isForEveryone = msg.targetMemberIds.includes('ALL');
-      if (!isForEveryone) {
-        // En mode membre : masquer si l'ID du membre connecté n'est pas ciblé
-        if (isMember && !isSpecificallyTargeted) {
-          return false;
-        }
+    // A. Filtrage strict par destinataire (recipientId, targetMembers, targetMemberIds) :
+    const targetIds: string[] = [];
+    if (msg.recipientId) targetIds.push(String(msg.recipientId));
+    if (msg.targetMemberId) targetIds.push(String(msg.targetMemberId));
+    if (Array.isArray(msg.targetMembers)) msg.targetMembers.forEach((id: any) => targetIds.push(String(id)));
+    if (Array.isArray(msg.targetMemberIds)) msg.targetMemberIds.forEach((id: any) => targetIds.push(String(id)));
+
+    const currentIds = [currentMemberId, currentUser?.id].filter(Boolean).map(String);
+    const hasSpecificTargeting =
+      targetIds.length > 0 &&
+      !targetIds.includes('ALL') &&
+      !targetIds.includes('TOUS') &&
+      !targetIds.includes('PUBLIC');
+
+    const isSpecificallyTargeted = Boolean(hasSpecificTargeting && targetIds.some(id => currentIds.includes(id)));
+
+    if (hasSpecificTargeting) {
+      if (isMember && !isSpecificallyTargeted) {
+        return false;
       }
     }
 
