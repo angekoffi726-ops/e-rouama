@@ -185,7 +185,14 @@ interface AppContextType {
     amount: number;
     createdByName?: string;
     caisseType?: string;
-  }) => Promise<{ success: boolean; message: string }>;
+  }) => Promise<{ success: boolean; message: string; entryId?: string; entry?: any }>;
+  updateExtraCaisseEntry: (
+    entryId: string,
+    data: { amount: number; reason: string; date?: string }
+  ) => Promise<{ success: boolean; message: string; diff?: number }>;
+  cancelExtraCaisseEntry: (
+    entryId: string
+  ) => Promise<{ success: boolean; message: string; cancelledAmount?: number }>;
   createWithdrawalRequest: (fund: FundType, amount: number, reason: string) => Promise<void> | void;
   approveWithdrawal: (requestId: string) => Promise<void> | void;
   rejectWithdrawal: (requestId: string) => Promise<void> | void;
@@ -3078,12 +3085,238 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return {
         success: true,
         message: `Entrée de ${amountVal.toLocaleString('fr-FR')} F CFA enregistrée avec succès dans la Caisse Extra !`,
+        entryId,
+        entry: newEntryPayload,
       };
     } catch (err: any) {
       console.error('Erreur addExtraCaisseEntry:', err);
       return {
         success: false,
         message: `Erreur lors de l’enregistrement : ${err?.message || 'Erreur réseau Firestore'}. Veuillez réessayer.`,
+      };
+    }
+  };
+
+  // Modification dynamique d'une entrée Caisse Extra (Fenêtre de sécurité de 1 heure)
+  const updateExtraCaisseEntry = async (
+    entryId: string,
+    data: { amount: number; reason: string; date?: string }
+  ) => {
+    try {
+      const newAmount = Number(data.amount) || 0;
+      if (newAmount <= 0) {
+        return { success: false, message: 'Le montant doit être supérieur à zéro.' };
+      }
+      const newReason = String(data.reason || '').trim();
+      if (!newReason) {
+        return { success: false, message: 'Veuillez préciser le motif.' };
+      }
+
+      // Recherche de l'entrée existante dans declarations ou Firestore
+      let existingEntry = declarations.find(d => d.id === entryId) as any;
+      if (!existingEntry) {
+        try {
+          const docSnap = await getDoc(doc(db, 'payments', entryId));
+          if (docSnap.exists()) {
+            existingEntry = docSnap.data();
+          } else {
+            const decSnap = await getDoc(doc(db, 'declarations', entryId));
+            if (decSnap.exists()) existingEntry = decSnap.data();
+          }
+        } catch (e) {
+          console.warn('Erreur lecture Firestore pour entry:', e);
+        }
+      }
+
+      if (!existingEntry) {
+        return { success: false, message: 'Entrée Caisse Extra introuvable dans la base.' };
+      }
+
+      // Règle temporelle de sécurité : fenêtre de 1 heure (3600000 ms)
+      const createdTime =
+        (typeof existingEntry.createdAt === 'number' && existingEntry.createdAt > 0)
+          ? existingEntry.createdAt
+          : (existingEntry.createdAt && !isNaN(new Date(existingEntry.createdAt).getTime()))
+          ? new Date(existingEntry.createdAt).getTime()
+          : (existingEntry.date && !isNaN(new Date(existingEntry.date).getTime()))
+          ? new Date(existingEntry.date).getTime()
+          : (existingEntry.validatedAt && !isNaN(new Date(existingEntry.validatedAt).getTime()))
+          ? new Date(existingEntry.validatedAt).getTime()
+          : 0;
+
+      const now = Date.now();
+      const diffMs = now - createdTime;
+      if (createdTime > 0 && diffMs > 60 * 60 * 1000) {
+        return {
+          success: false,
+          message: "Délai de sécurité dépassé : La fenêtre de modification d'1 heure est expirée. Cette entrée est désormais définitive.",
+        };
+      }
+
+      const oldAmount = Number(existingEntry.amount) || Number(existingEntry.montant) || 0;
+      const diffAmount = newAmount - oldAmount;
+      const newDate = String(data.date || existingEntry.date || new Date().toISOString().split('T')[0]).trim();
+
+      // 1. Recalcul et réajustement dynamique instantané du solde Caisse Extra et de la trésorerie
+      const newExtraBalance = Math.max(0, (fundBalances.EXTRA || 0) + diffAmount);
+      const updatedBalances: Record<FundType, number> = {
+        ...fundBalances,
+        EXTRA: newExtraBalance,
+      };
+      setFundBalances(updatedBalances);
+
+      const updatedPayload = sanitizeFirestore({
+        ...existingEntry,
+        id: entryId,
+        amount: newAmount,
+        montant: newAmount,
+        reason: newReason,
+        motif: newReason,
+        reference: newReason,
+        date: newDate,
+        updatedAt: now,
+        lastModifiedAt: new Date().toISOString(),
+      });
+
+      setDeclarations(prev =>
+        prev.map(d => (d.id === entryId ? { ...d, ...updatedPayload } : d))
+      );
+
+      // 2. Persistance Firestore résiliente
+      const firestoreSyncPromise = Promise.allSettled([
+        setDoc(doc(db, 'payments', entryId), updatedPayload, { merge: true }),
+        setDoc(doc(db, 'receipts', entryId), updatedPayload, { merge: true }),
+        setDoc(doc(db, 'declarations', entryId), updatedPayload, { merge: true }),
+        setDoc(doc(db, 'treasury', 'balances'), sanitizeFirestore(updatedBalances), { merge: true }),
+        addDoc(collection(db, 'transactions'), sanitizeFirestore({
+          id: 'tx_mod_' + entryId + '_' + now,
+          type: 'MODIFICATION_EXTRA',
+          fund: 'EXTRA',
+          oldAmount,
+          newAmount,
+          diffAmount,
+          reason: `Ajustement Caisse Extra (${newReason}): ${oldAmount.toLocaleString('fr-FR')} F -> ${newAmount.toLocaleString('fr-FR')} F`,
+          description: `Ajustement Caisse Extra (${newReason})`,
+          date: newDate,
+          createdByName: existingEntry.createdByName || 'Trésorier Général',
+          createdAt: now,
+        })),
+      ]);
+
+      const timeoutPromise = new Promise(resolve => setTimeout(resolve, 2500));
+      await Promise.race([firestoreSyncPromise, timeoutPromise]);
+
+      return {
+        success: true,
+        diff: diffAmount,
+        message: `Entrée Caisse Extra modifiée avec succès (${diffAmount >= 0 ? '+' : ''}${diffAmount.toLocaleString('fr-FR')} F CFA réajustés sur le solde).`,
+      };
+    } catch (err: any) {
+      console.error('Erreur updateExtraCaisseEntry:', err);
+      return {
+        success: false,
+        message: `Erreur lors de la modification : ${err?.message || 'Erreur réseau Firestore'}.`,
+      };
+    }
+  };
+
+  // Annulation d'une entrée Caisse Extra (Fenêtre de sécurité de 1 heure)
+  const cancelExtraCaisseEntry = async (entryId: string) => {
+    try {
+      let existingEntry = declarations.find(d => d.id === entryId) as any;
+      if (!existingEntry) {
+        try {
+          const docSnap = await getDoc(doc(db, 'payments', entryId));
+          if (docSnap.exists()) {
+            existingEntry = docSnap.data();
+          } else {
+            const decSnap = await getDoc(doc(db, 'declarations', entryId));
+            if (decSnap.exists()) existingEntry = decSnap.data();
+          }
+        } catch (e) {
+          console.warn('Erreur lecture Firestore pour entry:', e);
+        }
+      }
+
+      if (!existingEntry) {
+        return { success: false, message: 'Entrée Caisse Extra introuvable dans la base.' };
+      }
+
+      // Règle temporelle de sécurité : fenêtre de 1 heure (3600000 ms)
+      const createdTime =
+        (typeof existingEntry.createdAt === 'number' && existingEntry.createdAt > 0)
+          ? existingEntry.createdAt
+          : (existingEntry.createdAt && !isNaN(new Date(existingEntry.createdAt).getTime()))
+          ? new Date(existingEntry.createdAt).getTime()
+          : (existingEntry.date && !isNaN(new Date(existingEntry.date).getTime()))
+          ? new Date(existingEntry.date).getTime()
+          : (existingEntry.validatedAt && !isNaN(new Date(existingEntry.validatedAt).getTime()))
+          ? new Date(existingEntry.validatedAt).getTime()
+          : 0;
+
+      const now = Date.now();
+      const diffMs = now - createdTime;
+      if (createdTime > 0 && diffMs > 60 * 60 * 1000) {
+        return {
+          success: false,
+          message: "Délai de sécurité dépassé : La fenêtre d'annulation d'1 heure est expirée. Cette entrée est désormais définitive.",
+        };
+      }
+
+      const cancelledAmount = Number(existingEntry.amount) || Number(existingEntry.montant) || 0;
+
+      // 1. Déduction immédiate de la Caisse Extra et du solde total
+      const newExtraBalance = Math.max(0, (fundBalances.EXTRA || 0) - cancelledAmount);
+      const updatedBalances: Record<FundType, number> = {
+        ...fundBalances,
+        EXTRA: newExtraBalance,
+      };
+      setFundBalances(updatedBalances);
+
+      // Retrait de la déclaration locale
+      setDeclarations(prev => prev.filter(d => d.id !== entryId));
+
+      const cancelPayload = sanitizeFirestore({
+        status: 'cancelled',
+        statut: 'annulé',
+        isHidden: true,
+        isCancelled: true,
+        cancelledAt: now,
+        cancelledBy: 'TRÉSORIER',
+      });
+
+      // 2. Persistance Firestore résiliente
+      const firestoreSyncPromise = Promise.allSettled([
+        updateDoc(doc(db, 'payments', entryId), cancelPayload).catch(() => deleteDoc(doc(db, 'payments', entryId))),
+        updateDoc(doc(db, 'receipts', entryId), cancelPayload).catch(() => deleteDoc(doc(db, 'receipts', entryId))),
+        updateDoc(doc(db, 'declarations', entryId), cancelPayload).catch(() => deleteDoc(doc(db, 'declarations', entryId))),
+        setDoc(doc(db, 'treasury', 'balances'), sanitizeFirestore(updatedBalances), { merge: true }),
+        addDoc(collection(db, 'transactions'), sanitizeFirestore({
+          id: 'tx_cancel_' + entryId + '_' + now,
+          type: 'ANNULATION_EXTRA',
+          fund: 'EXTRA',
+          amount: -cancelledAmount,
+          reason: `Annulation entrée Caisse Extra: ${existingEntry.reason || existingEntry.motif || 'Entrée'} (-${cancelledAmount.toLocaleString('fr-FR')} F CFA)`,
+          description: `Annulation entrée Caisse Extra (-${cancelledAmount.toLocaleString('fr-FR')} F CFA)`,
+          date: new Date().toISOString().split('T')[0],
+          createdByName: existingEntry.createdByName || 'Trésorier Général',
+          createdAt: now,
+        })),
+      ]);
+
+      const timeoutPromise = new Promise(resolve => setTimeout(resolve, 2500));
+      await Promise.race([firestoreSyncPromise, timeoutPromise]);
+
+      return {
+        success: true,
+        cancelledAmount,
+        message: `Entrée Caisse Extra annulée avec succès. Le montant de ${cancelledAmount.toLocaleString('fr-FR')} F CFA a été immédiatement déduit de la Caisse Extra et de la trésorerie.`,
+      };
+    } catch (err: any) {
+      console.error('Erreur cancelExtraCaisseEntry:', err);
+      return {
+        success: false,
+        message: `Erreur lors de l’annulation : ${err?.message || 'Erreur réseau Firestore'}.`,
       };
     }
   };
@@ -4496,6 +4729,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         deleteReceipt,
         deleteTransaction,
         addExtraCaisseEntry,
+        updateExtraCaisseEntry,
+        cancelExtraCaisseEntry,
         createWithdrawalRequest,
         approveWithdrawal,
         rejectWithdrawal,

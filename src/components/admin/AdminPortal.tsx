@@ -378,6 +378,8 @@ export const AdminPortal: React.FC = () => {
     rejectPayment,
     deleteReceipt,
     addExtraCaisseEntry,
+    updateExtraCaisseEntry,
+    cancelExtraCaisseEntry,
     withdrawals,
     createWithdrawalRequest,
     approveWithdrawal,
@@ -827,14 +829,204 @@ export const AdminPortal: React.FC = () => {
   const [withReason, setWithReason] = useState<string>('');
   const [withProofRef, setWithProofRef] = useState<string>('');
 
-  // États pour le formulaire d'entrée dédiée dans la Caisse Extra
+  // États pour le formulaire et l'historique d'entrée dédiée dans la Caisse Extra
   const [showExtraDepositModal, setShowExtraDepositModal] = useState<boolean>(false);
+  const [extraModalTab, setExtraModalTab] = useState<'NEW' | 'HISTORY'>('NEW');
   const [extraDepositDate, setExtraDepositDate] = useState<string>(() => new Date().toISOString().split('T')[0]);
   const [extraDepositReason, setExtraDepositReason] = useState<string>('');
   const [extraDepositAmount, setExtraDepositAmount] = useState<string>('');
   const [isSubmittingExtra, setIsSubmittingExtra] = useState<boolean>(false);
   const [extraModalError, setExtraModalError] = useState<string | null>(null);
   const [extraModalSuccess, setExtraModalSuccess] = useState<string | null>(null);
+
+  // États pour la modification d'une entrée Caisse Extra (Fenêtre 1 heure)
+  const [editingExtraEntry, setEditingExtraEntry] = useState<any | null>(null);
+  const [editExtraAmount, setEditExtraAmount] = useState<string>('');
+  const [editExtraReason, setEditExtraReason] = useState<string>('');
+  const [editExtraDate, setEditExtraDate] = useState<string>('');
+  const [isSubmittingEditExtra, setIsSubmittingEditExtra] = useState<boolean>(false);
+  const [editExtraError, setEditExtraError] = useState<string | null>(null);
+  const [editExtraSuccess, setEditExtraSuccess] = useState<string | null>(null);
+
+  // États pour l'annulation d'une entrée Caisse Extra (Fenêtre 1 heure)
+  const [cancellingExtraEntry, setCancellingExtraEntry] = useState<any | null>(null);
+  const [isSubmittingCancelExtra, setIsSubmittingCancelExtra] = useState<boolean>(false);
+  const [cancelExtraError, setCancelExtraError] = useState<string | null>(null);
+  const [cancelExtraSuccess, setCancelExtraSuccess] = useState<string | null>(null);
+
+  // Ticker en temps réel pour recalculer la fenêtre de 1 heure en continu
+  const [nowTimestamp, setNowTimestamp] = useState<number>(() => Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setNowTimestamp(Date.now());
+    }, 4000);
+    return () => clearInterval(timer);
+  }, []);
+
+  // Détection des entrées Caisse Extra
+  const isExtraCaisseEntry = (p: any): boolean => {
+    if (!p) return false;
+    return (
+      p.fund === 'EXTRA' ||
+      p.type === 'Caisse Extra' ||
+      p.caisse === 'Caisse Extra' ||
+      p.subCategory === 'Caisse Extra' ||
+      p.caisseType === 'extra'
+    );
+  };
+
+  // Récupération sécurisée du timestamp de création
+  const getEntryCreatedAtMs = (p: any): number => {
+    if (!p) return 0;
+    if (typeof p.createdAt === 'number' && p.createdAt > 0) return p.createdAt;
+    if (p.createdAt && !isNaN(new Date(p.createdAt).getTime())) return new Date(p.createdAt).getTime();
+    if (p.timestamp && !isNaN(new Date(p.timestamp).getTime())) return new Date(p.timestamp).getTime();
+    if (p.validatedAt && !isNaN(new Date(p.validatedAt).getTime())) return new Date(p.validatedAt).getTime();
+    if (p.date && !isNaN(new Date(p.date).getTime())) {
+      const t = new Date(p.date).getTime();
+      if (t > 0) return t;
+    }
+    return 0;
+  };
+
+  // Éligibilité de l'entrée à la modification ou annulation (créée depuis <= 1 heure)
+  const isExtraEntryEditable = (p: any, nowMs: number = nowTimestamp): boolean => {
+    if (!isExtraCaisseEntry(p)) return false;
+    const created = getEntryCreatedAtMs(p);
+    if (!created) return false;
+    const elapsed = nowMs - created;
+    return elapsed >= 0 && elapsed <= 60 * 60 * 1000;
+  };
+
+  // Libellé formaté du temps restant
+  const getExtraEntryRemainingTimeStr = (p: any, nowMs: number = nowTimestamp): string => {
+    const created = getEntryCreatedAtMs(p);
+    if (!created) return 'Définitif';
+    const remaining = 60 * 60 * 1000 - (nowMs - created);
+    if (remaining <= 0) return 'Définitif (> 1h)';
+    const mins = Math.floor(remaining / 60000);
+    const secs = Math.floor((remaining % 60000) / 1000);
+    return `${mins}m ${secs.toString().padStart(2, '0')}s restants`;
+  };
+
+  const handleOpenEditExtraModal = (entry: any) => {
+    setEditingExtraEntry(entry);
+    setEditExtraAmount(String(entry.amount || entry.montant || ''));
+    setEditExtraReason(String(entry.reason || entry.motif || entry.reference || ''));
+    setEditExtraDate(String(entry.date || new Date().toISOString().split('T')[0]));
+    setEditExtraError(null);
+    setEditExtraSuccess(null);
+  };
+
+  const handleOpenCancelExtraModal = (entry: any) => {
+    setCancellingExtraEntry(entry);
+    setCancelExtraError(null);
+    setCancelExtraSuccess(null);
+  };
+
+  // Liste consolidée des entrées Caisse Extra
+  const extraCaisseEntries = useMemo(() => {
+    return (payments || [])
+      .filter(p => isPaymentValidated(p) && isExtraCaisseEntry(p))
+      .sort((a, b) => getEntryCreatedAtMs(b) - getEntryCreatedAtMs(a));
+  }, [payments, nowTimestamp]);
+
+  // Entrées modifiables/annulables dans la fenêtre de 1 heure
+  const extraEntriesWithin1h = useMemo(() => {
+    return extraCaisseEntries.filter(p => isExtraEntryEditable(p, nowTimestamp));
+  }, [extraCaisseEntries, nowTimestamp]);
+
+  // Handler de validation des modifications (Fenêtre 1 heure)
+  const handleSaveEditExtra = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingExtraEntry) return;
+
+    setEditExtraError(null);
+    setEditExtraSuccess(null);
+
+    const newAmt = Number(editExtraAmount);
+    if (!newAmt || newAmt <= 0) {
+      setEditExtraError('Veuillez saisir un montant valide supérieur à 0 F CFA.');
+      return;
+    }
+    if (!editExtraReason.trim()) {
+      setEditExtraError('Veuillez renseigner le motif.');
+      return;
+    }
+
+    setIsSubmittingEditExtra(true);
+    try {
+      const res = await updateExtraCaisseEntry(editingExtraEntry.id, {
+        amount: newAmt,
+        reason: editExtraReason.trim(),
+        date: editExtraDate,
+      });
+
+      if (res && res.success) {
+        // Actualisation immédiate du state local des paiements
+        setFirestorePayments(prev =>
+          prev.map(p => {
+            if (p.id === editingExtraEntry.id) {
+              return {
+                ...p,
+                amount: newAmt,
+                montant: newAmt,
+                reason: editExtraReason.trim(),
+                motif: editExtraReason.trim(),
+                reference: editExtraReason.trim(),
+                date: editExtraDate,
+                updatedAt: Date.now(),
+              };
+            }
+            return p;
+          })
+        );
+
+        setEditExtraSuccess(res.message);
+        setTimeout(() => {
+          setEditingExtraEntry(null);
+          setEditExtraSuccess(null);
+        }, 1200);
+      } else {
+        setEditExtraError(res?.message || 'Erreur lors de la modification.');
+      }
+    } catch (err: any) {
+      setEditExtraError('Erreur : ' + (err?.message || 'Erreur réseau Firestore'));
+    } finally {
+      setIsSubmittingEditExtra(false);
+    }
+  };
+
+  // Handler de confirmation de l'annulation (Fenêtre 1 heure)
+  const handleConfirmCancelExtra = async () => {
+    if (!cancellingExtraEntry) return;
+
+    setCancelExtraError(null);
+    setCancelExtraSuccess(null);
+    setIsSubmittingCancelExtra(true);
+
+    try {
+      const res = await cancelExtraCaisseEntry(cancellingExtraEntry.id);
+
+      if (res && res.success) {
+        // Retrait immédiat de l'entrée dans le state local
+        setFirestorePayments(prev => prev.filter(p => p.id !== cancellingExtraEntry.id));
+        setLocallyHiddenPaymentIds(prev => new Set([...prev, cancellingExtraEntry.id]));
+
+        setCancelExtraSuccess(res.message);
+        setTimeout(() => {
+          setCancellingExtraEntry(null);
+          setCancelExtraSuccess(null);
+        }, 1200);
+      } else {
+        setCancelExtraError(res?.message || "Erreur lors de l'annulation.");
+      }
+    } catch (err: any) {
+      setCancelExtraError('Erreur : ' + (err?.message || 'Erreur réseau Firestore'));
+    } finally {
+      setIsSubmittingCancelExtra(false);
+    }
+  };
 
   const [bilanTitle, setBilanTitle] = useState<string>('');
   const [bilanPeriodMode, setBilanPeriodMode] = useState<'GLOBAL' | 'PERIODIC'>('GLOBAL');
@@ -3397,22 +3589,51 @@ export const AdminPortal: React.FC = () => {
                       {(liveFundBalances.EXTRA || 0).toLocaleString('fr-FR')} <span className="text-xs font-bold text-slate-400">F CFA</span>
                     </p>
                     <span className="text-[10px] text-slate-500 block font-medium">Fonds antérieurs, amendes...</span>
+                    {extraEntriesWithin1h.length > 0 ? (
+                      <div className="mt-1 flex items-center gap-1 text-[10px] font-black text-amber-300 bg-amber-500/15 border border-amber-500/30 px-2 py-0.5 rounded-lg animate-pulse">
+                        <Clock className="w-3 h-3 text-amber-400 shrink-0" />
+                        <span>{extraEntriesWithin1h.length} entrée(s) modifiable(s) (&le; 1h)</span>
+                      </div>
+                    ) : (
+                      <div className="mt-1 flex items-center gap-1 text-[10px] font-medium text-slate-500">
+                        <Lock className="w-3 h-3 shrink-0" />
+                        <span>Entrées verrouillées après 1h</span>
+                      </div>
+                    )}
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setExtraDepositDate(new Date().toISOString().split('T')[0]);
-                      setExtraDepositReason('');
-                      setExtraDepositAmount('');
-                      setExtraModalError(null);
-                      setExtraModalSuccess(null);
-                      setShowExtraDepositModal(true);
-                    }}
-                    className="w-full mt-2 py-1.5 px-2.5 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 text-white rounded-xl text-xs font-black flex items-center justify-center gap-1.5 shadow-md shadow-amber-500/20 transition-all active:scale-95 cursor-pointer"
-                  >
-                    <PlusCircle className="w-3.5 h-3.5" />
-                    <span>Faire une entrée</span>
-                  </button>
+                  <div className="grid grid-cols-2 gap-1.5 mt-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setExtraDepositDate(new Date().toISOString().split('T')[0]);
+                        setExtraDepositReason('');
+                        setExtraDepositAmount('');
+                        setExtraModalError(null);
+                        setExtraModalSuccess(null);
+                        setExtraModalTab('NEW');
+                        setShowExtraDepositModal(true);
+                      }}
+                      className="py-1.5 px-2 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 text-white rounded-xl text-xs font-black flex items-center justify-center gap-1 shadow-md shadow-amber-500/20 transition-all active:scale-95 cursor-pointer"
+                    >
+                      <PlusCircle className="w-3.5 h-3.5" />
+                      <span>Entrée</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setExtraModalTab('HISTORY');
+                        setShowExtraDepositModal(true);
+                      }}
+                      className="py-1.5 px-2 bg-slate-800 hover:bg-slate-700 text-amber-300 border border-amber-500/30 rounded-xl text-xs font-bold flex items-center justify-center gap-1 transition-all active:scale-95 cursor-pointer relative"
+                      title="Consulter l'historique et modifier/annuler les entrées dans l'heure"
+                    >
+                      <Clock className="w-3.5 h-3.5" />
+                      <span>Gérer</span>
+                      {extraEntriesWithin1h.length > 0 && (
+                        <span className="w-2 h-2 rounded-full bg-amber-400 absolute -top-1 -right-1 animate-ping" />
+                      )}
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>
@@ -5408,6 +5629,7 @@ export const AdminPortal: React.FC = () => {
                           <th className="py-3 px-4">Caisse Impactée</th>
                           <th className="py-3 px-4">Montant (F CFA)</th>
                           <th className="py-3 px-4">Référence / Preuve Wave</th>
+                          <th className="py-3 px-4 text-right">Actions / Contrôle (1h)</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-800/60 font-medium">
@@ -5417,7 +5639,16 @@ export const AdminPortal: React.FC = () => {
                             <tr key={d.id} className="hover:bg-slate-800/40 transition-colors">
                               <td className="py-3 px-4 font-extrabold text-white">{d.memberNickname || d.memberName || 'Membre'}</td>
                               <td className="py-3 px-4 text-xs text-slate-400">{d.date || 'Récemment'}</td>
-                              <td className="py-3 px-4 font-bold text-amber-400">{FUND_LABELS[d.fund] || d.caisse || d.type || 'Cotisation Mensuelle'}</td>
+                              <td className="py-3 px-4 font-bold text-amber-400">
+                                <span className="flex items-center gap-1.5">
+                                  <span>{FUND_LABELS[d.fund] || d.caisse || d.type || 'Cotisation Mensuelle'}</span>
+                                  {isExtraCaisseEntry(d) && (
+                                    <span className="text-[9px] px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 font-black border border-amber-500/30">
+                                      EXTRA
+                                    </span>
+                                  )}
+                                </span>
+                              </td>
                               <td className="py-3 px-4 font-black text-emerald-400 text-base">
                                 +{(Number(d.amount) || Number((d as any).montant) || 0).toLocaleString('fr-FR')} F CFA
                               </td>
@@ -5428,18 +5659,63 @@ export const AdminPortal: React.FC = () => {
                                     setPreviewReceiptImgError(false);
                                     setPreviewDeclaration(d);
                                   }}
-                                  className="font-mono text-xs text-amber-300 underline hover:text-amber-200 flex items-center gap-1 max-w-[200px] truncate"
+                                  className="font-mono text-xs text-amber-300 underline hover:text-amber-200 flex items-center gap-1 max-w-[200px] truncate cursor-pointer"
                                   title="Voir les détails et le reçu"
                                 >
                                   <Eye className="w-3.5 h-3.5 shrink-0" />
                                   <span className="truncate">
-                                    {d.receiptImage || d.reference.startsWith('data:image')
+                                    {d.receiptImage || d.reference?.startsWith('data:image')
                                       ? '📸 Voir Reçu'
-                                      : d.reference.length > 25
+                                      : d.reference && d.reference.length > 25
                                       ? `${d.reference.substring(0, 25)}...`
-                                      : d.reference}
+                                      : d.reference || d.reason || d.motif || 'Reçu'}
                                   </span>
                                 </button>
+                              </td>
+                              <td className="py-3 px-4 text-right">
+                                {isExtraCaisseEntry(d) ? (
+                                  isExtraEntryEditable(d) ? (
+                                    <div className="flex items-center justify-end gap-1.5 flex-wrap">
+                                      <span
+                                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-black bg-amber-500/20 text-amber-300 border border-amber-500/40 animate-pulse whitespace-nowrap"
+                                        title="Délai de sécurité de 1 heure pour modifier ou annuler cette entrée"
+                                      >
+                                        <Clock className="w-3 h-3 text-amber-400" />
+                                        <span>{getExtraEntryRemainingTimeStr(d)}</span>
+                                      </span>
+                                      <button
+                                        type="button"
+                                        onClick={() => handleOpenEditExtraModal(d)}
+                                        className="px-2.5 py-1 bg-amber-500/20 hover:bg-amber-500/35 text-amber-300 border border-amber-500/40 rounded-xl text-xs font-black flex items-center gap-1 transition-all active:scale-95 cursor-pointer"
+                                        title="Modifier le montant ou le motif de cette entrée dans la fenêtre d'1h"
+                                      >
+                                        <Edit3 className="w-3.5 h-3.5" />
+                                        <span>Modifier</span>
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => handleOpenCancelExtraModal(d)}
+                                        className="px-2.5 py-1 bg-rose-500/20 hover:bg-rose-500/35 text-rose-300 border border-rose-500/40 rounded-xl text-xs font-black flex items-center gap-1 transition-all active:scale-95 cursor-pointer"
+                                        title="Annuler cette entrée et déduire son montant de la trésorerie"
+                                      >
+                                        <Trash2 className="w-3.5 h-3.5" />
+                                        <span>Annuler</span>
+                                      </button>
+                                    </div>
+                                  ) : (
+                                    <div className="flex items-center justify-end">
+                                      <span
+                                        className="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl text-[10px] font-bold bg-slate-800 text-slate-400 border border-slate-700/60"
+                                        title="Passé le délai de sécurité d'une heure, cette entrée est irrévocable et définitive"
+                                      >
+                                        <Lock className="w-3 h-3 text-slate-500" />
+                                        <span>Verrouillé (&gt; 1h)</span>
+                                      </span>
+                                    </div>
+                                  )
+                                ) : (
+                                  <span className="text-[10px] text-slate-500 font-mono">Paiement membre</span>
+                                )}
                               </td>
                             </tr>
                           ))}
@@ -10180,11 +10456,11 @@ export const AdminPortal: React.FC = () => {
       )}
 
       {/* ========================================================= */}
-      {/* MODAL TRÉSORIER : ENTRÉE DÉDIÉE CAISSE EXTRA */}
+      {/* MODAL TRÉSORIER : ENTRÉE DÉDIÉE & HISTORIQUE CAISSE EXTRA */}
       {/* ========================================================= */}
       {showExtraDepositModal && (
         <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-3 sm:p-6 overflow-y-auto animate-fadeIn">
-          <div className="bg-slate-900 border-2 border-amber-500/70 rounded-3xl max-w-lg w-full flex flex-col shadow-2xl my-auto overflow-hidden">
+          <div className="bg-slate-900 border-2 border-amber-500/70 rounded-3xl max-w-xl w-full flex flex-col shadow-2xl my-auto overflow-hidden">
             {/* Modal Header */}
             <div className="p-4 sm:p-5 border-b border-slate-800 flex items-center justify-between gap-3 bg-slate-950">
               <div className="flex items-center gap-3">
@@ -10193,10 +10469,13 @@ export const AdminPortal: React.FC = () => {
                 </div>
                 <div>
                   <h3 className="text-base font-black text-white flex items-center gap-2">
-                    <span>Faire une Entrée — Caisse Extra</span>
+                    <span>Gestion Caisse Extra</span>
+                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                      {(liveFundBalances.EXTRA || 0).toLocaleString('fr-FR')} F CFA
+                    </span>
                   </h3>
                   <p className="text-xs text-amber-400/90 font-mono">
-                    Entrées libres, amendes et fonds antérieurs
+                    Entrées libres, amendes, fonds antérieurs • Fenêtre de sécurité 1h
                   </p>
                 </div>
               </div>
@@ -10211,221 +10490,682 @@ export const AdminPortal: React.FC = () => {
               </button>
             </div>
 
-            {/* Modal Form */}
-            <form
-              onSubmit={async (e) => {
-                e.preventDefault();
-                setExtraModalError(null);
-                setExtraModalSuccess(null);
+            {/* Modal Navigation Tabs */}
+            <div className="flex border-b border-slate-800 bg-slate-950 px-4 pt-2 gap-2">
+              <button
+                type="button"
+                onClick={() => setExtraModalTab('NEW')}
+                className={`pb-2.5 px-3.5 text-xs font-bold border-b-2 transition-all cursor-pointer flex items-center gap-1.5 ${
+                  extraModalTab === 'NEW'
+                    ? 'border-amber-400 text-amber-300 font-black'
+                    : 'border-transparent text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>Nouvelle Entrée</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setExtraModalTab('HISTORY')}
+                className={`pb-2.5 px-3.5 text-xs font-bold border-b-2 transition-all cursor-pointer flex items-center gap-1.5 ${
+                  extraModalTab === 'HISTORY'
+                    ? 'border-amber-400 text-amber-300 font-black'
+                    : 'border-transparent text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <Clock className="w-3.5 h-3.5" />
+                <span>Historique & Contrôle (1h)</span>
+                {extraEntriesWithin1h.length > 0 && (
+                  <span className="px-1.5 py-0.2 bg-amber-500 text-slate-950 text-[10px] font-black rounded-full animate-pulse">
+                    {extraEntriesWithin1h.length}
+                  </span>
+                )}
+              </button>
+            </div>
 
-                const amt = Number(extraDepositAmount);
-                if (!amt || amt <= 0) {
-                  setExtraModalError('Veuillez saisir une somme valide supérieure à 0 F CFA.');
-                  return;
-                }
-                if (!extraDepositReason.trim()) {
-                  setExtraModalError('Veuillez renseigner le motif du dépôt.');
-                  return;
-                }
+            {/* TAB 1 : NOUVELLE ENTRÉE */}
+            {extraModalTab === 'NEW' && (
+              <form
+                onSubmit={async (e) => {
+                  e.preventDefault();
+                  setExtraModalError(null);
+                  setExtraModalSuccess(null);
 
-                setIsSubmittingExtra(true);
-                try {
-                  const createdByName =
-                    currentUser?.member?.firstName ||
-                    currentUser?.member?.nickname ||
-                    (currentUser?.type === 'ADMIN' ? currentUser.adminRole : undefined) ||
-                    'Trésorier Général';
+                  const amt = Number(extraDepositAmount);
+                  if (!amt || amt <= 0) {
+                    setExtraModalError('Veuillez saisir une somme valide supérieure à 0 F CFA.');
+                    return;
+                  }
+                  if (!extraDepositReason.trim()) {
+                    setExtraModalError('Veuillez renseigner le motif du dépôt.');
+                    return;
+                  }
 
-                  const res = await addExtraCaisseEntry({
-                    date: extraDepositDate,
-                    reason: extraDepositReason.trim(),
-                    amount: amt,
-                    createdByName,
-                    caisseType: 'extra',
-                  });
+                  setIsSubmittingExtra(true);
+                  try {
+                    const createdByName =
+                      currentUser?.member?.firstName ||
+                      currentUser?.member?.nickname ||
+                      (currentUser?.type === 'ADMIN' ? currentUser.adminRole : undefined) ||
+                      'Trésorier Général';
 
-                  if (res && res.success) {
-                    // Actualisation réactive instantanée des paiements locaux
-                    const localDoc = {
-                      id: 'extra_' + Date.now(),
-                      fund: 'EXTRA',
-                      type: 'Caisse Extra',
-                      caisse: 'Caisse Extra',
-                      caisseType: 'extra',
-                      amount: amt,
-                      montant: amt,
+                    const res = await addExtraCaisseEntry({
                       date: extraDepositDate,
                       reason: extraDepositReason.trim(),
-                      motif: extraDepositReason.trim(),
-                      reference: extraDepositReason.trim(),
+                      amount: amt,
                       createdByName,
-                      status: 'valide',
-                      isValidated: true,
-                      isApproved: true,
-                    };
-                    setFirestorePayments(prev => [localDoc, ...prev]);
+                      caisseType: 'extra',
+                    });
 
-                    setExtraModalSuccess(res.message);
-                    setTimeout(() => {
-                      setShowExtraDepositModal(false);
-                      setExtraDepositReason('');
-                      setExtraDepositAmount('');
-                      setExtraModalSuccess(null);
-                    }, 1400);
-                  } else {
-                    setExtraModalError(res?.message || 'Une erreur est survenue lors de l’enregistrement.');
+                    if (res && res.success) {
+                      const entryId = res.entryId || ('extra_' + Date.now());
+                      // Actualisation réactive instantanée des paiements locaux
+                      const localDoc = {
+                        id: entryId,
+                        fund: 'EXTRA',
+                        type: 'Caisse Extra',
+                        caisse: 'Caisse Extra',
+                        caisseType: 'extra',
+                        amount: amt,
+                        montant: amt,
+                        date: extraDepositDate,
+                        reason: extraDepositReason.trim(),
+                        motif: extraDepositReason.trim(),
+                        reference: extraDepositReason.trim(),
+                        createdByName,
+                        status: 'valide',
+                        isValidated: true,
+                        isApproved: true,
+                        createdAt: Date.now(),
+                      };
+                      setFirestorePayments(prev => [localDoc, ...prev]);
+
+                      setExtraModalSuccess(res.message);
+                      setTimeout(() => {
+                        setExtraDepositReason('');
+                        setExtraDepositAmount('');
+                        setExtraModalSuccess(null);
+                        setExtraModalTab('HISTORY');
+                      }, 1200);
+                    } else {
+                      setExtraModalError(res?.message || 'Une erreur est survenue lors de l’enregistrement.');
+                    }
+                  } catch (err: any) {
+                    setExtraModalError('Erreur lors de l’enregistrement : ' + (err?.message || 'Erreur réseau Firestore'));
+                  } finally {
+                    setIsSubmittingExtra(false);
                   }
-                } catch (err: any) {
-                  setExtraModalError('Erreur lors de l’enregistrement : ' + (err?.message || 'Erreur réseau Firestore'));
-                } finally {
-                  setIsSubmittingExtra(false);
-                }
-              }}
-              className="p-5 sm:p-6 space-y-4 text-xs"
-            >
-              {/* Message d'erreur clair si échec */}
-              {extraModalError && (
+                }}
+                className="p-5 sm:p-6 space-y-4 text-xs"
+              >
+                {/* Message d'erreur clair si échec */}
+                {extraModalError && (
+                  <div className="p-3.5 bg-rose-950/80 border border-rose-500/60 text-rose-200 rounded-2xl flex items-start gap-2.5 animate-shake">
+                    <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                    <div className="space-y-0.5">
+                      <p className="font-bold text-rose-300">Échec de l'enregistrement</p>
+                      <p className="text-[11px] leading-relaxed">{extraModalError}</p>
+                    </div>
+                  </div>
+                )}
+
+                {/* Message de succès */}
+                {extraModalSuccess && (
+                  <div className="p-3.5 bg-emerald-950/80 border border-emerald-500/60 text-emerald-200 rounded-2xl flex items-center gap-2.5 animate-fadeIn">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                    <p className="font-bold text-[11px]">{extraModalSuccess}</p>
+                  </div>
+                )}
+
+                {/* 1. Date de l'entrée */}
+                <div>
+                  <label className="block text-xs font-bold text-slate-300 uppercase mb-2">
+                    📅 Date de l'entrée *
+                  </label>
+                  <input
+                    type="date"
+                    required
+                    disabled={isSubmittingExtra}
+                    value={extraDepositDate}
+                    onChange={(e) => {
+                      setExtraModalError(null);
+                      setExtraDepositDate(e.target.value);
+                    }}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-2xl px-4 py-3 text-sm font-bold text-white focus:outline-none focus:border-amber-500 disabled:opacity-50"
+                  />
+                </div>
+
+                {/* 2. Motif du dépôt */}
+                <div>
+                  <label className="block text-xs font-bold text-slate-300 uppercase mb-2">
+                    📝 Motif du dépôt *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    disabled={isSubmittingExtra}
+                    placeholder="Ex: Fonds antérieurs d'activité, amende pour indiscipline..."
+                    value={extraDepositReason}
+                    onChange={(e) => {
+                      setExtraModalError(null);
+                      setExtraDepositReason(e.target.value);
+                    }}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-2xl px-4 py-3 text-sm font-bold text-white focus:outline-none focus:border-amber-500 disabled:opacity-50"
+                  />
+                  {/* Suggestions rapides */}
+                  <div className="flex flex-wrap gap-1.5 mt-2">
+                    {[
+                      "Fonds antérieurs d'activité",
+                      "Amende pour indiscipline",
+                      "Donation libre",
+                      "Reliquat d'activité",
+                    ].map((sug) => (
+                      <button
+                        key={sug}
+                        type="button"
+                        disabled={isSubmittingExtra}
+                        onClick={() => {
+                          setExtraModalError(null);
+                          setExtraDepositReason(sug);
+                        }}
+                        className="text-[10px] font-bold px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg border border-slate-700 transition-all cursor-pointer disabled:opacity-50"
+                      >
+                        + {sug}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* 3. Somme à déposer */}
+                <div>
+                  <label className="block text-xs font-bold text-slate-300 uppercase mb-2">
+                    💰 Somme à déposer (F CFA) *
+                  </label>
+                  <input
+                    type="number"
+                    required
+                    min="1"
+                    disabled={isSubmittingExtra}
+                    placeholder="Ex: 50000"
+                    value={extraDepositAmount}
+                    onChange={(e) => {
+                      setExtraModalError(null);
+                      setExtraDepositAmount(e.target.value);
+                    }}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-2xl px-4 py-3 text-sm font-bold text-white focus:outline-none focus:border-amber-500 disabled:opacity-50"
+                  />
+                </div>
+
+                {/* Impact Card */}
+                <div className="bg-slate-950/80 border border-slate-800 rounded-2xl p-4 space-y-2">
+                  <div className="flex justify-between text-slate-400">
+                    <span>Solde actuel Caisse Extra :</span>
+                    <span className="font-bold text-white">{(liveFundBalances.EXTRA || 0).toLocaleString('fr-FR')} F CFA</span>
+                  </div>
+                  <div className="flex justify-between text-amber-400">
+                    <span>Montant de l'entrée :</span>
+                    <span className="font-bold">+{Number(extraDepositAmount || 0).toLocaleString('fr-FR')} F CFA</span>
+                  </div>
+                  <div className="flex justify-between text-emerald-400 pt-1.5 border-t border-slate-800 font-black">
+                    <span>Nouveau solde Caisse Extra :</span>
+                    <span>{((liveFundBalances.EXTRA || 0) + Number(extraDepositAmount || 0)).toLocaleString('fr-FR')} F CFA</span>
+                  </div>
+                </div>
+
+                {/* Actions */}
+                <div className="flex items-center justify-end gap-3 pt-3">
+                  <button
+                    type="button"
+                    disabled={isSubmittingExtra}
+                    onClick={() => setShowExtraDepositModal(false)}
+                    className="px-5 py-3 rounded-2xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-xs transition-all cursor-pointer disabled:opacity-50"
+                  >
+                    Fermer
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isSubmittingExtra}
+                    className="px-6 py-3 rounded-2xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 text-white font-black text-xs flex items-center gap-2 shadow-lg shadow-amber-500/20 transition-all active:scale-95 disabled:opacity-50 cursor-pointer"
+                  >
+                    {isSubmittingExtra ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        <span>Enregistrement en cours...</span>
+                      </>
+                    ) : (
+                      <>
+                        <CheckCircle2 className="w-4 h-4" />
+                        <span>Valider et Créditer la Caisse Extra</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </form>
+            )}
+
+            {/* TAB 2 : HISTORIQUE DES ENTRÉES & CONTRÔLE (1H) */}
+            {extraModalTab === 'HISTORY' && (
+              <div className="p-5 sm:p-6 space-y-4 max-h-[70vh] overflow-y-auto">
+                <div className="p-3 bg-slate-950 rounded-2xl border border-slate-800 flex items-center justify-between text-xs">
+                  <div className="flex items-center gap-2">
+                    <Clock className="w-4 h-4 text-amber-400" />
+                    <span className="font-bold text-white">Règle de sécurité (1 heure) :</span>
+                  </div>
+                  <span className="text-slate-400 text-[11px]">
+                    Modifiable/Annulable pendant 60 min après création
+                  </span>
+                </div>
+
+                {extraCaisseEntries.length === 0 ? (
+                  <div className="text-center py-12 bg-slate-950 rounded-2xl border border-dashed border-slate-800 text-slate-500 text-xs">
+                    Aucune entrée enregistrée dans la Caisse Extra pour le moment.
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {extraCaisseEntries.map((entry) => {
+                      const isEditable = isExtraEntryEditable(entry);
+                      const remainingStr = getExtraEntryRemainingTimeStr(entry);
+                      const amountNum = Number(entry.amount || entry.montant || 0);
+
+                      return (
+                        <div
+                          key={entry.id}
+                          className={`p-4 rounded-2xl border transition-all ${
+                            isEditable
+                              ? 'bg-slate-950/90 border-amber-500/40 shadow-md shadow-amber-500/5'
+                              : 'bg-slate-950/50 border-slate-800/80'
+                          }`}
+                        >
+                          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                            <div className="space-y-1">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="font-extrabold text-white text-sm">
+                                  {entry.reason || entry.motif || entry.reference || 'Entrée Caisse Extra'}
+                                </span>
+                                {isEditable ? (
+                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-black bg-amber-500/20 text-amber-300 border border-amber-500/40 animate-pulse">
+                                    <Clock className="w-3 h-3 text-amber-400" />
+                                    <span>{remainingStr}</span>
+                                  </span>
+                                ) : (
+                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-800 text-slate-400 border border-slate-700">
+                                    <Lock className="w-3 h-3 text-slate-500" />
+                                    <span>Verrouillé (&gt; 1h)</span>
+                                  </span>
+                                )}
+                              </div>
+                              <p className="text-[11px] text-slate-400 flex items-center gap-2">
+                                <span>📅 {entry.date || 'Date non précisée'}</span>
+                                <span>•</span>
+                                <span>👤 Par : {entry.createdByName || 'Trésorier Général'}</span>
+                              </p>
+                            </div>
+
+                            <div className="flex items-center justify-between sm:justify-end gap-3 border-t sm:border-t-0 pt-2 sm:pt-0 border-slate-800">
+                              <div className="text-right">
+                                <span className="text-base font-black text-amber-400">
+                                  +{amountNum.toLocaleString('fr-FR')} F CFA
+                                </span>
+                              </div>
+
+                              {isEditable ? (
+                                <div className="flex items-center gap-1.5">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleOpenEditExtraModal(entry)}
+                                    className="px-2.5 py-1.5 bg-amber-500/20 hover:bg-amber-500/35 text-amber-300 border border-amber-500/40 rounded-xl text-xs font-black flex items-center gap-1 transition-all active:scale-95 cursor-pointer"
+                                    title="Modifier le montant ou le motif"
+                                  >
+                                    <Edit3 className="w-3.5 h-3.5" />
+                                    <span>Modifier</span>
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleOpenCancelExtraModal(entry)}
+                                    className="px-2.5 py-1.5 bg-rose-500/20 hover:bg-rose-500/35 text-rose-300 border border-rose-500/40 rounded-xl text-xs font-black flex items-center gap-1 transition-all active:scale-95 cursor-pointer"
+                                    title="Annuler cette entrée et la déduire du solde"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                    <span>Annuler</span>
+                                  </button>
+                                </div>
+                              ) : (
+                                <span
+                                  className="text-[10px] text-slate-500 font-medium px-2 py-1 rounded bg-slate-900 border border-slate-800"
+                                  title="Passé 1 heure, cette entrée est définitive et ne peut plus être modifiée"
+                                >
+                                  Définitif
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                <div className="pt-3 border-t border-slate-800 flex justify-end">
+                  <button
+                    type="button"
+                    onClick={() => setShowExtraDepositModal(false)}
+                    className="px-5 py-2.5 rounded-2xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-xs transition-all cursor-pointer"
+                  >
+                    Fermer
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================= */}
+      {/* MODAL TRÉSORIER : MODIFICATION D'UNE ENTRÉE CAISSE EXTRA (1H) */}
+      {/* ========================================================= */}
+      {editingExtraEntry && (
+        <div className="fixed inset-0 z-50 bg-black/90 backdrop-blur-md flex items-center justify-center p-3 sm:p-6 overflow-y-auto animate-fadeIn">
+          <div className="bg-slate-900 border-2 border-amber-500/70 rounded-3xl max-w-lg w-full flex flex-col shadow-2xl my-auto overflow-hidden">
+            {/* Header */}
+            <div className="p-4 sm:p-5 border-b border-slate-800 flex items-center justify-between gap-3 bg-slate-950">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-400 font-bold">
+                  <Edit3 className="w-5 h-5 text-amber-400" />
+                </div>
+                <div>
+                  <h3 className="text-base font-black text-white flex items-center gap-2">
+                    <span>Modifier l'Entrée — Caisse Extra</span>
+                  </h3>
+                  <p className="text-xs text-amber-400/90 font-mono">
+                    ⏱️ {getExtraEntryRemainingTimeStr(editingExtraEntry)} avant verrouillage définitif
+                  </p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                disabled={isSubmittingEditExtra}
+                onClick={() => setEditingExtraEntry(null)}
+                className="text-slate-400 hover:text-white p-2 rounded-xl hover:bg-slate-800 transition-colors cursor-pointer disabled:opacity-50"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Form */}
+            <form onSubmit={handleSaveEditExtra} className="p-5 sm:p-6 space-y-4 text-xs">
+              {editExtraError && (
                 <div className="p-3.5 bg-rose-950/80 border border-rose-500/60 text-rose-200 rounded-2xl flex items-start gap-2.5 animate-shake">
                   <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
                   <div className="space-y-0.5">
-                    <p className="font-bold text-rose-300">Échec de l'enregistrement</p>
-                    <p className="text-[11px] leading-relaxed">{extraModalError}</p>
+                    <p className="font-bold text-rose-300">Erreur de modification</p>
+                    <p className="text-[11px] leading-relaxed">{editExtraError}</p>
                   </div>
                 </div>
               )}
 
-              {/* Message de succès */}
-              {extraModalSuccess && (
+              {editExtraSuccess && (
                 <div className="p-3.5 bg-emerald-950/80 border border-emerald-500/60 text-emerald-200 rounded-2xl flex items-center gap-2.5 animate-fadeIn">
                   <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-                  <p className="font-bold text-[11px]">{extraModalSuccess}</p>
+                  <p className="font-bold text-[11px]">{editExtraSuccess}</p>
                 </div>
               )}
 
-              {/* 1. Date de l'entrée */}
+              {/* Date */}
               <div>
                 <label className="block text-xs font-bold text-slate-300 uppercase mb-2">
-                  📅 Date de l'entrée *
+                  📅 Date *
                 </label>
                 <input
                   type="date"
                   required
-                  disabled={isSubmittingExtra}
-                  value={extraDepositDate}
-                  onChange={(e) => {
-                    setExtraModalError(null);
-                    setExtraDepositDate(e.target.value);
-                  }}
+                  disabled={isSubmittingEditExtra}
+                  value={editExtraDate}
+                  onChange={(e) => setEditExtraDate(e.target.value)}
                   className="w-full bg-slate-950 border border-slate-800 rounded-2xl px-4 py-3 text-sm font-bold text-white focus:outline-none focus:border-amber-500 disabled:opacity-50"
                 />
               </div>
 
-              {/* 2. Motif du dépôt */}
+              {/* Motif */}
               <div>
                 <label className="block text-xs font-bold text-slate-300 uppercase mb-2">
-                  📝 Motif du dépôt *
+                  📝 Motif *
                 </label>
                 <input
                   type="text"
                   required
-                  disabled={isSubmittingExtra}
-                  placeholder="Ex: Fonds antérieurs d'activité, amende pour indiscipline..."
-                  value={extraDepositReason}
-                  onChange={(e) => {
-                    setExtraModalError(null);
-                    setExtraDepositReason(e.target.value);
-                  }}
+                  disabled={isSubmittingEditExtra}
+                  placeholder="Motif de l'entrée..."
+                  value={editExtraReason}
+                  onChange={(e) => setEditExtraReason(e.target.value)}
                   className="w-full bg-slate-950 border border-slate-800 rounded-2xl px-4 py-3 text-sm font-bold text-white focus:outline-none focus:border-amber-500 disabled:opacity-50"
                 />
-                {/* Suggestions rapides */}
-                <div className="flex flex-wrap gap-1.5 mt-2">
-                  {[
-                    "Fonds antérieurs d'activité",
-                    "Amende pour indiscipline",
-                    "Donation libre",
-                    "Reliquat d'activité",
-                  ].map((sug) => (
-                    <button
-                      key={sug}
-                      type="button"
-                      disabled={isSubmittingExtra}
-                      onClick={() => {
-                        setExtraModalError(null);
-                        setExtraDepositReason(sug);
-                      }}
-                      className="text-[10px] font-bold px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg border border-slate-700 transition-all cursor-pointer disabled:opacity-50"
-                    >
-                      + {sug}
-                    </button>
-                  ))}
-                </div>
               </div>
 
-              {/* 3. Somme à déposer */}
+              {/* Montant */}
               <div>
                 <label className="block text-xs font-bold text-slate-300 uppercase mb-2">
-                  💰 Somme à déposer (F CFA) *
+                  💰 Nouveau Montant (F CFA) *
                 </label>
                 <input
                   type="number"
                   required
                   min="1"
-                  disabled={isSubmittingExtra}
-                  placeholder="Ex: 50000"
-                  value={extraDepositAmount}
-                  onChange={(e) => {
-                    setExtraModalError(null);
-                    setExtraDepositAmount(e.target.value);
-                  }}
+                  disabled={isSubmittingEditExtra}
+                  value={editExtraAmount}
+                  onChange={(e) => setEditExtraAmount(e.target.value)}
                   className="w-full bg-slate-950 border border-slate-800 rounded-2xl px-4 py-3 text-sm font-bold text-white focus:outline-none focus:border-amber-500 disabled:opacity-50"
                 />
               </div>
 
-              {/* Impact Card */}
-              <div className="bg-slate-950/80 border border-slate-800 rounded-2xl p-4 space-y-2">
-                <div className="flex justify-between text-slate-400">
-                  <span>Solde actuel Caisse Extra :</span>
-                  <span className="font-bold text-white">{(liveFundBalances.EXTRA || 0).toLocaleString('fr-FR')} F CFA</span>
-                </div>
-                <div className="flex justify-between text-amber-400">
-                  <span>Montant de l'entrée :</span>
-                  <span className="font-bold">+{Number(extraDepositAmount || 0).toLocaleString('fr-FR')} F CFA</span>
-                </div>
-                <div className="flex justify-between text-emerald-400 pt-1.5 border-t border-slate-800 font-black">
-                  <span>Nouveau solde Caisse Extra :</span>
-                  <span>{((liveFundBalances.EXTRA || 0) + Number(extraDepositAmount || 0)).toLocaleString('fr-FR')} F CFA</span>
-                </div>
-              </div>
+              {/* Dynamique financial recalculation impact card */}
+              {(() => {
+                const oldAmt = Number(editingExtraEntry.amount || editingExtraEntry.montant || 0);
+                const newAmt = Number(editExtraAmount || 0);
+                const diff = newAmt - oldAmt;
+                const currentExtra = liveFundBalances.EXTRA || 0;
+                const newExtra = Math.max(0, currentExtra + diff);
+                const currentTotal = treasuryBalances.total || 0;
+                const newTotal = Math.max(0, currentTotal + diff);
+
+                return (
+                  <div className="bg-slate-950/90 border border-amber-500/30 rounded-2xl p-4 space-y-2">
+                    <p className="text-[11px] font-black uppercase text-amber-300 tracking-wider">
+                      ⚡ Réajustement Financier Automatique
+                    </p>
+                    <div className="flex justify-between text-slate-400">
+                      <span>Montant initial enregistré :</span>
+                      <span className="font-bold text-white">{oldAmt.toLocaleString('fr-FR')} F CFA</span>
+                    </div>
+                    <div className="flex justify-between text-slate-400">
+                      <span>Nouveau montant saisi :</span>
+                      <span className="font-bold text-amber-300">{newAmt.toLocaleString('fr-FR')} F CFA</span>
+                    </div>
+                    <div className="flex justify-between font-bold pt-1 border-t border-slate-800">
+                      <span>Différence réajustée :</span>
+                      <span className={diff >= 0 ? 'text-emerald-400' : 'text-rose-400'}>
+                        {diff >= 0 ? `+${diff.toLocaleString('fr-FR')}` : diff.toLocaleString('fr-FR')} F CFA
+                      </span>
+                    </div>
+                    <div className="flex justify-between text-emerald-400 pt-1 border-t border-slate-800/80 font-black">
+                      <span>Nouveau solde Caisse Extra :</span>
+                      <span>{newExtra.toLocaleString('fr-FR')} F CFA</span>
+                    </div>
+                    <div className="flex justify-between text-emerald-400 font-black">
+                      <span>Nouveau solde Trésorerie :</span>
+                      <span>{newTotal.toLocaleString('fr-FR')} F CFA</span>
+                    </div>
+                  </div>
+                );
+              })()}
 
               {/* Actions */}
-              <div className="flex items-center justify-end gap-3 pt-3">
+              <div className="flex items-center justify-end gap-3 pt-2">
                 <button
                   type="button"
-                  disabled={isSubmittingExtra}
-                  onClick={() => setShowExtraDepositModal(false)}
+                  disabled={isSubmittingEditExtra}
+                  onClick={() => setEditingExtraEntry(null)}
                   className="px-5 py-3 rounded-2xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-xs transition-all cursor-pointer disabled:opacity-50"
                 >
                   Annuler
                 </button>
                 <button
                   type="submit"
-                  disabled={isSubmittingExtra}
+                  disabled={isSubmittingEditExtra}
                   className="px-6 py-3 rounded-2xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 text-white font-black text-xs flex items-center gap-2 shadow-lg shadow-amber-500/20 transition-all active:scale-95 disabled:opacity-50 cursor-pointer"
                 >
-                  {isSubmittingExtra ? (
+                  {isSubmittingEditExtra ? (
                     <>
                       <Loader2 className="w-4 h-4 animate-spin" />
-                      <span>Enregistrement en cours...</span>
+                      <span>Enregistrement...</span>
                     </>
                   ) : (
                     <>
                       <CheckCircle2 className="w-4 h-4" />
-                      <span>Valider et Créditer la Caisse Extra</span>
+                      <span>Enregistrer les Modifications</span>
                     </>
                   )}
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================= */}
+      {/* MODAL TRÉSORIER : ANNULATION D'UNE ENTRÉE CAISSE EXTRA (1H) */}
+      {/* ========================================================= */}
+      {cancellingExtraEntry && (
+        <div className="fixed inset-0 z-50 bg-black/90 backdrop-blur-md flex items-center justify-center p-3 sm:p-6 overflow-y-auto animate-fadeIn">
+          <div className="bg-slate-900 border-2 border-rose-500/70 rounded-3xl max-w-lg w-full flex flex-col shadow-2xl my-auto overflow-hidden">
+            {/* Header */}
+            <div className="p-4 sm:p-5 border-b border-slate-800 flex items-center justify-between gap-3 bg-slate-950">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-rose-500/20 border border-rose-500/40 flex items-center justify-center text-rose-400 font-bold">
+                  <Trash2 className="w-5 h-5 text-rose-400" />
+                </div>
+                <div>
+                  <h3 className="text-base font-black text-white flex items-center gap-2">
+                    <span>Annulation Entrée — Caisse Extra</span>
+                  </h3>
+                  <p className="text-xs text-rose-400/90 font-mono">
+                    ⏱️ {getExtraEntryRemainingTimeStr(cancellingExtraEntry)} avant verrouillage définitif
+                  </p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                disabled={isSubmittingCancelExtra}
+                onClick={() => setCancellingExtraEntry(null)}
+                className="text-slate-400 hover:text-white p-2 rounded-xl hover:bg-slate-800 transition-colors cursor-pointer disabled:opacity-50"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Content */}
+            <div className="p-5 sm:p-6 space-y-4 text-xs">
+              {cancelExtraError && (
+                <div className="p-3.5 bg-rose-950/80 border border-rose-500/60 text-rose-200 rounded-2xl flex items-start gap-2.5 animate-shake">
+                  <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                  <div className="space-y-0.5">
+                    <p className="font-bold text-rose-300">Erreur lors de l'annulation</p>
+                    <p className="text-[11px] leading-relaxed">{cancelExtraError}</p>
+                  </div>
+                </div>
+              )}
+
+              {cancelExtraSuccess && (
+                <div className="p-3.5 bg-emerald-950/80 border border-emerald-500/60 text-emerald-200 rounded-2xl flex items-center gap-2.5 animate-fadeIn">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                  <p className="font-bold text-[11px]">{cancelExtraSuccess}</p>
+                </div>
+              )}
+
+              <div className="p-4 bg-rose-950/30 border border-rose-500/30 rounded-2xl space-y-2">
+                <p className="text-sm font-bold text-rose-200 flex items-center gap-2">
+                  <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
+                  <span>Confirmez-vous l'annulation de cette entrée ?</span>
+                </p>
+                <p className="text-slate-300 text-[11px] leading-relaxed">
+                  Cette action retirera définitivement l'entrée de la comptabilité et soustraira immédiatement son montant de la Caisse Extra et du solde général de la trésorerie.
+                </p>
+              </div>
+
+              {/* Détails de l'entrée */}
+              <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800 space-y-2">
+                <div className="flex justify-between text-slate-400">
+                  <span>Motif :</span>
+                  <span className="font-bold text-white">
+                    {cancellingExtraEntry.reason || cancellingExtraEntry.motif || cancellingExtraEntry.reference || 'Entrée'}
+                  </span>
+                </div>
+                <div className="flex justify-between text-slate-400">
+                  <span>Date enregistrée :</span>
+                  <span className="font-bold text-white">{cancellingExtraEntry.date || 'Récemment'}</span>
+                </div>
+                <div className="flex justify-between text-rose-400 font-black text-sm pt-2 border-t border-slate-800">
+                  <span>Montant qui sera soustrait :</span>
+                  <span>-{(Number(cancellingExtraEntry.amount || cancellingExtraEntry.montant || 0)).toLocaleString('fr-FR')} F CFA</span>
+                </div>
+              </div>
+
+              {/* Impact Card */}
+              {(() => {
+                const cancelledAmt = Number(cancellingExtraEntry.amount || cancellingExtraEntry.montant || 0);
+                const currentExtra = liveFundBalances.EXTRA || 0;
+                const newExtra = Math.max(0, currentExtra - cancelledAmt);
+                const currentTotal = treasuryBalances.total || 0;
+                const newTotal = Math.max(0, currentTotal - cancelledAmt);
+
+                return (
+                  <div className="bg-slate-950/80 border border-slate-800 rounded-2xl p-4 space-y-1.5">
+                    <p className="text-[10px] font-black uppercase text-slate-400 tracking-wider">
+                      Impact après déduction :
+                    </p>
+                    <div className="flex justify-between text-slate-300">
+                      <span>Nouveau Solde Caisse Extra :</span>
+                      <span className="font-bold text-amber-400">{newExtra.toLocaleString('fr-FR')} F CFA</span>
+                    </div>
+                    <div className="flex justify-between text-slate-300">
+                      <span>Nouveau Solde Total Trésorerie :</span>
+                      <span className="font-bold text-emerald-400">{newTotal.toLocaleString('fr-FR')} F CFA</span>
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* Actions */}
+              <div className="flex items-center justify-end gap-3 pt-2">
+                <button
+                  type="button"
+                  disabled={isSubmittingCancelExtra}
+                  onClick={() => setCancellingExtraEntry(null)}
+                  className="px-5 py-3 rounded-2xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-xs transition-all cursor-pointer disabled:opacity-50"
+                >
+                  Non, conserver l'entrée
+                </button>
+                <button
+                  type="button"
+                  disabled={isSubmittingCancelExtra}
+                  onClick={handleConfirmCancelExtra}
+                  className="px-6 py-3 rounded-2xl bg-rose-600 hover:bg-rose-500 text-white font-black text-xs flex items-center gap-2 shadow-lg shadow-rose-600/20 transition-all active:scale-95 disabled:opacity-50 cursor-pointer"
+                >
+                  {isSubmittingCancelExtra ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>Annulation en cours...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Trash2 className="w-4 h-4" />
+                      <span>Confirmer l'Annulation & Déduire</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}
