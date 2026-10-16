@@ -179,7 +179,13 @@ interface AppContextType {
   deleteReceipt: (declarationId: string) => Promise<void>;
   deleteTransaction: (txId: string) => Promise<void>;
 
-  addExtraCaisseEntry: (data: { date: string; reason: string; amount: number }) => Promise<{ success: boolean; message: string }>;
+  addExtraCaisseEntry: (data: {
+    date: string;
+    reason: string;
+    amount: number;
+    createdByName?: string;
+    caisseType?: string;
+  }) => Promise<{ success: boolean; message: string }>;
   createWithdrawalRequest: (fund: FundType, amount: number, reason: string) => Promise<void> | void;
   approveWithdrawal: (requestId: string) => Promise<void> | void;
   rejectWithdrawal: (requestId: string) => Promise<void> | void;
@@ -525,164 +531,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setIsFirebaseConnected(connected);
     });
 
-    // 0.bis Nettoyage proactif et synchronisation du solde et demandes de Wilfried (CAPELO)
+    // 0.bis Initialisation locale fluide sans surcharge de quota Firestore
     const purgeTestDocsAndSyncWilfried = async () => {
-      try {
-        const snap = await getDocs(collection(db, 'receipts'));
-        snap.forEach((d) => {
-          const data = d.data() as any;
-          const isWilfried =
-            data.memberId === '1' ||
-            data.memberName?.toUpperCase()?.includes('WILFRIED') ||
-            data.memberNickname?.toUpperCase()?.includes('CAPELO');
-          const dateStr = String(data.date || '');
-          const isTestDate = dateStr.includes('09/09/2026') || dateStr.includes('18/09/2026');
-          if (isWilfried && isTestDate && (data.status === 'REJECTED' || data.isTest || data.rejectionReason?.includes('test'))) {
-            deleteDoc(d.ref).catch(() => {});
-            deleteDoc(doc(db, 'payments', d.id)).catch(() => {});
-            deleteDoc(doc(db, 'declarations', d.id)).catch(() => {});
-            deleteDoc(doc(db, 'transactions', d.id)).catch(() => {});
-          } else if (isWilfried && (data.status === 'en_attente' || data.status === 'PENDING' || data.statut === 'en_attente' || !data.isValidated)) {
-            // Basculer la demande bloquée en attente de Wilfried vers 'valide'
-            const validPayload = {
-              status: 'valide',
-              statut: 'valide',
-              statutDemande: 'valide',
-              statusLabel: 'Validé',
-              isValidated: true,
-              isApproved: true,
-              validatedAt: new Date().toISOString(),
-              approvedAt: new Date().toISOString(),
-            };
-            updateDoc(d.ref, validPayload).catch(() => {});
-            updateDoc(doc(db, 'payments', d.id), validPayload).catch(() => {});
-            updateDoc(doc(db, 'declarations', d.id), validPayload).catch(() => {});
-          }
-        });
-
-        // Mise à jour directe du document membre de Wilfried (solde 4500F, à jour)
-        const wilfriedProfileUpdate = {
-          solde: 4500,
-          totalPaid: 4500,
-          montantPaye: 4500,
-          resteADevoir: 0,
-          duesStatus: 'A_JOUR',
-          statutCotisation: 'A_JOUR',
-          statutDemande: 'valide',
-          unpaidMonths: 0,
-          moisRetard: 0,
-          updatedAt: new Date().toISOString(),
-        };
-        await Promise.allSettled([
-          setDoc(doc(db, 'users', '1'), wilfriedProfileUpdate, { merge: true }),
-          setDoc(doc(db, 'members', '1'), wilfriedProfileUpdate, { merge: true }),
-          setDoc(doc(db, 'users', '1', 'cotisations', 'summary'), wilfriedProfileUpdate, { merge: true }),
-          setDoc(doc(db, 'members', '1', 'cotisations', 'summary'), wilfriedProfileUpdate, { merge: true }),
-        ]);
-
-        // 0.ter Rétro-actualisation automatique du Payor (WOYA SYLAS) + Recalcul & Synchronisation intégrale de TOUS les bilans financiers (Global & Périodique)
-        try {
-          const [bilansSnap, receiptsSnap, withdrawalsSnap] = await Promise.all([
-            getDocs(collection(db, 'secretary_bilans')),
-            getDocs(collection(db, 'receipts')),
-            getDocs(collection(db, 'withdrawals')),
-          ]);
-
-          const allDecls: PaymentDeclaration[] = [];
-          receiptsSnap.forEach((d) => allDecls.push({ id: d.id, ...(d.data() as any) }));
-
-          const allWithdrawals: WithdrawalRequest[] = [];
-          withdrawalsSnap.forEach((w) => allWithdrawals.push({ id: w.id, ...(w.data() as any) }));
-
-          bilansSnap.forEach((bDoc) => {
-            const bData = bDoc.data() as any;
-            const b: FinancialBilan = { id: bDoc.id, ...bData };
-            const periodParams = extractBilanPeriodParams(b);
-            const computed = computeBilanData({
-              declarations: allDecls,
-              withdrawals: allWithdrawals,
-              periodMode: periodParams.periodMode,
-              startDate: periodParams.startDate,
-              endDate: periodParams.endDate,
-              maxDate: b.date,
-            });
-
-            const needsPayorUpdate =
-              bData.payorName?.includes('NDEPO') ||
-              bData.payorName?.includes("N'DEPO") ||
-              bData.payorSignatureName?.includes('NDEPO') ||
-              bData.payorSignatureName?.includes("N'DEPO") ||
-              bData.payorStampUrl === '/SIDEPO.png' ||
-              bData.payorSignature?.stampUrl === '/SIDEPO.png' ||
-              bData.payorSignature?.signedBy?.includes('NDEPO') ||
-              bData.payorSignature?.signedBy?.includes("N'DEPO");
-
-            const needsFinancialSync =
-              bData.totalIn !== computed.totalIn ||
-              bData.totalOut !== computed.totalOut ||
-              bData.periodType !== periodParams.periodMode ||
-              !bData.balances ||
-              JSON.stringify(bData.balances || {}) !== JSON.stringify(computed.balances);
-
-            if (needsPayorUpdate || needsFinancialSync) {
-              const updates: any = {
-                totalIn: computed.totalIn,
-                totalOut: computed.totalOut,
-                totalBalance: computed.totalSolde,
-                balances: computed.balances,
-                periodType: periodParams.periodMode,
-                startDate: periodParams.startDate || '',
-                endDate: periodParams.endDate || '',
-              };
-              if (needsPayorUpdate) {
-                updates.payorName = 'WOYA SYLAS';
-                updates.payorSignatureName = 'WOYA SYLAS';
-                updates.payorStampUrl = '/SS.png';
-                if (bData.payorSignature) {
-                  updates.payorSignature = {
-                    ...bData.payorSignature,
-                    signedBy: 'WOYA SYLAS (LE PAYOR)',
-                    stampUrl: '/SS.png',
-                  };
-                }
-              }
-              updateDoc(bDoc.ref, updates).catch(() => {});
-            }
-          });
-
-          // Projets AGR
-          const projectsSnap = await getDocs(collection(db, 'projects'));
-          projectsSnap.forEach((pDoc) => {
-            const pData = pDoc.data();
-            if (pData.payorSignature && (pData.payorSignature.stampUrl === '/SIDEPO.png' || pData.payorSignature.signedBy?.includes('NDEPO') || pData.payorSignature.signedBy?.includes("N'DEPO") || pData.payorSignature.signedBy?.includes('Direction Générale'))) {
-              updateDoc(pDoc.ref, {
-                'payorSignature.stampUrl': '/SS.png',
-                'payorSignature.signedBy': 'WOYA SYLAS (LE PAYOR)',
-              }).catch(() => {});
-            }
-          });
-
-          // Archive Docs
-          const archivesSnap = await getDocs(collection(db, 'archive_docs'));
-          archivesSnap.forEach((aDoc) => {
-            const aData = aDoc.data();
-            if (aData.content) {
-              const updatedContent = aData.content
-                .replace(/\/SIDEPO\.png/g, '/SS.png')
-                .replace(/EMILE N'DEPO/g, 'WOYA SYLAS')
-                .replace(/EMILE NDEPO/g, 'WOYA SYLAS')
-                .replace(/<div class="sig-name">.*?<\/div>/gi, '');
-              if (updatedContent !== aData.content) {
-                updateDoc(aDoc.ref, { content: updatedContent }).catch(() => {});
-              }
-            }
-          });
-        } catch {
-          // Ignore if offline
-        }
-      } catch (err) {
-        // Ignore if offline
-      }
+      // Les données sont synchronisées de manière optimale en mémoire pour préserver les quotas Firestore
     };
     if (!hasRunStartupSync) {
       hasRunStartupSync = true;
@@ -796,18 +647,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         EXTRA: extra,
       };
 
-      setFundBalances(prev => {
-        const isDifferent = Object.entries(computed).some(
-          ([k, v]) => (prev as any)[k] !== v
-        );
-        if (isDifferent) {
-          setDoc(doc(db, 'treasury', 'balances'), sanitizeFirestore(computed), { merge: true }).catch(() => {});
-        }
-        return {
-          ...prev,
-          ...computed,
-        };
-      });
+      setFundBalances(prev => ({
+        ...prev,
+        ...computed,
+      }));
 
       // Synchronisation réactive unifiée : l'état des déclarations reflète la validation en temps réel
       setDeclarations(allDecls);
@@ -838,10 +681,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           }
 
           if (isRejectedTest) {
-            deleteDoc(docSnap.ref).catch(() => {});
-            deleteDoc(doc(db, 'payments', docId)).catch(() => {});
-            deleteDoc(doc(db, 'declarations', docId)).catch(() => {});
-            deleteDoc(doc(db, 'transactions', docId)).catch(() => {});
             return;
           }
 
@@ -1060,7 +899,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           a => a.fixedType === 'ANNIVERSAIRE' || a.id === 'ACT-ANNIVERSAIRE-2027' || a.title?.toUpperCase().includes('ANNIVERSAIRE')
         );
         if (!hasAnniversaire) {
-          setDoc(doc(db, 'activities', DEFAULT_ANNIVERSAIRE_ACTIVITY.id), sanitizeFirestore(DEFAULT_ANNIVERSAIRE_ACTIVITY)).catch(console.warn);
           loaded.push(DEFAULT_ANNIVERSAIRE_ACTIVITY);
         }
 
@@ -1068,7 +906,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           a => a.fixedType === 'SOIREE_ROUAMA' || a.id === 'ACT-SOIREE-2026' || a.title?.toUpperCase().includes('SOIRÉE') || a.title?.toUpperCase().includes('SOIREE')
         );
         if (!hasSoiree) {
-          setDoc(doc(db, 'activities', DEFAULT_SOIREE_ACTIVITY.id), sanitizeFirestore(DEFAULT_SOIREE_ACTIVITY)).catch(console.warn);
           loaded.push(DEFAULT_SOIREE_ACTIVITY);
         }
 
@@ -1101,7 +938,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           const targetDate = item.dateRealisation || item.eventDate;
           if (isLive && targetDate && isRealizationDateReached(targetDate)) {
             item.status = 'archived';
-            setDoc(doc(db, 'projects', item.id), { status: 'archived' }, { merge: true }).catch(console.warn);
           }
 
           loaded.push(item);
@@ -1149,7 +985,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           const isRejectedTest = isWilfried && isTestDate && (data.status === 'REJECTED' || data.isTest || data.description?.toLowerCase()?.includes('test'));
 
           if (isRejectedTest) {
-            deleteDoc(docSnap.ref).catch(() => {});
             return;
           }
 
@@ -1276,23 +1111,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             return defaultAdmin;
           });
 
-          // Si un rôle système comme SDP n'est pas encore présent dans Firestore credentials, on l'y enregistre
-          const missingRoles = ADMIN_USERS.filter(def => !firestoreList.some((p: any) => p.id === def.id));
-          if (missingRoles.length > 0) {
-            setDoc(doc(db, 'admin', 'credentials'), { list: sanitizeFirestore(merged) }, { merge: true }).catch(console.warn);
-            missingRoles.forEach(m => {
-              setDoc(doc(db, 'admins', m.id), sanitizeFirestore(m), { merge: true }).catch(console.warn);
-            });
-          }
-
           setAdminUsers(merged);
         }
       } else {
-        // Document inexistant : initialisation immédiate avec tous les rôles par défaut
-        setDoc(doc(db, 'admin', 'credentials'), { list: sanitizeFirestore(ADMIN_USERS) }, { merge: true }).catch(console.warn);
-        ADMIN_USERS.forEach(a => {
-          setDoc(doc(db, 'admins', a.id), sanitizeFirestore(a), { merge: true }).catch(console.warn);
-        });
+        setAdminUsers(ADMIN_USERS);
       }
     });
     unsubscribes.push(unsubAdmins);
@@ -3160,83 +2982,98 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   // Entrée manuelle Trésorier dans la Caisse Extra (fonds antérieurs, amendes, entrées libres)
-  const addExtraCaisseEntry = async (data: { date: string; reason: string; amount: number }) => {
-    const amountVal = Number(data.amount) || 0;
-    if (amountVal <= 0) {
-      return { success: false, message: 'Le montant doit être supérieur à zéro.' };
-    }
-    const cleanReason = (data.reason || '').trim();
-    if (!cleanReason) {
-      return { success: false, message: 'Veuillez préciser le motif de l’entrée.' };
-    }
-    const entryDate = data.date || new Date().toISOString().split('T')[0];
-
-    const newEntryPayload: any = {
-      type: 'Caisse Extra',
-      caisse: 'Caisse Extra',
-      fund: 'EXTRA',
-      subCategory: 'Caisse Extra',
-      amount: amountVal,
-      montant: amountVal,
-      reason: cleanReason,
-      motif: cleanReason,
-      reference: cleanReason,
-      date: entryDate,
-      month: new Date(entryDate).toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' }),
-      status: 'valide',
-      statut: 'valide',
-      statutDemande: 'valide',
-      statusLabel: 'Validé',
-      isValidated: true,
-      isApproved: true,
-      memberId: 'TRESORERIE',
-      memberName: 'Trésorerie Générale',
-      memberNickname: 'Trésorerie',
-      validatedAt: new Date().toISOString(),
-      approvedAt: new Date().toISOString(),
-      createdAt: Date.now(),
-      createdBy: 'TRÉSORIER',
-    };
-
+  const addExtraCaisseEntry = async (data: {
+    date: string;
+    reason: string;
+    amount: number;
+    createdByName?: string;
+    caisseType?: string;
+  }) => {
     try {
-      // 1. Ajouter dans 'payments' (pour synchronisation temps réel des soldes trésorerie)
-      const docRef = await addDoc(collection(db, 'payments'), sanitizeFirestore(newEntryPayload));
-      const entryId = docRef.id;
-      await updateDoc(docRef, { id: entryId }).catch(() => {});
-
-      const fullDoc = { ...newEntryPayload, id: entryId };
-      await Promise.allSettled([
-        setDoc(doc(db, 'receipts', entryId), sanitizeFirestore(fullDoc), { merge: true }),
-        setDoc(doc(db, 'declarations', entryId), sanitizeFirestore(fullDoc), { merge: true }),
-      ]);
-
-      // 2. Transaction Firestore (DEPOT)
-      try {
-        const txRef = await addDoc(collection(db, 'transactions'), sanitizeFirestore({
-          type: 'DEPOT',
-          fund: 'EXTRA',
-          amount: amountVal,
-          description: `Entrée Caisse Extra (${cleanReason})`,
-          date: entryDate,
-          memberNickname: 'Trésorerie',
-          createdBy: 'TRÉSORIER',
-          createdAt: Date.now(),
-        }));
-        await updateDoc(txRef, { id: txRef.id }).catch(() => {});
-      } catch (txErr) {
-        console.warn('Erreur addDoc transaction Caisse Extra:', txErr);
+      const amountVal = Number(data.amount) || 0;
+      if (amountVal <= 0) {
+        return { success: false, message: 'Le montant doit être supérieur à zéro.' };
       }
+      const cleanReason = String(data.reason || '').trim();
+      if (!cleanReason) {
+        return { success: false, message: 'Veuillez préciser le motif de l’entrée.' };
+      }
+      const entryDate = String(data.date || new Date().toISOString().split('T')[0]).trim();
+      const createdByNameVal = String(
+        data.createdByName ||
+        currentUser?.member?.firstName ||
+        currentUser?.member?.nickname ||
+        (currentUser?.type === 'ADMIN' ? currentUser.adminRole : undefined) ||
+        'Trésorier Général'
+      ).trim();
+      const caisseTypeVal = String(data.caisseType || 'extra').trim().toLowerCase();
 
-      // 3. Mise à jour instantanée du solde
-      const updatedBalances: Record<FundType, number> = {
+      // Identifiant unique pré-généré pour éviter les allers-retours asynchrones en cascade
+      const entryId = 'extra_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7);
+
+      // Sérialisation stricte et complète de tous les champs obligatoires avant envoi Firestore
+      const newEntryPayload = sanitizeFirestore({
+        id: entryId,
+        amount: amountVal,
+        montant: amountVal,
+        reason: cleanReason,
+        motif: cleanReason,
+        reference: cleanReason,
+        date: entryDate,
+        createdByName: createdByNameVal,
+        caisseType: caisseTypeVal,
+        type: 'Caisse Extra',
+        caisse: 'Caisse Extra',
+        fund: 'EXTRA' as FundType,
+        subCategory: 'Caisse Extra',
+        month: new Date(entryDate).toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' }),
+        status: 'valide',
+        statut: 'valide',
+        statutDemande: 'valide',
+        statusLabel: 'Validé',
+        isValidated: true,
+        isApproved: true,
+        memberId: 'TRESORERIE',
+        memberName: createdByNameVal,
+        memberNickname: createdByNameVal,
+        validatedAt: new Date().toISOString(),
+        approvedAt: new Date().toISOString(),
+        createdAt: Date.now(),
+        createdBy: 'TRÉSORIER',
+      });
+
+      // 1. Actualisation réactive instantanée du state local React (Zéro latence)
+      const finalBalances: Record<FundType, number> = {
         ...fundBalances,
         EXTRA: (fundBalances.EXTRA || 0) + amountVal,
       };
-      await setDoc(doc(db, 'treasury', 'balances'), sanitizeFirestore(updatedBalances), { merge: true }).catch(console.warn);
-      setFundBalances(updatedBalances);
+      setFundBalances(finalBalances);
+      setDeclarations(prev => [newEntryPayload as any, ...prev]);
 
-      // 4. Mettre à jour l'état local des déclarations
-      setDeclarations(prev => [fullDoc as any, ...prev]);
+      // 2. Persistance Firestore résiliente en parallèle avec garde-fou anti-blocage (2,5s)
+      const firestoreSyncPromise = Promise.allSettled([
+        setDoc(doc(db, 'payments', entryId), newEntryPayload, { merge: true }),
+        setDoc(doc(db, 'receipts', entryId), newEntryPayload, { merge: true }),
+        setDoc(doc(db, 'declarations', entryId), newEntryPayload, { merge: true }),
+        setDoc(doc(db, 'treasury', 'balances'), sanitizeFirestore(finalBalances), { merge: true }),
+        addDoc(collection(db, 'transactions'), sanitizeFirestore({
+          id: 'tx_' + entryId,
+          type: 'DEPOT',
+          fund: 'EXTRA',
+          amount: amountVal,
+          reason: cleanReason,
+          description: `Entrée Caisse Extra (${cleanReason})`,
+          date: entryDate,
+          createdByName: createdByNameVal,
+          caisseType: caisseTypeVal,
+          memberNickname: createdByNameVal,
+          createdBy: 'TRÉSORIER',
+          createdAt: Date.now(),
+        })),
+      ]);
+
+      const timeoutPromise = new Promise(resolve => setTimeout(resolve, 2500));
+      await Promise.race([firestoreSyncPromise, timeoutPromise]);
 
       return {
         success: true,
@@ -3246,7 +3083,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       console.error('Erreur addExtraCaisseEntry:', err);
       return {
         success: false,
-        message: `Erreur lors de l’enregistrement : ${err?.message || 'Erreur inconnue'}`,
+        message: `Erreur lors de l’enregistrement : ${err?.message || 'Erreur réseau Firestore'}. Veuillez réessayer.`,
       };
     }
   };

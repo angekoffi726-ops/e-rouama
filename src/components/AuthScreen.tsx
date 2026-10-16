@@ -5,7 +5,7 @@ import { useApp } from '../context/AppContext';
 import { ADMIN_USERS, INITIAL_ROUAMA_MEMBERS, getRegisteredMembersCount, isMemberActive } from '../data/membersData';
 import { getDefaultRolesForMember } from '../data/departmentMapping';
 import { AdminRole } from '../types';
-import { Shield, KeyRound, UserCheck, AlertCircle, Lock, ArrowRight, CheckCircle2 } from 'lucide-react';
+import { Shield, KeyRound, UserCheck, AlertCircle, Lock, ArrowRight, CheckCircle2, Loader2 } from 'lucide-react';
 import { requestPushPermissionAndSaveToken, dispatchPushNotification, refreshFcmTokenOnStartup } from '../utils/pushNotificationService';
 
 const normalizeName = (str: string): string => {
@@ -101,6 +101,10 @@ export const AuthScreen: React.FC = () => {
   const [adminRoleInput, setAdminRoleInput] = useState('');
   const [adminPinInput, setAdminPinInput] = useState('');
 
+  // Loading States
+  const [isSubmittingLogin, setIsSubmittingLogin] = useState<boolean>(false);
+  const [isSubmittingRegister, setIsSubmittingRegister] = useState<boolean>(false);
+
   // Status Message
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
@@ -138,80 +142,35 @@ export const AuthScreen: React.FC = () => {
       return;
     }
 
-    // 1. RECHERCHE DE MEMBRE INSENSIBLE À LA CASSE DANS LES DONNÉES EN TEMPS RÉEL
-    const member = (liveMembersList || members).find(m =>
-      (m.login || m.firstName || m.name || '').toLowerCase() === inputName ||
-      (m.nickname || '').toLowerCase() === inputName ||
-      (m.fullRosterName || '').toLowerCase().includes(inputName) ||
-      normalizeName(m.firstName).toLowerCase() === inputName ||
-      normalizeName(m.nickname).toLowerCase() === inputName ||
-      (m.id === '2' && (inputName === 'ortiniel' || inputName === 'esprit'))
-    );
-
-    // Si aucun membre n'est trouvé, simple message d'erreur rouge sur le formulaire
-    if (!member) {
-      setErrorMsg("Prénom non reconnu dans la liste des membres.");
-      return;
-    }
-
-    // Sécurité : Empêcher l'écrasement du code PIN d'un compte déjà activé
-    const existingPin = String(member.pinCode || member.pin || '').trim();
-    if (member.isRegistered && existingPin && existingPin !== String(codePin).trim()) {
-      alert(`Le compte de ${member.nickname} est déjà activé. Veuillez vous connecter avec votre code PIN dans l'onglet Connexion.`);
-      setErrorMsg(`Le compte de ${member.nickname} est déjà activé. Connectez-vous avec votre code PIN personnel.`);
-      return;
-    }
-
-    // 2. SÉCURISATION DU PROCESSUS D'ACTIVATION (ASYNC/AWAIT & FIRESTORE)
-    const memberId = member.id;
-    const inputPin = String(codePin).trim();
-    const nowIso = new Date().toISOString();
-
+    setIsSubmittingRegister(true);
     try {
-      // 1. Mise à jour Firestore immédiate requise par la consigne
-      try {
-        await updateDoc(doc(db, "users", memberId), {
-          pinCode: inputPin,
-          pin: inputPin,
-          isRegistered: true,
-          statut: "Activé",
-          lastLogin: nowIso,
-          updatedAt: nowIso
-        });
-      } catch {
-        await setDoc(doc(db, "users", memberId), {
-          id: memberId,
-          firstName: member.firstName,
-          nickname: member.nickname,
-          fullRosterName: member.fullRosterName,
-          pinCode: inputPin,
-          pin: inputPin,
-          isRegistered: true,
-          statut: "Activé",
-          lastLogin: nowIso,
-          updatedAt: nowIso
-        }, { merge: true });
+      // 1. RECHERCHE DE MEMBRE INSENSIBLE À LA CASSE DANS LES DONNÉES EN TEMPS RÉEL
+      const member = (liveMembersList || members).find(m =>
+        (m.login || m.firstName || m.name || '').toLowerCase() === inputName ||
+        (m.nickname || '').toLowerCase() === inputName ||
+        (m.fullRosterName || '').toLowerCase().includes(inputName) ||
+        normalizeName(m.firstName).toLowerCase() === inputName ||
+        normalizeName(m.nickname).toLowerCase() === inputName ||
+        (m.id === '2' && (inputName === 'ortiniel' || inputName === 'esprit'))
+      );
+
+      if (!member) {
+        setErrorMsg("Prénom non reconnu dans la liste des membres.");
+        return;
       }
 
-      // Synchronisation miroir dans members
-      try {
-        await setDoc(doc(db, "members", memberId), {
-          id: memberId,
-          firstName: member.firstName,
-          nickname: member.nickname,
-          fullRosterName: member.fullRosterName,
-          pinCode: inputPin,
-          pin: inputPin,
-          isRegistered: true,
-          statut: "Activé",
-          lastLogin: nowIso,
-          updatedAt: nowIso
-        }, { merge: true });
-      } catch (errM) {
-        console.warn('Miroir members activation:', errM);
+      // Sécurité : Empêcher l'écrasement du code PIN d'un compte déjà activé
+      const existingPin = String(member.pinCode || member.pin || '').trim();
+      if (member.isRegistered && existingPin && existingPin !== String(codePin).trim()) {
+        setErrorMsg(`Le compte de ${member.nickname} est déjà activé. Connectez-vous avec votre code PIN personnel dans l'onglet Connexion.`);
+        return;
       }
 
-      // 2. Mettre à jour le statut local et attacher les rôles / départements
+      const memberId = member.id;
+      const inputPin = String(codePin).trim();
+      const nowIso = new Date().toISOString();
+
+      // Mettre à jour le statut local et attacher les rôles / départements
       const defaultMeta = getDefaultRolesForMember(memberId, member.firstName, member.nickname);
       const userRoles = (member as any).roles || defaultMeta.roles;
       const userDepts = (member as any).departments || defaultMeta.departments;
@@ -241,63 +200,15 @@ export const AuthScreen: React.FC = () => {
         adminRole: userAdminRole,
       };
 
-      // 3. Connecter l'utilisateur en toute sécurité
+      // 1. Redirection et connexion instantanée sans attente de Firebase
       setCurrentUser(sessionData);
       localStorage.setItem('rouama_user', JSON.stringify(updatedMember));
       localStorage.setItem('erouama_active_session', JSON.stringify(sessionData));
-
-      // 4. Rediriger vers l'Accueil
       setSuccessMsg(`Compte activé avec succès ! Bienvenue chez vous, ${member.nickname} !`);
       clearAllFields();
-    } catch (error) {
-      console.error("Erreur lors de l'activation:", error);
-      alert("Une erreur est survenue lors de l'activation. Veuillez réessayer.");
-    }
-  };
 
-  const handleMemberLogin = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setErrorMsg(null);
-    setSuccessMsg(null);
-
-    const inputName = memberLoginName.trim().toLowerCase();
-    if (!inputName) {
-      setErrorMsg('Veuillez saisir votre prénom ou surnom fraternel.');
-      return;
-    }
-
-    const pinCodeSaisi = memberLoginPin.trim();
-    if (!pinCodeSaisi || pinCodeSaisi.length !== 4 || !/^\d{4}$/.test(pinCodeSaisi)) {
-      setErrorMsg('Veuillez saisir votre code PIN à 4 chiffres.');
-      return;
-    }
-
-    // 1. RECHERCHE DE MEMBRE INSENSIBLE À LA CASSE DANS LES DONNÉES EN TEMPS RÉEL
-    const member = (liveMembersList || members).find(m =>
-      (m.login || m.firstName || m.name || '').toLowerCase() === inputName ||
-      (m.nickname || '').toLowerCase() === inputName ||
-      (m.fullRosterName || '').toLowerCase().includes(inputName) ||
-      normalizeName(m.firstName).toLowerCase() === inputName ||
-      normalizeName(m.nickname).toLowerCase() === inputName ||
-      (m.id === '2' && (inputName === 'ortiniel' || inputName === 'esprit'))
-    );
-
-    if (!member) {
-      setErrorMsg("Prénom non reconnu dans la liste des membres.");
-      return;
-    }
-
-    const memberId = member.id;
-    const inputPin = String(pinCodeSaisi).trim();
-    const nowIso = new Date().toISOString();
-
-    // 2. FLUX PREMIÈRE CONNEXION OU VÉRIFICATION STRICTE DU CODE PIN
-    const expectedPin = String(member.pinCode || member.pin || '').trim();
-
-    // Cas 1 : Le membre se connecte pour la première fois (pas encore de code PIN défini dans la base)
-    // Enregistrement immédiat dans Firestore et activation instantanée
-    if (!expectedPin || expectedPin === 'Non défini') {
-      try {
+      // 2. Synchronisation Firestore et notifications Push non-bloquante en arrière-plan
+      (async () => {
         try {
           await updateDoc(doc(db, "users", memberId), {
             pinCode: inputPin,
@@ -306,23 +217,21 @@ export const AuthScreen: React.FC = () => {
             statut: "Activé",
             lastLogin: nowIso,
             updatedAt: nowIso
+          }).catch(async () => {
+            await setDoc(doc(db, "users", memberId), {
+              id: memberId,
+              firstName: member.firstName,
+              nickname: member.nickname,
+              fullRosterName: member.fullRosterName,
+              pinCode: inputPin,
+              pin: inputPin,
+              isRegistered: true,
+              statut: "Activé",
+              lastLogin: nowIso,
+              updatedAt: nowIso
+            }, { merge: true }).catch(() => {});
           });
-        } catch {
-          await setDoc(doc(db, "users", memberId), {
-            id: memberId,
-            firstName: member.firstName,
-            nickname: member.nickname,
-            fullRosterName: member.fullRosterName,
-            pinCode: inputPin,
-            pin: inputPin,
-            isRegistered: true,
-            statut: "Activé",
-            lastLogin: nowIso,
-            updatedAt: nowIso
-          }, { merge: true });
-        }
 
-        try {
           await setDoc(doc(db, "members", memberId), {
             id: memberId,
             firstName: member.firstName,
@@ -334,13 +243,92 @@ export const AuthScreen: React.FC = () => {
             statut: "Activé",
             lastLogin: nowIso,
             updatedAt: nowIso
-          }, { merge: true });
-        } catch (e) {
-          console.warn(e);
+          }, { merge: true }).catch(() => {});
+
+          requestPushPermissionAndSaveToken(member.id, 'MEMBER', member.id).catch(() => {});
+
+          dispatchPushNotification({
+            title: 'E-ROUAMA : Nouveau Membre Activé',
+            body: `Bienvenue à ${member.nickname || member.firstName} qui vient d'activer son compte !`,
+            senderRole: 'SYSTÈME',
+            senderName: 'E-ROUAMA',
+            targetRole: 'ALL',
+            type: 'GENERAL',
+            url: '/',
+          }).catch(() => {});
+        } catch (syncErr) {
+          console.warn('Note synchronisation Firestore activation:', syncErr);
         }
+      })();
+    } catch (error: any) {
+      console.error("Erreur lors de l'activation:", error);
+      setErrorMsg("Une erreur est survenue lors de l'activation. Veuillez réessayer.");
+    } finally {
+      setIsSubmittingRegister(false);
+    }
+  };
+
+  const handleMemberLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErrorMsg(null);
+    setSuccessMsg(null);
+
+    const inputName = memberLoginName.trim();
+    if (!inputName) {
+      setErrorMsg('Veuillez saisir votre prénom ou identifiant.');
+      return;
+    }
+
+    const pinCodeSaisi = memberLoginPin.trim();
+    if (!pinCodeSaisi || pinCodeSaisi.length < 4) {
+      setErrorMsg('Veuillez saisir votre code PIN (au moins 4 chiffres).');
+      return;
+    }
+
+    setIsSubmittingLogin(true);
+    try {
+      const inputLower = inputName.toLowerCase();
+
+      // 1. RECHERCHE DE MEMBRE INSENSIBLE À LA CASSE
+      const member = (liveMembersList || members).find(m =>
+        (m.login || m.firstName || m.name || '').toLowerCase() === inputLower ||
+        (m.nickname || '').toLowerCase() === inputLower ||
+        (m.fullRosterName || '').toLowerCase().includes(inputLower) ||
+        normalizeName(m.firstName).toLowerCase() === inputLower ||
+        normalizeName(m.nickname).toLowerCase() === inputLower ||
+        (m.id === '2' && (inputLower === 'ortiniel' || inputLower === 'esprit'))
+      );
+
+      // Si aucun membre n'est trouvé, vérifier s'il s'agit d'un compte Administrateur direct (TRESORIER, CERVEAU, PAYOR, etc.)
+      if (!member) {
+        const adminRes = loginAdmin(inputName, pinCodeSaisi);
+        if (adminRes.success) {
+          setSuccessMsg(adminRes.message);
+          clearAllFields();
+          return;
+        }
+        setErrorMsg("Prénom ou identifiant non reconnu. Veuillez vérifier l'orthographe.");
+        return;
+      }
+
+      const memberId = member.id;
+      const inputPin = String(pinCodeSaisi).trim();
+      const nowIso = new Date().toISOString();
+      const expectedPin = String(member.pinCode || member.pin || '').trim();
+
+      // Cas 1 : Première connexion (pas encore de code PIN défini dans la base)
+      if (!expectedPin || expectedPin === 'Non défini') {
+        const defaultMeta = getDefaultRolesForMember(memberId, member.firstName, member.nickname);
+        const userRoles = (member as any).roles || defaultMeta.roles;
+        const userDepts = (member as any).departments || defaultMeta.departments;
+        const userAdminRole = (member as any).adminRole || (member as any).assignedRole || defaultMeta.adminRole;
 
         const updatedMember = {
           ...member,
+          roles: userRoles,
+          departments: userDepts,
+          adminRole: userAdminRole,
+          assignedRole: userAdminRole,
           isRegistered: true,
           statut: 'Activé',
           pin: inputPin,
@@ -351,76 +339,93 @@ export const AuthScreen: React.FC = () => {
           updatedAt: nowIso
         };
 
-        setCurrentUser(updatedMember);
+        const sessionData = {
+          type: 'MEMBER' as const,
+          activeView: 'MEMBER' as const,
+          member: updatedMember,
+          id: memberId,
+          roles: userRoles,
+          departments: userDepts,
+          adminRole: userAdminRole,
+        };
+
+        // Redirection immédiate
+        setCurrentUser(sessionData);
         localStorage.setItem('rouama_user', JSON.stringify(updatedMember));
-        localStorage.setItem('erouama_active_session', JSON.stringify({ type: 'MEMBER', member: updatedMember }));
-
-        // Demande de permission et enregistrement du token Push FCM dans Firestore (users/{userId}/fcmToken)
-        requestPushPermissionAndSaveToken(member.id, 'MEMBER', member.id).catch((err) => {
-          console.warn('Note enregistrement FCM token membre (activation):', err);
-        });
-
-        // Diffusion de la notification Push pour informer le groupe du nouveau compte activé
-        dispatchPushNotification({
-          title: 'E-ROUAMA : Nouveau Membre Activé',
-          body: `Bienvenue à ${member.nickname || member.firstName} qui vient d'activer son compte !`,
-          senderRole: 'SYSTÈME',
-          senderName: 'E-ROUAMA',
-          targetRole: 'ALL',
-          type: 'GENERAL',
-          url: '/',
-        }).catch(console.warn);
-
+        localStorage.setItem('erouama_active_session', JSON.stringify(sessionData));
         setSuccessMsg(`Bienvenue chez vous, ${member.nickname} ! Votre compte a été activé.`);
         clearAllFields();
+
+        // Synchronisation non-bloquante en arrière-plan
+        (async () => {
+          try {
+            await updateDoc(doc(db, "users", memberId), {
+              pinCode: inputPin,
+              pin: inputPin,
+              isRegistered: true,
+              statut: "Activé",
+              lastLogin: nowIso,
+              updatedAt: nowIso
+            }).catch(async () => {
+              await setDoc(doc(db, "users", memberId), {
+                id: memberId,
+                firstName: member.firstName,
+                nickname: member.nickname,
+                fullRosterName: member.fullRosterName,
+                pinCode: inputPin,
+                pin: inputPin,
+                isRegistered: true,
+                statut: "Activé",
+                lastLogin: nowIso,
+                updatedAt: nowIso
+              }, { merge: true }).catch(() => {});
+            });
+
+            await setDoc(doc(db, "members", memberId), {
+              id: memberId,
+              firstName: member.firstName,
+              nickname: member.nickname,
+              fullRosterName: member.fullRosterName,
+              pinCode: inputPin,
+              pin: inputPin,
+              isRegistered: true,
+              statut: "Activé",
+              lastLogin: nowIso,
+              updatedAt: nowIso
+            }, { merge: true }).catch(() => {});
+
+            requestPushPermissionAndSaveToken(member.id, 'MEMBER', member.id).catch(() => {});
+            dispatchPushNotification({
+              title: 'E-ROUAMA : Nouveau Membre Activé',
+              body: `Bienvenue à ${member.nickname || member.firstName} qui vient d'activer son compte !`,
+              senderRole: 'SYSTÈME',
+              senderName: 'E-ROUAMA',
+              targetRole: 'ALL',
+              type: 'GENERAL',
+              url: '/',
+            }).catch(() => {});
+          } catch (syncErr) {
+            console.warn('Note sync activation première connexion:', syncErr);
+          }
+        })();
+
         return;
-      } catch (err) {
-        console.error('Erreur activation première connexion:', err);
-        setErrorMsg("Une erreur est survenue lors de l'enregistrement de votre code PIN.");
+      }
+
+      // Cas 2 : Le compte est déjà activé -> Vérification du code PIN
+      if (inputPin !== expectedPin) {
+        // Possibilité alternative : le membre a saisi son mot de passe de rôle Admin
+        const adminRes = loginAdmin(inputName, pinCodeSaisi);
+        if (adminRes.success) {
+          setSuccessMsg(adminRes.message);
+          clearAllFields();
+          return;
+        }
+        setErrorMsg("Code PIN incorrect. Veuillez vérifier votre code.");
         return;
       }
-    }
 
-    // Cas 2 : Le compte est déjà activé -> VÉRIFICATION STRICTE DU CODE PIN
-    // L'accès doit TOUJOURS être refusé avec une alerte ("Code PIN incorrect") si String(inputPin).trim() !== String(member.pinCode).trim()
-    if (inputPin !== expectedPin) {
-      alert("Code PIN incorrect");
-      setErrorMsg("Code PIN incorrect.");
-      return;
-    }
-
-    try {
-      try {
-        await updateDoc(doc(db, "users", memberId), {
-          pinCode: inputPin,
-          pin: inputPin,
-          isRegistered: true,
-          statut: "Activé",
-          lastLogin: nowIso
-        });
-      } catch {
-        await setDoc(doc(db, "users", memberId), {
-          id: memberId,
-          pinCode: inputPin,
-          pin: inputPin,
-          isRegistered: true,
-          statut: "Activé",
-          lastLogin: nowIso
-        }, { merge: true });
-      }
-
-      try {
-        await setDoc(doc(db, "members", memberId), {
-          pinCode: inputPin,
-          pin: inputPin,
-          isRegistered: true,
-          statut: "Activé",
-          lastLogin: nowIso
-        }, { merge: true });
-      } catch (e) {
-        console.warn(e);
-      }
-
+      // Code PIN correct -> Attachement des rôles et départements
       const defaultMeta = getDefaultRolesForMember(memberId, member.firstName, member.nickname);
       const userRoles = (member as any).roles || defaultMeta.roles;
       const userDepts = (member as any).departments || defaultMeta.departments;
@@ -441,21 +446,6 @@ export const AuthScreen: React.FC = () => {
         lastLogin: nowIso
       };
 
-      // Si le membre possède un rôle administratif attribué, enregistrer dans admin_logs
-      if (userAdminRole) {
-        try {
-          await addDoc(collection(db, 'admin_logs'), {
-            userId: member.id,
-            memberName: `${member.firstName} (${member.nickname || member.name})`,
-            role: userAdminRole,
-            loginTimestamp: nowIso,
-            dateString: nowIso.split('T')[0],
-          });
-        } catch (e) {
-          console.warn('Erreur log admin_logs membre:', e);
-        }
-      }
-
       const sessionData = {
         type: 'MEMBER' as const,
         activeView: 'MEMBER' as const,
@@ -466,20 +456,61 @@ export const AuthScreen: React.FC = () => {
         adminRole: userAdminRole,
       };
 
+      // Redirection instantanée sans attente réseau
       setCurrentUser(sessionData);
       localStorage.setItem('rouama_user', JSON.stringify(updatedMember));
       localStorage.setItem('erouama_active_session', JSON.stringify(sessionData));
-
-      // Demande de permission et enregistrement du token Push FCM dans Firestore (users/{userId}/fcmToken)
-      requestPushPermissionAndSaveToken(member.id, 'MEMBER', member.id).catch((err) => {
-        console.warn('Note enregistrement FCM token membre:', err);
-      });
-
       setSuccessMsg(`Bienvenue chez vous, ${member.nickname} !`);
       clearAllFields();
-    } catch (err) {
+
+      // Synchronisation Firestore non bloquante en arrière-plan
+      (async () => {
+        try {
+          await updateDoc(doc(db, "users", memberId), {
+            pinCode: inputPin,
+            pin: inputPin,
+            isRegistered: true,
+            statut: "Activé",
+            lastLogin: nowIso
+          }).catch(async () => {
+            await setDoc(doc(db, "users", memberId), {
+              id: memberId,
+              pinCode: inputPin,
+              pin: inputPin,
+              isRegistered: true,
+              statut: "Activé",
+              lastLogin: nowIso
+            }, { merge: true }).catch(() => {});
+          });
+
+          await setDoc(doc(db, "members", memberId), {
+            pinCode: inputPin,
+            pin: inputPin,
+            isRegistered: true,
+            statut: "Activé",
+            lastLogin: nowIso
+          }, { merge: true }).catch(() => {});
+
+          if (userAdminRole) {
+            await addDoc(collection(db, 'admin_logs'), {
+              userId: member.id,
+              memberName: `${member.firstName} (${member.nickname || member.name})`,
+              role: userAdminRole,
+              loginTimestamp: nowIso,
+              dateString: nowIso.split('T')[0],
+            }).catch(() => {});
+          }
+
+          requestPushPermissionAndSaveToken(member.id, 'MEMBER', member.id).catch(() => {});
+        } catch (syncErr) {
+          console.warn('Note sync Firestore login:', syncErr);
+        }
+      })();
+    } catch (err: any) {
       console.error('Erreur connexion membre:', err);
       setErrorMsg("Une erreur est survenue lors de la connexion. Veuillez réessayer.");
+    } finally {
+      setIsSubmittingLogin(false);
     }
   };
 
@@ -621,11 +652,12 @@ export const AuthScreen: React.FC = () => {
               <div className="relative">
                 <input
                   type="password"
-                  maxLength={4}
+                  maxLength={8}
                   placeholder="••••"
+                  disabled={isSubmittingLogin}
                   value={memberLoginPin}
                   onChange={e => setMemberLoginPin(e.target.value.replace(/\D/g, ''))}
-                  className="w-full bg-[#F5EEDC]/50 border-2 border-[#E67E22]/30 rounded-2xl px-4 py-3 text-center text-2xl font-black tracking-widest text-[#E67E22] focus:outline-none focus:border-[#E67E22] transition-all placeholder:text-slate-400 placeholder:text-lg"
+                  className="w-full bg-[#F5EEDC]/50 border-2 border-[#E67E22]/30 rounded-2xl px-4 py-3 text-center text-2xl font-black tracking-widest text-[#E67E22] focus:outline-none focus:border-[#E67E22] transition-all placeholder:text-slate-400 placeholder:text-lg disabled:opacity-50"
                 />
                 <Lock className="w-5 h-5 text-[#E67E22] absolute right-4 top-4 opacity-50" />
               </div>
@@ -633,10 +665,20 @@ export const AuthScreen: React.FC = () => {
 
             <button
               type="submit"
-              className="w-full bg-[#E67E22] hover:bg-[#D35400] text-white font-black py-4 rounded-2xl shadow-lg hover:shadow-xl transition-all flex items-center justify-center gap-2 text-base active:scale-98"
+              disabled={isSubmittingLogin}
+              className="w-full bg-[#E67E22] hover:bg-[#D35400] text-white font-black py-4 rounded-2xl shadow-lg hover:shadow-xl transition-all flex items-center justify-center gap-2 text-base active:scale-98 disabled:opacity-60 cursor-pointer"
             >
-              <span>Se Connecter à E-ROUAMA</span>
-              <ArrowRight className="w-5 h-5" />
+              {isSubmittingLogin ? (
+                <>
+                  <Loader2 className="w-5 h-5 animate-spin" />
+                  <span>Connexion en cours...</span>
+                </>
+              ) : (
+                <>
+                  <span>Se Connecter à E-ROUAMA</span>
+                  <ArrowRight className="w-5 h-5" />
+                </>
+              )}
             </button>
           </form>
         )}
@@ -650,9 +692,10 @@ export const AuthScreen: React.FC = () => {
               </label>
               <input
                 type="text"
+                disabled={isSubmittingRegister}
                 value={regMemberName}
                 onChange={e => setRegMemberName(e.target.value)}
-                className="w-full bg-[#F5EEDC]/50 border-2 border-[#355E3B]/20 rounded-2xl px-4 py-3 text-sm font-semibold text-slate-800 focus:outline-none focus:border-[#355E3B] transition-all"
+                className="w-full bg-[#F5EEDC]/50 border-2 border-[#355E3B]/20 rounded-2xl px-4 py-3 text-sm font-semibold text-slate-800 focus:outline-none focus:border-[#355E3B] transition-all disabled:opacity-50"
               />
             </div>
 
@@ -664,18 +707,29 @@ export const AuthScreen: React.FC = () => {
                 type="password"
                 maxLength={4}
                 placeholder="••••"
+                disabled={isSubmittingRegister}
                 value={regMemberPin}
                 onChange={e => setRegMemberPin(e.target.value.replace(/\D/g, ''))}
-                className="w-full bg-[#F5EEDC]/50 border-2 border-[#355E3B]/20 rounded-2xl px-4 py-3 text-center text-2xl font-black tracking-widest text-[#355E3B] focus:outline-none focus:border-[#355E3B] transition-all placeholder:text-slate-400 placeholder:text-lg"
+                className="w-full bg-[#F5EEDC]/50 border-2 border-[#355E3B]/20 rounded-2xl px-4 py-3 text-center text-2xl font-black tracking-widest text-[#355E3B] focus:outline-none focus:border-[#355E3B] transition-all placeholder:text-slate-400 placeholder:text-lg disabled:opacity-50"
               />
             </div>
 
             <button
               type="submit"
-              className="w-full bg-[#E67E22] hover:opacity-90 text-white font-black py-4 rounded-2xl shadow-lg hover:shadow-xl transition-all flex items-center justify-center gap-2 text-base active:scale-98"
+              disabled={isSubmittingRegister}
+              className="w-full bg-[#E67E22] hover:opacity-90 text-white font-black py-4 rounded-2xl shadow-lg hover:shadow-xl transition-all flex items-center justify-center gap-2 text-base active:scale-98 disabled:opacity-60 cursor-pointer"
             >
-              <span>Créer mon Code PIN & Activer mon Compte</span>
-              <UserCheck className="w-5 h-5" />
+              {isSubmittingRegister ? (
+                <>
+                  <Loader2 className="w-5 h-5 animate-spin" />
+                  <span>Activation en cours...</span>
+                </>
+              ) : (
+                <>
+                  <span>Créer mon Code PIN & Activer mon Compte</span>
+                  <UserCheck className="w-5 h-5" />
+                </>
+              )}
             </button>
           </form>
         )}

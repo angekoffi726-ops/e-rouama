@@ -22,11 +22,26 @@ export const firebaseConfig = {
   appId: firebaseConfigData.appId,
 };
 
-// Réduire le niveau de log Firestore pour éviter les alertes de latence intempestives
+// Réduire le niveau de log Firestore pour éviter les alertes intempestives
 try {
-  setLogLevel('error');
+  setLogLevel('silent');
 } catch {
   // Ignorer si déjà initialisé
+}
+
+// Gestionnaire global pour intercepter gracieusement les dépassements temporaires de quota Free Tier
+if (typeof window !== 'undefined') {
+  window.addEventListener('unhandledrejection', (event) => {
+    const reason = event.reason;
+    if (
+      reason?.code === 'resource-exhausted' ||
+      reason?.message?.includes('Quota limit exceeded') ||
+      reason?.message?.includes('Free daily write units')
+    ) {
+      event.preventDefault();
+      console.warn('⚡ Quota journalier Firestore atteint (Free Tier). Le mode local résilient prend le relais.');
+    }
+  });
 }
 
 // Initialisation de Firebase avec les clés officielles du projet

@@ -833,6 +833,8 @@ export const AdminPortal: React.FC = () => {
   const [extraDepositReason, setExtraDepositReason] = useState<string>('');
   const [extraDepositAmount, setExtraDepositAmount] = useState<string>('');
   const [isSubmittingExtra, setIsSubmittingExtra] = useState<boolean>(false);
+  const [extraModalError, setExtraModalError] = useState<string | null>(null);
+  const [extraModalSuccess, setExtraModalSuccess] = useState<string | null>(null);
 
   const [bilanTitle, setBilanTitle] = useState<string>('');
   const [bilanPeriodMode, setBilanPeriodMode] = useState<'GLOBAL' | 'PERIODIC'>('GLOBAL');
@@ -3402,6 +3404,8 @@ export const AdminPortal: React.FC = () => {
                       setExtraDepositDate(new Date().toISOString().split('T')[0]);
                       setExtraDepositReason('');
                       setExtraDepositAmount('');
+                      setExtraModalError(null);
+                      setExtraModalSuccess(null);
                       setShowExtraDepositModal(true);
                     }}
                     className="w-full mt-2 py-1.5 px-2.5 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 text-white rounded-xl text-xs font-black flex items-center justify-center gap-1.5 shadow-md shadow-amber-500/20 transition-all active:scale-95 cursor-pointer"
@@ -10211,58 +10215,93 @@ export const AdminPortal: React.FC = () => {
             <form
               onSubmit={async (e) => {
                 e.preventDefault();
+                setExtraModalError(null);
+                setExtraModalSuccess(null);
+
                 const amt = Number(extraDepositAmount);
                 if (!amt || amt <= 0) {
-                  alert('Veuillez saisir une somme valide supérieure à 0 F CFA.');
+                  setExtraModalError('Veuillez saisir une somme valide supérieure à 0 F CFA.');
                   return;
                 }
                 if (!extraDepositReason.trim()) {
-                  alert('Veuillez renseigner le motif du dépôt.');
+                  setExtraModalError('Veuillez renseigner le motif du dépôt.');
                   return;
                 }
 
                 setIsSubmittingExtra(true);
                 try {
+                  const createdByName =
+                    currentUser?.member?.firstName ||
+                    currentUser?.member?.nickname ||
+                    (currentUser?.type === 'ADMIN' ? currentUser.adminRole : undefined) ||
+                    'Trésorier Général';
+
                   const res = await addExtraCaisseEntry({
                     date: extraDepositDate,
                     reason: extraDepositReason.trim(),
                     amount: amt,
+                    createdByName,
+                    caisseType: 'extra',
                   });
 
-                  if (res.success) {
-                    // Actualisation réactive instantanée des paiements locaux pour mise à jour immédiate à l'écran
+                  if (res && res.success) {
+                    // Actualisation réactive instantanée des paiements locaux
                     const localDoc = {
                       id: 'extra_' + Date.now(),
                       fund: 'EXTRA',
                       type: 'Caisse Extra',
                       caisse: 'Caisse Extra',
+                      caisseType: 'extra',
                       amount: amt,
                       montant: amt,
                       date: extraDepositDate,
                       reason: extraDepositReason.trim(),
                       motif: extraDepositReason.trim(),
                       reference: extraDepositReason.trim(),
+                      createdByName,
                       status: 'valide',
                       isValidated: true,
                       isApproved: true,
                     };
                     setFirestorePayments(prev => [localDoc, ...prev]);
 
-                    alert(res.message);
-                    setShowExtraDepositModal(false);
-                    setExtraDepositReason('');
-                    setExtraDepositAmount('');
+                    setExtraModalSuccess(res.message);
+                    setTimeout(() => {
+                      setShowExtraDepositModal(false);
+                      setExtraDepositReason('');
+                      setExtraDepositAmount('');
+                      setExtraModalSuccess(null);
+                    }, 1400);
                   } else {
-                    alert(res.message);
+                    setExtraModalError(res?.message || 'Une erreur est survenue lors de l’enregistrement.');
                   }
                 } catch (err: any) {
-                  alert('Erreur lors de l’enregistrement : ' + (err?.message || 'Erreur inconnue'));
+                  setExtraModalError('Erreur lors de l’enregistrement : ' + (err?.message || 'Erreur réseau Firestore'));
                 } finally {
                   setIsSubmittingExtra(false);
                 }
               }}
               className="p-5 sm:p-6 space-y-4 text-xs"
             >
+              {/* Message d'erreur clair si échec */}
+              {extraModalError && (
+                <div className="p-3.5 bg-rose-950/80 border border-rose-500/60 text-rose-200 rounded-2xl flex items-start gap-2.5 animate-shake">
+                  <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                  <div className="space-y-0.5">
+                    <p className="font-bold text-rose-300">Échec de l'enregistrement</p>
+                    <p className="text-[11px] leading-relaxed">{extraModalError}</p>
+                  </div>
+                </div>
+              )}
+
+              {/* Message de succès */}
+              {extraModalSuccess && (
+                <div className="p-3.5 bg-emerald-950/80 border border-emerald-500/60 text-emerald-200 rounded-2xl flex items-center gap-2.5 animate-fadeIn">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                  <p className="font-bold text-[11px]">{extraModalSuccess}</p>
+                </div>
+              )}
+
               {/* 1. Date de l'entrée */}
               <div>
                 <label className="block text-xs font-bold text-slate-300 uppercase mb-2">
@@ -10271,9 +10310,13 @@ export const AdminPortal: React.FC = () => {
                 <input
                   type="date"
                   required
+                  disabled={isSubmittingExtra}
                   value={extraDepositDate}
-                  onChange={(e) => setExtraDepositDate(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-2xl px-4 py-3 text-sm font-bold text-white focus:outline-none focus:border-amber-500"
+                  onChange={(e) => {
+                    setExtraModalError(null);
+                    setExtraDepositDate(e.target.value);
+                  }}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-2xl px-4 py-3 text-sm font-bold text-white focus:outline-none focus:border-amber-500 disabled:opacity-50"
                 />
               </div>
 
@@ -10285,10 +10328,14 @@ export const AdminPortal: React.FC = () => {
                 <input
                   type="text"
                   required
+                  disabled={isSubmittingExtra}
                   placeholder="Ex: Fonds antérieurs d'activité, amende pour indiscipline..."
                   value={extraDepositReason}
-                  onChange={(e) => setExtraDepositReason(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-2xl px-4 py-3 text-sm font-bold text-white focus:outline-none focus:border-amber-500"
+                  onChange={(e) => {
+                    setExtraModalError(null);
+                    setExtraDepositReason(e.target.value);
+                  }}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-2xl px-4 py-3 text-sm font-bold text-white focus:outline-none focus:border-amber-500 disabled:opacity-50"
                 />
                 {/* Suggestions rapides */}
                 <div className="flex flex-wrap gap-1.5 mt-2">
@@ -10301,8 +10348,12 @@ export const AdminPortal: React.FC = () => {
                     <button
                       key={sug}
                       type="button"
-                      onClick={() => setExtraDepositReason(sug)}
-                      className="text-[10px] font-bold px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg border border-slate-700 transition-all cursor-pointer"
+                      disabled={isSubmittingExtra}
+                      onClick={() => {
+                        setExtraModalError(null);
+                        setExtraDepositReason(sug);
+                      }}
+                      className="text-[10px] font-bold px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg border border-slate-700 transition-all cursor-pointer disabled:opacity-50"
                     >
                       + {sug}
                     </button>
@@ -10319,10 +10370,14 @@ export const AdminPortal: React.FC = () => {
                   type="number"
                   required
                   min="1"
+                  disabled={isSubmittingExtra}
                   placeholder="Ex: 50000"
                   value={extraDepositAmount}
-                  onChange={(e) => setExtraDepositAmount(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-2xl px-4 py-3 text-sm font-bold text-white focus:outline-none focus:border-amber-500"
+                  onChange={(e) => {
+                    setExtraModalError(null);
+                    setExtraDepositAmount(e.target.value);
+                  }}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-2xl px-4 py-3 text-sm font-bold text-white focus:outline-none focus:border-amber-500 disabled:opacity-50"
                 />
               </div>
 
@@ -10346,8 +10401,9 @@ export const AdminPortal: React.FC = () => {
               <div className="flex items-center justify-end gap-3 pt-3">
                 <button
                   type="button"
+                  disabled={isSubmittingExtra}
                   onClick={() => setShowExtraDepositModal(false)}
-                  className="px-5 py-3 rounded-2xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-xs transition-all cursor-pointer"
+                  className="px-5 py-3 rounded-2xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-xs transition-all cursor-pointer disabled:opacity-50"
                 >
                   Annuler
                 </button>
@@ -10357,7 +10413,10 @@ export const AdminPortal: React.FC = () => {
                   className="px-6 py-3 rounded-2xl bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 text-white font-black text-xs flex items-center gap-2 shadow-lg shadow-amber-500/20 transition-all active:scale-95 disabled:opacity-50 cursor-pointer"
                 >
                   {isSubmittingExtra ? (
-                    <span>Enregistrement en cours...</span>
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      <span>Enregistrement en cours...</span>
+                    </>
                   ) : (
                     <>
                       <CheckCircle2 className="w-4 h-4" />
