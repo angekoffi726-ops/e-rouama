@@ -621,6 +621,14 @@ export const AdminPortal: React.FC = () => {
       .filter(w => getWithdrawalFund(w) === 'ANNIVERSAIRE')
       .reduce((acc, w) => acc + getWithdrawalAmount(w), 0);
 
+    const withdrawnSoiree = approvedWithdrawals
+      .filter(w => {
+        const f = getWithdrawalFund(w);
+        const src = String(w.fund || (w as any).caisseSource || '').toUpperCase();
+        return f === 'SOIREE_ROUAMA' || src.includes('SOIREE') || src.includes('SOIRÉE');
+      })
+      .reduce((acc, w) => acc + getWithdrawalAmount(w), 0);
+
     const withdrawnSorties = approvedWithdrawals
       .filter(w => getWithdrawalFund(w) === 'LOISIRS')
       .reduce((acc, w) => acc + getWithdrawalAmount(w), 0);
@@ -657,6 +665,18 @@ export const AdminPortal: React.FC = () => {
         p.fund === 'ANNIVERSAIRE' ||
         p.type === 'Célébration 21 mars (Anniversaire)' ||
         p.caisse === 'Célébration 21 mars (Anniversaire)'
+      )
+      .reduce((acc, p) => acc + (Number(p.amount) || Number(p.montant) || 0), 0);
+
+    const rawSoiree = validatedPayments
+      .filter(p => 
+        p.fund === 'SOIREE_ROUAMA' ||
+        p.type === 'Soirée Rouama' ||
+        p.caisse === 'Soirée Rouama' ||
+        p.type === 'Soirée ROUAMA' ||
+        p.caisse === 'Soirée ROUAMA' ||
+        p.subCategory === 'Soirée Rouama' ||
+        p.subCategory === 'Soirée ROUAMA'
       )
       .reduce((acc, p) => acc + (Number(p.amount) || Number(p.montant) || 0), 0);
 
@@ -706,6 +726,7 @@ export const AdminPortal: React.FC = () => {
     // Soldes nets réels après déduction dynamique des décaissements validés par le CERVEAU
     const cotisations = Math.max(0, rawCotisations - withdrawnCotisations);
     const anniversaire = Math.max(0, rawAnniversaire - withdrawnAnniversaire);
+    const soiree = Math.max(0, rawSoiree - withdrawnSoiree);
     const sorties = Math.max(0, rawSorties - withdrawnSorties);
     const agr = Math.max(0, rawAgr - withdrawnAgr);
     const casSociaux = Math.max(0, rawCasSociaux - withdrawnCasSociaux);
@@ -716,6 +737,7 @@ export const AdminPortal: React.FC = () => {
       total, 
       cotisations, 
       anniversaire, 
+      soiree,
       sorties, 
       agr, 
       casSociaux, 
@@ -844,7 +866,7 @@ export const AdminPortal: React.FC = () => {
     LOISIRS: treasuryBalances.sorties,
     AGR: treasuryBalances.agr,
     CAS_SOCIAUX: treasuryBalances.casSociaux,
-    SOIREE_ROUAMA: fundBalances.SOIREE_ROUAMA || 0,
+    SOIREE_ROUAMA: (treasuryBalances as any).soiree !== undefined ? (treasuryBalances as any).soiree : (fundBalances.SOIREE_ROUAMA || 0),
     EXTRA: treasuryBalances.extra !== undefined ? treasuryBalances.extra : (fundBalances.EXTRA || 0),
   }), [treasuryBalances, fundBalances]);
 
@@ -926,8 +948,16 @@ export const AdminPortal: React.FC = () => {
   const [extraModalSuccess, setExtraModalSuccess] = useState<string | null>(null);
 
   // Filtres multicritères pour l'Historique Trésorier (Caisse & Membre)
-  const [historyFundFilter, setHistoryFundFilter] = useState<'ALL' | FundType>('ALL');
+  const [historyFundFilter, setHistoryFundFilter] = useState<'ALL' | FundType | 'EVENEMENTS_ORG'>('ALL');
   const [historyMemberFilter, setHistoryMemberFilter] = useState<'ALL' | string>('ALL');
+
+  // Filtres dédiés au Bloc Général Entrées (Encaissements Validés)
+  const [entriesFundFilter, setEntriesFundFilter] = useState<'ALL' | FundType | 'EVENEMENTS_ORG'>('ALL');
+  const [entriesMemberFilter, setEntriesMemberFilter] = useState<'ALL' | string>('ALL');
+
+  // Filtres dédiés au Bloc Général Sorties (Décaissements Approuvés)
+  const [withdrawalsFundFilter, setWithdrawalsFundFilter] = useState<'ALL' | FundType | 'EVENEMENTS_ORG'>('ALL');
+  const [withdrawalsMemberFilter, setWithdrawalsMemberFilter] = useState<'ALL' | string>('ALL');
 
   // Filtres spécifiques au bloc dédié "Mouvements & Bénéfices Projets AGR"
   const [agrHistoryProjectFilter, setAgrHistoryProjectFilter] = useState<'ALL' | string>('ALL');
@@ -1069,47 +1099,91 @@ export const AdminPortal: React.FC = () => {
     return (payments || [])
       .filter(p => isPaymentValidated(p))
       .filter(p => {
-        if (historyFundFilter !== 'ALL') {
+        const effectiveFundFilter = entriesFundFilter !== 'ALL' ? entriesFundFilter : historyFundFilter;
+        if (effectiveFundFilter !== 'ALL') {
           let pFund = p.fund;
           if (!pFund) {
             const t = String(p.type || p.caisse || '').toUpperCase();
             if (t.includes('EXTRA')) pFund = 'EXTRA';
             else if (t.includes('AGR') || t.includes('PROJET')) pFund = 'AGR';
             else if (t.includes('COTIS')) pFund = 'COTISATION';
-            else if (t.includes('ANNIV')) pFund = 'ANNIVERSAIRE';
+            else if (t.includes('ANNIV') || t.includes('21 MARS') || t.includes('CÉLÉBRATION') || t.includes('CELEBRATION')) pFund = 'ANNIVERSAIRE';
+            else if (t.includes('SOIREE') || t.includes('SOIRÉE')) pFund = 'SOIREE_ROUAMA';
             else if (t.includes('LOISIR') || t.includes('SORTIE')) pFund = 'LOISIRS';
             else if (t.includes('CAS') || t.includes('SOCIAL')) pFund = 'CAS_SOCIAUX';
           }
-          if (pFund !== historyFundFilter) return false;
+          if (effectiveFundFilter === 'EVENEMENTS_ORG') {
+            if (pFund !== 'ANNIVERSAIRE' && pFund !== 'SOIREE_ROUAMA') return false;
+          } else {
+            if (pFund !== effectiveFundFilter) return false;
+          }
         }
 
-        if (historyMemberFilter !== 'ALL') {
-          const mId = String(p.memberId || '');
-          if (mId !== historyMemberFilter) return false;
+        const effectiveMemberFilter = entriesMemberFilter !== 'ALL' ? entriesMemberFilter : historyMemberFilter;
+        if (effectiveMemberFilter !== 'ALL') {
+          const selMember = members.find(m => m.id === effectiveMemberFilter);
+          const selNick = (selMember?.nickname || '').toLowerCase().trim();
+          const selFirst = (selMember?.firstName || '').toLowerCase().trim();
+          const selFull = `${selMember?.firstName || ''} ${selMember?.fullRosterName || ''}`.toLowerCase().trim();
+
+          const mId = String(p.memberId || '').trim();
+          const pNick = String(p.memberNickname || (p as any).nickname || '').toLowerCase().trim();
+          const pName = String(p.memberName || (p as any).name || (p as any).createdByName || '').toLowerCase().trim();
+
+          const matchesId = mId === effectiveMemberFilter;
+          const matchesNick = !!(selNick && (pNick.includes(selNick) || pName.includes(selNick)));
+          const matchesFirst = !!(selFirst && (pName.includes(selFirst) || pNick.includes(selFirst)));
+          const matchesFull = !!(selFull && (pName.includes(selFull) || pNick.includes(selFull)));
+
+          if (!matchesId && !matchesNick && !matchesFirst && !matchesFull) return false;
         }
 
         return true;
       });
-  }, [payments, historyFundFilter, historyMemberFilter]);
+  }, [payments, entriesFundFilter, entriesMemberFilter, historyFundFilter, historyMemberFilter, members]);
 
   const filteredGeneralWithdrawals = useMemo(() => {
     return (withdrawals || [])
       .filter(w => w.status === 'APPROVED' || (w as any).isApproved === true || String(w.status).toLowerCase().includes('approuv'))
       .filter(w => {
-        if (historyFundFilter !== 'ALL') {
-          const src = String(w.fund || (w as any).caisseSource || '').toUpperCase();
+        const effectiveFundFilter = withdrawalsFundFilter !== 'ALL' ? withdrawalsFundFilter : historyFundFilter;
+        if (effectiveFundFilter !== 'ALL') {
+          const src = String(w.fund || (w as any).caisseSource || (w as any).caisse || '').toUpperCase();
           let wFund: FundType = 'EXTRA';
           if (src.includes('EXTRA')) wFund = 'EXTRA';
           else if (src.includes('AGR') || src.includes('PROJET')) wFund = 'AGR';
           else if (src.includes('COTIS')) wFund = 'COTISATION';
-          else if (src.includes('ANNIV')) wFund = 'ANNIVERSAIRE';
+          else if (src.includes('ANNIV') || src.includes('21 MARS') || src.includes('CÉLÉBRATION')) wFund = 'ANNIVERSAIRE';
+          else if (src.includes('SOIREE') || src.includes('SOIRÉE')) wFund = 'SOIREE_ROUAMA';
           else if (src.includes('LOISIR') || src.includes('SORTIE')) wFund = 'LOISIRS';
           else if (src.includes('CAS') || src.includes('SOCIAL')) wFund = 'CAS_SOCIAUX';
-          if (wFund !== historyFundFilter) return false;
+          
+          if (effectiveFundFilter === 'EVENEMENTS_ORG') {
+            if (wFund !== 'ANNIVERSAIRE' && wFund !== 'SOIREE_ROUAMA') return false;
+          } else {
+            if (wFund !== effectiveFundFilter) return false;
+          }
         }
+
+        const effectiveMemberFilter = withdrawalsMemberFilter !== 'ALL' ? withdrawalsMemberFilter : historyMemberFilter;
+        if (effectiveMemberFilter !== 'ALL') {
+          const selMember = members.find(m => m.id === effectiveMemberFilter);
+          const selNick = (selMember?.nickname || '').toLowerCase().trim();
+          const selFirst = (selMember?.firstName || '').toLowerCase().trim();
+
+          const wMemberId = String((w as any).memberId || (w as any).requestedById || '').trim();
+          const wAuthor = String(w.requestedBy || (w as any).beneficiaryName || '').toLowerCase().trim();
+
+          const matchesId = wMemberId === effectiveMemberFilter;
+          const matchesNick = !!(selNick && wAuthor.includes(selNick));
+          const matchesFirst = !!(selFirst && wAuthor.includes(selFirst));
+
+          if (!matchesId && !matchesNick && !matchesFirst) return false;
+        }
+
         return true;
       });
-  }, [withdrawals, historyFundFilter]);
+  }, [withdrawals, withdrawalsFundFilter, withdrawalsMemberFilter, historyFundFilter, historyMemberFilter, members]);
 
   // Tous les mouvements de la Caisse Projets AGR (Apports, Bénéfices & Décaissements)
   const agrMovements = useMemo(() => {
@@ -1223,12 +1297,23 @@ export const AdminPortal: React.FC = () => {
       if (agrHistoryFluxFilter === 'DECAISSEMENTS' && item.itemType !== 'DECAISSEMENT') return false;
 
       if (historyMemberFilter !== 'ALL') {
-        if (item.memberId && item.memberId !== historyMemberFilter) return false;
+        const selMember = members.find(m => m.id === historyMemberFilter);
+        const selNick = (selMember?.nickname || '').toLowerCase().trim();
+        const selFirst = (selMember?.firstName || '').toLowerCase().trim();
+
+        const mId = String(item.memberId || '').trim();
+        const mName = String(item.memberDisplayName || '').toLowerCase().trim();
+
+        const matchesId = mId === historyMemberFilter;
+        const matchesNick = !!(selNick && mName.includes(selNick));
+        const matchesFirst = !!(selFirst && mName.includes(selFirst));
+
+        if (!matchesId && !matchesNick && !matchesFirst) return false;
       }
 
       return true;
     });
-  }, [agrMovements, agrHistoryProjectFilter, agrHistoryFluxFilter, historyMemberFilter]);
+  }, [agrMovements, agrHistoryProjectFilter, agrHistoryFluxFilter, historyMemberFilter, members]);
 
   const agrTotalApports = useMemo(() => {
     return agrMovements.filter(m => m.itemType === 'APPORT').reduce((s, m) => s + m.amount, 0);
@@ -2694,8 +2779,9 @@ export const AdminPortal: React.FC = () => {
               <div class="sub-card-val">${(balances.COTISATION || 0).toLocaleString('fr-FR')} F</div>
             </div>
             <div class="sub-card">
-              <div class="sub-card-title">Anniversaire (21 Mars)</div>
-              <div class="sub-card-val">${(balances.ANNIVERSAIRE || 0).toLocaleString('fr-FR')} F</div>
+              <div class="sub-card-title">Événements Fixes (ORG)</div>
+              <div class="sub-card-val">${((balances.ANNIVERSAIRE || 0) + (balances.SOIREE_ROUAMA || 0)).toLocaleString('fr-FR')} F</div>
+              <div style="font-size:9px; color:#64748b; margin-top:2px;">21 Mars: ${(balances.ANNIVERSAIRE || 0).toLocaleString('fr-FR')} F • Soirée: ${(balances.SOIREE_ROUAMA || 0).toLocaleString('fr-FR')} F</div>
             </div>
             <div class="sub-card">
               <div class="sub-card-title">Sorties & Loisirs</div>
@@ -3878,15 +3964,22 @@ export const AdminPortal: React.FC = () => {
                   <span className="text-[10px] text-slate-500 block font-medium">Cotisations statutaires</span>
                 </div>
 
-                {/* Sous-Solde 2 : Célébration 21 mars (Anniversaire) */}
+                {/* Sous-Solde 2 : Événements Fixes (ORG) */}
                 <div className="bg-slate-950 border border-slate-800/80 rounded-2xl p-4 space-y-1 hover:border-amber-500/40 transition-all">
-                  <span className="text-[11px] font-bold text-slate-400 block truncate">
-                    Célébration 21 mars (Anniversaire)
-                  </span>
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-bold text-slate-400 block truncate">
+                      Événements Fixes (ORG)
+                    </span>
+                    <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 font-bold border border-amber-500/30">
+                      Cumulé
+                    </span>
+                  </div>
                   <p className="text-xl font-black text-amber-400">
-                    {(liveFundBalances.ANNIVERSAIRE || 0).toLocaleString('fr-FR')} <span className="text-xs font-bold text-slate-400">F CFA</span>
+                    {((liveFundBalances.ANNIVERSAIRE || 0) + (liveFundBalances.SOIREE_ROUAMA || 0)).toLocaleString('fr-FR')} <span className="text-xs font-bold text-slate-400">F CFA</span>
                   </p>
-                  <span className="text-[10px] text-slate-500 block font-medium">Événementiel 21 Mars</span>
+                  <span className="text-[10px] text-amber-300/80 block font-medium truncate" title={`21 Mars: ${(liveFundBalances.ANNIVERSAIRE || 0).toLocaleString('fr-FR')} F • Soirée: ${(liveFundBalances.SOIREE_ROUAMA || 0).toLocaleString('fr-FR')} F`}>
+                    21 Mars: {(liveFundBalances.ANNIVERSAIRE || 0).toLocaleString('fr-FR')} F • Soirée: {(liveFundBalances.SOIREE_ROUAMA || 0).toLocaleString('fr-FR')} F
+                  </span>
                 </div>
 
                 {/* Sous-Solde 3 : Sorties & Loisirs */}
@@ -5942,12 +6035,19 @@ export const AdminPortal: React.FC = () => {
                     <span className="text-[11px] font-bold text-slate-400 uppercase">Caisse :</span>
                     <select
                       value={historyFundFilter}
-                      onChange={e => setHistoryFundFilter(e.target.value as any)}
+                      onChange={e => {
+                        const val = e.target.value as any;
+                        setHistoryFundFilter(val);
+                        setEntriesFundFilter(val);
+                        setWithdrawalsFundFilter(val);
+                      }}
                       className="bg-slate-950 border border-slate-700/80 rounded-xl px-3 py-2 text-xs font-bold text-white focus:outline-none focus:border-amber-500 cursor-pointer"
                     >
                       <option value="ALL">🏛️ Toutes les Caisses</option>
                       <option value="COTISATION">📅 Cotisation Mensuelle</option>
-                      <option value="ANNIVERSAIRE">🎉 Célébration 21 Mars</option>
+                      <option value="EVENEMENTS_ORG">🎭 Événements Fixes (ORG - Tout)</option>
+                      <option value="ANNIVERSAIRE">&nbsp;&nbsp;↳ 🎉 Célébration 21 Mars</option>
+                      <option value="SOIREE_ROUAMA">&nbsp;&nbsp;↳ 🌙 Soirée ROUAMA</option>
                       <option value="LOISIRS">🏖️ Sorties & Loisirs</option>
                       <option value="AGR">🌱 Projets AGR</option>
                       <option value="CAS_SOCIAUX">🤝 Cas Sociaux & Entraide</option>
@@ -5960,7 +6060,12 @@ export const AdminPortal: React.FC = () => {
                     <span className="text-[11px] font-bold text-slate-400 uppercase">Membre :</span>
                     <select
                       value={historyMemberFilter}
-                      onChange={e => setHistoryMemberFilter(e.target.value)}
+                      onChange={e => {
+                        const val = e.target.value;
+                        setHistoryMemberFilter(val);
+                        setEntriesMemberFilter(val);
+                        setWithdrawalsMemberFilter(val);
+                      }}
                       className="bg-slate-950 border border-slate-700/80 rounded-xl px-3 py-2 text-xs font-bold text-white focus:outline-none focus:border-amber-500 cursor-pointer max-w-[200px]"
                     >
                       <option value="ALL">👥 Tous les Membres</option>
@@ -5972,12 +6077,16 @@ export const AdminPortal: React.FC = () => {
                     </select>
                   </div>
 
-                  {(historyFundFilter !== 'ALL' || historyMemberFilter !== 'ALL') && (
+                  {(historyFundFilter !== 'ALL' || historyMemberFilter !== 'ALL' || entriesFundFilter !== 'ALL' || entriesMemberFilter !== 'ALL' || withdrawalsFundFilter !== 'ALL' || withdrawalsMemberFilter !== 'ALL') && (
                     <button
                       type="button"
                       onClick={() => {
                         setHistoryFundFilter('ALL');
                         setHistoryMemberFilter('ALL');
+                        setEntriesFundFilter('ALL');
+                        setEntriesMemberFilter('ALL');
+                        setWithdrawalsFundFilter('ALL');
+                        setWithdrawalsMemberFilter('ALL');
                       }}
                       className="px-2.5 py-2 bg-slate-800 hover:bg-slate-700 text-rose-300 rounded-xl text-xs font-bold border border-rose-500/30 transition-all cursor-pointer"
                     >
@@ -6014,7 +6123,7 @@ export const AdminPortal: React.FC = () => {
                     </div>
                   </div>
 
-                  {/* Sous-filtres spécifiques AGR (Projet et Type de flux) */}
+                  {/* Sous-filtres spécifiques AGR (Projet, Flux et Membre) */}
                   <div className="flex flex-wrap items-center gap-2">
                     <select
                       value={agrHistoryProjectFilter}
@@ -6036,6 +6145,19 @@ export const AdminPortal: React.FC = () => {
                       <option value="APPORTS">📥 Apports Membres</option>
                       <option value="BENEFICES">📈 Bénéfices Projets</option>
                       <option value="DECAISSEMENTS">💸 Décaissements AGR</option>
+                    </select>
+
+                    <select
+                      value={historyMemberFilter}
+                      onChange={e => setHistoryMemberFilter(e.target.value)}
+                      className="bg-slate-950 border border-purple-500/40 rounded-xl px-3 py-2 text-xs font-bold text-purple-200 focus:outline-none focus:border-purple-400 cursor-pointer max-w-[190px]"
+                    >
+                      <option value="ALL">👥 Tous les Contributeurs</option>
+                      {members.map(m => (
+                        <option key={m.id} value={m.id}>
+                          {m.nickname || m.firstName}
+                        </option>
+                      ))}
                     </select>
                   </div>
                 </div>
@@ -6143,19 +6265,86 @@ export const AdminPortal: React.FC = () => {
               {/* ========================================================= */}
               {/* Bloc Entrées (Encaissements validés) */}
               <div className="bg-slate-900 rounded-[2.5rem] p-6 sm:p-8 border border-slate-800 shadow-xl space-y-6">
-                <div className="flex items-center justify-between">
-                  <h2 className="text-xl font-black text-white flex items-center gap-2">
-                    <CheckCircle2 className="w-5 h-5 text-emerald-400" />
-                    <span>Bloc Général Entrées (Encaissements Validés)</span>
-                  </h2>
-                  <span className="bg-emerald-500/20 text-emerald-300 text-xs font-black px-3 py-1 rounded-full border border-emerald-500/30">
-                    {filteredGeneralPayments.length} encaissements
-                  </span>
+                <div className="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-4 pb-4 border-b border-slate-800">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-2xl bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center text-emerald-400">
+                      <CheckCircle2 className="w-5 h-5 text-emerald-400" />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <h2 className="text-xl font-black text-white">
+                          Bloc Général Entrées (Encaissements Validés)
+                        </h2>
+                        <span className="bg-emerald-500/20 text-emerald-300 text-xs font-black px-3 py-1 rounded-full border border-emerald-500/30">
+                          {filteredGeneralPayments.length} encaissement{filteredGeneralPayments.length > 1 ? 's' : ''}
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-400 mt-0.5">
+                        Tous les encaissements validés (Cotisations, Événements, Cas Sociaux, AGR & Caisse Extra)
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Filtres déroulants dynamiques du Bloc Général Entrées */}
+                  <div className="flex flex-wrap items-center gap-2">
+                    {/* Filtre A : Par Caisse */}
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[11px] font-bold text-slate-400 uppercase">Caisse :</span>
+                      <select
+                        value={entriesFundFilter}
+                        onChange={e => setEntriesFundFilter(e.target.value as any)}
+                        className="bg-slate-950 border border-emerald-500/40 rounded-xl px-3 py-2 text-xs font-bold text-emerald-300 focus:outline-none focus:border-emerald-400 cursor-pointer"
+                        title="Filtrer par Caisse"
+                      >
+                        <option value="ALL">🏛️ Toutes les Caisses</option>
+                        <option value="COTISATION">📅 Cotisation Mensuelle</option>
+                        <option value="EVENEMENTS_ORG">🎭 Événements Fixes (ORG)</option>
+                        <option value="ANNIVERSAIRE">&nbsp;&nbsp;↳ 🎉 Célébration 21 Mars</option>
+                        <option value="SOIREE_ROUAMA">&nbsp;&nbsp;↳ 🌙 Soirée ROUAMA</option>
+                        <option value="LOISIRS">🏖️ Sorties & Loisirs</option>
+                        <option value="AGR">🌱 Projets AGR</option>
+                        <option value="CAS_SOCIAUX">🤝 Cas Sociaux & Entraide</option>
+                        <option value="EXTRA">⭐ Caisse Extra</option>
+                      </select>
+                    </div>
+
+                    {/* Filtre B : Par Membre */}
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[11px] font-bold text-slate-400 uppercase">Membre :</span>
+                      <select
+                        value={entriesMemberFilter}
+                        onChange={e => setEntriesMemberFilter(e.target.value)}
+                        className="bg-slate-950 border border-emerald-500/40 rounded-xl px-3 py-2 text-xs font-bold text-emerald-300 focus:outline-none focus:border-emerald-400 cursor-pointer max-w-[190px]"
+                        title="Filtrer par Membre contributeur"
+                      >
+                        <option value="ALL">👥 Tous les Membres</option>
+                        {members.map(m => (
+                          <option key={m.id} value={m.id}>
+                            {m.nickname || m.firstName}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    {(entriesFundFilter !== 'ALL' || entriesMemberFilter !== 'ALL') && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEntriesFundFilter('ALL');
+                          setEntriesMemberFilter('ALL');
+                        }}
+                        className="px-2.5 py-2 bg-slate-800 hover:bg-slate-700 text-rose-300 rounded-xl text-xs font-bold border border-rose-500/30 transition-all cursor-pointer"
+                        title="Réinitialiser les filtres des entrées"
+                      >
+                        ✕
+                      </button>
+                    )}
+                  </div>
                 </div>
 
                 {filteredGeneralPayments.length === 0 ? (
                   <div className="text-center py-10 bg-slate-950 rounded-2xl border border-dashed border-slate-800 text-slate-500 text-sm">
-                    Aucun encaissement validé ne correspond aux filtres sélectionnés.
+                    Aucun encaissement trouvé pour ces critères.
                   </div>
                 ) : (
                   <div className="overflow-x-auto">
@@ -6269,19 +6458,86 @@ export const AdminPortal: React.FC = () => {
 
               {/* Bloc Sorties (Décaissements approuvés) */}
               <div className="bg-slate-900 rounded-[2.5rem] p-6 sm:p-8 border border-slate-800 shadow-xl space-y-6">
-                <div className="flex items-center justify-between">
-                  <h2 className="text-xl font-black text-white flex items-center gap-2">
-                    <XCircle className="w-5 h-5 text-rose-400" />
-                    <span>Bloc Général Sorties (Décaissements Approuvés par le CERVEAU)</span>
-                  </h2>
-                  <span className="bg-rose-500/20 text-rose-300 text-xs font-black px-3 py-1 rounded-full border border-rose-500/30">
-                    {filteredGeneralWithdrawals.length} décaissements
-                  </span>
+                <div className="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-4 pb-4 border-b border-slate-800">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-2xl bg-rose-500/20 border border-rose-500/40 flex items-center justify-center text-rose-400">
+                      <XCircle className="w-5 h-5 text-rose-400" />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <h2 className="text-xl font-black text-white">
+                          Bloc Général Sorties (Décaissements Approuvés par le CERVEAU)
+                        </h2>
+                        <span className="bg-rose-500/20 text-rose-300 text-xs font-black px-3 py-1 rounded-full border border-rose-500/30">
+                          {filteredGeneralWithdrawals.length} décaissement{filteredGeneralWithdrawals.length > 1 ? 's' : ''}
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-400 mt-0.5">
+                        Décaissements autorisés par le CERVEAU et prélevés sur les sous-caisses
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Filtres déroulants dynamiques du Bloc Général Sorties */}
+                  <div className="flex flex-wrap items-center gap-2">
+                    {/* Filtre A : Par Caisse Source */}
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[11px] font-bold text-slate-400 uppercase">Caisse Source :</span>
+                      <select
+                        value={withdrawalsFundFilter}
+                        onChange={e => setWithdrawalsFundFilter(e.target.value as any)}
+                        className="bg-slate-950 border border-rose-500/40 rounded-xl px-3 py-2 text-xs font-bold text-rose-300 focus:outline-none focus:border-rose-400 cursor-pointer"
+                        title="Filtrer par Caisse Source"
+                      >
+                        <option value="ALL">🏛️ Toutes les Caisses Source</option>
+                        <option value="COTISATION">📅 Cotisation Mensuelle</option>
+                        <option value="EVENEMENTS_ORG">🎭 Événements Fixes (ORG)</option>
+                        <option value="ANNIVERSAIRE">&nbsp;&nbsp;↳ 🎉 Célébration 21 Mars</option>
+                        <option value="SOIREE_ROUAMA">&nbsp;&nbsp;↳ 🌙 Soirée ROUAMA</option>
+                        <option value="LOISIRS">🏖️ Sorties & Loisirs</option>
+                        <option value="AGR">🌱 Projets AGR</option>
+                        <option value="CAS_SOCIAUX">🤝 Cas Sociaux & Entraide</option>
+                        <option value="EXTRA">⭐ Caisse Extra</option>
+                      </select>
+                    </div>
+
+                    {/* Filtre B : Par Demandeur / Membre */}
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[11px] font-bold text-slate-400 uppercase">Demandeur :</span>
+                      <select
+                        value={withdrawalsMemberFilter}
+                        onChange={e => setWithdrawalsMemberFilter(e.target.value)}
+                        className="bg-slate-950 border border-rose-500/40 rounded-xl px-3 py-2 text-xs font-bold text-rose-300 focus:outline-none focus:border-rose-400 cursor-pointer max-w-[190px]"
+                        title="Filtrer par Demandeur / Bénéficiaire"
+                      >
+                        <option value="ALL">👥 Tous les Demandeurs / Membres</option>
+                        {members.map(m => (
+                          <option key={m.id} value={m.id}>
+                            {m.nickname || m.firstName}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    {(withdrawalsFundFilter !== 'ALL' || withdrawalsMemberFilter !== 'ALL') && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setWithdrawalsFundFilter('ALL');
+                          setWithdrawalsMemberFilter('ALL');
+                        }}
+                        className="px-2.5 py-2 bg-slate-800 hover:bg-slate-700 text-rose-300 rounded-xl text-xs font-bold border border-rose-500/30 transition-all cursor-pointer"
+                        title="Réinitialiser les filtres des sorties"
+                      >
+                        ✕
+                      </button>
+                    )}
+                  </div>
                 </div>
 
                 {filteredGeneralWithdrawals.length === 0 ? (
                   <div className="text-center py-10 bg-slate-950 rounded-2xl border border-dashed border-slate-800 text-slate-500 text-sm">
-                    Aucun décaissement approuvé ne correspond aux critères sélectionnés.
+                    Aucun décaissement trouvé pour ces critères.
                   </div>
                 ) : (
                   <div className="overflow-x-auto">
@@ -11231,10 +11487,23 @@ export const AdminPortal: React.FC = () => {
                   </div>
                 )}
 
-                {/* SÉLECTEUR DE DESTINATION : OPTION A vs OPTION B */}
+                {/* AVERTISSEMENT DE RESTRICTION STRICTE */}
+                <div className="p-3 bg-amber-950/40 border border-amber-500/40 rounded-2xl flex items-start gap-2.5">
+                  <Shield className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                  <div className="space-y-0.5">
+                    <p className="font-black text-amber-300 text-[11px] uppercase tracking-wide">
+                      🔒 Restriction Stricte du Périmètre d'Entrée
+                    </p>
+                    <p className="text-[11px] text-slate-300 leading-relaxed">
+                      Ce bouton d'action manuelle concerne <strong className="text-white">UNIQUEMENT et STRICTEMENT 2 destinations</strong> : la <strong className="text-amber-400">Caisse Extra</strong> et les <strong className="text-purple-400">Bénéfices des Projets</strong>. Aucune autre sous-caisse (Cotisations, Événements, Cas Sociaux) n'est autorisée en saisie manuelle.
+                    </p>
+                  </div>
+                </div>
+
+                {/* SÉLECTEUR DE DESTINATION : DESTINATION 1 vs DESTINATION 2 */}
                 <div>
                   <label className="block text-xs font-black text-amber-300 uppercase tracking-wider mb-2">
-                    🎯 1. Choisir la Caisse de Destination *
+                    🎯 1. Choisir la Caisse de Destination (2 Choix Autorisés) *
                   </label>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <label
@@ -11253,9 +11522,9 @@ export const AdminPortal: React.FC = () => {
                         className="w-4 h-4 text-amber-500 focus:ring-amber-500 mt-0.5"
                       />
                       <div>
-                        <span className="font-black text-xs text-white block">Option A : Caisse Extra</span>
+                        <span className="font-black text-xs text-white block">Destination 1 : Caisse Extra</span>
                         <span className="text-[11px] text-slate-400">
-                          Amendes pour indiscipline, reliquats et fonds divers reçus par le trésorier.
+                          Fonds divers, reliquats et amendes reçus par le trésorier.
                         </span>
                       </div>
                     </label>
@@ -11276,9 +11545,9 @@ export const AdminPortal: React.FC = () => {
                         className="w-4 h-4 text-purple-500 focus:ring-purple-500 mt-0.5"
                       />
                       <div>
-                        <span className="font-black text-xs text-white block">Option B : Caisse Projet / Bénéfices</span>
+                        <span className="font-black text-xs text-white block">Destination 2 : Caisse Projet (Bénéfices)</span>
                         <span className="text-[11px] text-slate-400">
-                          Bénéfices nets générés par un projet spécifique de la Commission Projets.
+                          Bénéfices nets générés par un projet spécifique actif du Département Projet.
                         </span>
                       </div>
                     </label>
@@ -12025,8 +12294,9 @@ export const AdminPortal: React.FC = () => {
                     <span className="font-black text-emerald-800">{(treasurerPreviewBilan.balances.COTISATION || 0).toLocaleString('fr-FR')} F</span>
                   </div>
                   <div className="bg-white p-2.5 rounded-xl border border-slate-200">
-                    <span className="text-[10px] text-slate-500 font-bold block">Anniversaire</span>
-                    <span className="font-black text-emerald-800">{(treasurerPreviewBilan.balances.ANNIVERSAIRE || 0).toLocaleString('fr-FR')} F</span>
+                    <span className="text-[10px] text-slate-500 font-bold block">Événements Fixes (ORG)</span>
+                    <span className="font-black text-emerald-800">{((treasurerPreviewBilan.balances.ANNIVERSAIRE || 0) + (treasurerPreviewBilan.balances.SOIREE_ROUAMA || 0)).toLocaleString('fr-FR')} F</span>
+                    <span className="text-[9px] text-slate-400 block truncate">21 Mars & Soirée</span>
                   </div>
                   <div className="bg-white p-2.5 rounded-xl border border-slate-200">
                     <span className="text-[10px] text-slate-500 font-bold block">Sorties & Loisirs</span>
