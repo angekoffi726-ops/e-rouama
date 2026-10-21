@@ -125,8 +125,19 @@ export function isValidatedDeclaration(d: PaymentDeclaration): boolean {
  * Identifie si un décaissement est formellement approuvé.
  */
 export function isValidatedWithdrawal(w: WithdrawalRequest): boolean {
+  if (!w) return false;
+  if (w.isApproved === true) return true;
   const s = String(w.status || '').toLowerCase().trim();
-  return s === 'approved' || s === 'approuvé' || s === 'validé' || s === 'validated';
+  return (
+    s === 'approved' ||
+    s === 'approuvé' ||
+    s === 'approuve' ||
+    s === 'validé' ||
+    s === 'valide' ||
+    s === 'validated' ||
+    s.includes('approuv') ||
+    s.includes('valid')
+  );
 }
 
 /**
@@ -266,7 +277,16 @@ export function computeBilanData({
   };
 
   filteredDeclarations.forEach(d => {
-    const fund = (d.fund || 'COTISATION') as FundType;
+    let fund = (d.fund || 'COTISATION') as FundType;
+    const typeStr = String((d as any).type || (d as any).caisse || (d as any).subCategory || '').toUpperCase();
+    if (typeStr.includes('EXTRA')) fund = 'EXTRA';
+    else if (typeStr.includes('AGR') || typeStr.includes('PROJET')) fund = 'AGR';
+    else if (typeStr.includes('COTIS')) fund = 'COTISATION';
+    else if (typeStr.includes('ANNIV') || typeStr.includes('CÉLÉBRATION') || typeStr.includes('CELEBRATION')) fund = 'ANNIVERSAIRE';
+    else if (typeStr.includes('LOISIR') || typeStr.includes('SORTIE')) fund = 'LOISIRS';
+    else if (typeStr.includes('CAS') || typeStr.includes('SOCIAL') || typeStr.includes('ENTRAIDE')) fund = 'CAS_SOCIAUX';
+    else if (typeStr.includes('SOIREE') || typeStr.includes('SOIRÉE')) fund = 'SOIREE_ROUAMA';
+
     const amount = Number(d.amount) || Number(d.montant) || 0;
     if (balances[fund] !== undefined) {
       balances[fund] += amount;
@@ -274,8 +294,17 @@ export function computeBilanData({
   });
 
   filteredWithdrawals.forEach(w => {
-    const fund = (w.fund || 'COTISATION') as FundType;
-    const amount = Number(w.amount) || 0;
+    let fund: FundType = (w.fund || 'COTISATION') as FundType;
+    const src = String(w.fund || w.caisseSource || (w as any).caisse || '').toUpperCase().trim();
+    if (src.includes('EXTRA')) fund = 'EXTRA';
+    else if (src.includes('COTIS')) fund = 'COTISATION';
+    else if (src.includes('ANNIV') || src.includes('CÉLÉBRATION') || src.includes('CELEBRATION')) fund = 'ANNIVERSAIRE';
+    else if (src.includes('LOISIR') || src.includes('SORTIE')) fund = 'LOISIRS';
+    else if (src.includes('AGR') || src.includes('PROJET')) fund = 'AGR';
+    else if (src.includes('CAS') || src.includes('SOCIAL') || src.includes('ENTRAIDE')) fund = 'CAS_SOCIAUX';
+    else if (src.includes('SOIREE') || src.includes('SOIRÉE')) fund = 'SOIREE_ROUAMA';
+
+    const amount = Number(w.amount) || Number((w as any).montant) || 0;
     if (balances[fund] !== undefined) {
       balances[fund] -= amount;
     }

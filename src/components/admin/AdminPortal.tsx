@@ -48,6 +48,7 @@ import {
   ChevronDown,
   ChevronUp,
   Calendar,
+  Filter,
   ImageIcon,
   ExternalLink,
   AlertCircle,
@@ -378,6 +379,7 @@ export const AdminPortal: React.FC = () => {
     rejectPayment,
     deleteReceipt,
     addExtraCaisseEntry,
+    addProjectProfitEntry,
     updateExtraCaisseEntry,
     cancelExtraCaisseEntry,
     withdrawals,
@@ -555,7 +557,7 @@ export const AdminPortal: React.FC = () => {
   }, [infoRequests, activeRole]);
 
   // 1. RECALCUL AUTOMATIQUE ET DYNAMIQUE DES SOLDES (FIRESTORE) :
-  const calculateBalances = (paymentsList: any[]) => {
+  const calculateBalances = (paymentsList: any[], withdrawalsList: any[] = []) => {
     // Filtre tous les paiements validés (insensible à la casse/format du statut)
     const validatedPayments = (paymentsList || []).filter(p => 
       !p.isHidden && 
@@ -576,11 +578,69 @@ export const AdminPortal: React.FC = () => {
       )
     );
 
-    // Calcul du Solde Caisse Total
-    const total = validatedPayments.reduce((acc, p) => acc + (Number(p.amount) || Number(p.montant) || 0), 0);
+    // Filtre les décaissements approuvés par le CERVEAU
+    const approvedWithdrawals = (withdrawalsList || []).filter(w => {
+      if (!w) return false;
+      const s = String(w.status || '').toLowerCase().trim();
+      return (
+        w.status === 'APPROVED' ||
+        w.status === 'approved' ||
+        w.isApproved === true ||
+        s === 'approved' ||
+        s === 'approuvé' ||
+        s === 'approuve' ||
+        s === 'validé' ||
+        s === 'valide' ||
+        s.includes('approuv') ||
+        s.includes('valid')
+      );
+    });
 
-    // Calcul par sous-caisse
-    const cotisations = validatedPayments
+    const getWithdrawalFund = (w: any): FundType => {
+      const src = String(w.fund || w.caisseSource || w.caisse || w.sourceCaisse || '').toUpperCase().trim();
+      if (src.includes('EXTRA')) return 'EXTRA';
+      if (src.includes('COTIS')) return 'COTISATION';
+      if (src.includes('ANNIV') || src.includes('CÉLÉBRATION') || src.includes('CELEBRATION')) return 'ANNIVERSAIRE';
+      if (src.includes('LOISIR') || src.includes('SORTIE')) return 'LOISIRS';
+      if (src.includes('AGR') || src.includes('PROJET')) return 'AGR';
+      if (src.includes('CAS') || src.includes('SOCIAL') || src.includes('ENTRAIDE')) return 'CAS_SOCIAUX';
+      if (src.includes('SOIREE') || src.includes('SOIRÉE')) return 'SOIREE_ROUAMA';
+      return (w.fund as FundType) || 'EXTRA';
+    };
+
+    const getWithdrawalAmount = (w: any): number => {
+      return Number(w.amount) || Number(w.montant) || 0;
+    };
+
+    // Déductions approuvées par sous-caisse
+    const withdrawnCotisations = approvedWithdrawals
+      .filter(w => getWithdrawalFund(w) === 'COTISATION')
+      .reduce((acc, w) => acc + getWithdrawalAmount(w), 0);
+
+    const withdrawnAnniversaire = approvedWithdrawals
+      .filter(w => getWithdrawalFund(w) === 'ANNIVERSAIRE')
+      .reduce((acc, w) => acc + getWithdrawalAmount(w), 0);
+
+    const withdrawnSorties = approvedWithdrawals
+      .filter(w => getWithdrawalFund(w) === 'LOISIRS')
+      .reduce((acc, w) => acc + getWithdrawalAmount(w), 0);
+
+    const withdrawnAgr = approvedWithdrawals
+      .filter(w => getWithdrawalFund(w) === 'AGR')
+      .reduce((acc, w) => acc + getWithdrawalAmount(w), 0);
+
+    const withdrawnCasSociaux = approvedWithdrawals
+      .filter(w => getWithdrawalFund(w) === 'CAS_SOCIAUX')
+      .reduce((acc, w) => acc + getWithdrawalAmount(w), 0);
+
+    const withdrawnExtra = approvedWithdrawals
+      .filter(w => getWithdrawalFund(w) === 'EXTRA')
+      .reduce((acc, w) => acc + getWithdrawalAmount(w), 0);
+
+    const totalWithdrawn = approvedWithdrawals.reduce((acc, w) => acc + getWithdrawalAmount(w), 0);
+
+    // Calcul brut des encaissements validés
+    const rawCotisations = validatedPayments
       .filter(p => 
         p.type === 'Cotisation Mensuelle' || 
         p.caisse === 'Cotisation Mensuelle' || 
@@ -590,7 +650,7 @@ export const AdminPortal: React.FC = () => {
       )
       .reduce((acc, p) => acc + (Number(p.amount) || Number(p.montant) || 0), 0);
 
-    const anniversaire = validatedPayments
+    const rawAnniversaire = validatedPayments
       .filter(p => 
         p.type === 'Anniversaire' || 
         p.caisse === 'Anniversaire' || 
@@ -600,7 +660,7 @@ export const AdminPortal: React.FC = () => {
       )
       .reduce((acc, p) => acc + (Number(p.amount) || Number(p.montant) || 0), 0);
 
-    const sorties = validatedPayments
+    const rawSorties = validatedPayments
       .filter(p => 
         p.type === 'Sorties & Loisirs' || 
         p.caisse === 'Sorties & Loisirs' || 
@@ -612,7 +672,7 @@ export const AdminPortal: React.FC = () => {
       )
       .reduce((acc, p) => acc + (Number(p.amount) || Number(p.montant) || 0), 0);
 
-    const agr = validatedPayments
+    const rawAgr = validatedPayments
       .filter(p => 
         p.type === 'Projets AGR' || 
         p.caisse === 'Projets AGR' || 
@@ -622,7 +682,7 @@ export const AdminPortal: React.FC = () => {
       )
       .reduce((acc, p) => acc + (Number(p.amount) || Number(p.montant) || 0), 0);
 
-    const casSociaux = validatedPayments
+    const rawCasSociaux = validatedPayments
       .filter(p => 
         p.type === 'Cas Sociaux' || 
         p.caisse === 'Cas Sociaux' || 
@@ -632,16 +692,39 @@ export const AdminPortal: React.FC = () => {
       )
       .reduce((acc, p) => acc + (Number(p.amount) || Number(p.montant) || 0), 0);
 
-    const extra = validatedPayments
+    const rawExtra = validatedPayments
       .filter(p => 
         p.type === 'Caisse Extra' || 
         p.caisse === 'Caisse Extra' || 
-        p.fund === 'EXTRA' ||
+        p.fund === 'EXTRA' || 
         p.subCategory === 'Caisse Extra'
       )
       .reduce((acc, p) => acc + (Number(p.amount) || Number(p.montant) || 0), 0);
 
-    return { total, cotisations, anniversaire, sorties, agr, casSociaux, extra };
+    const rawTotal = validatedPayments.reduce((acc, p) => acc + (Number(p.amount) || Number(p.montant) || 0), 0);
+
+    // Soldes nets réels après déduction dynamique des décaissements validés par le CERVEAU
+    const cotisations = Math.max(0, rawCotisations - withdrawnCotisations);
+    const anniversaire = Math.max(0, rawAnniversaire - withdrawnAnniversaire);
+    const sorties = Math.max(0, rawSorties - withdrawnSorties);
+    const agr = Math.max(0, rawAgr - withdrawnAgr);
+    const casSociaux = Math.max(0, rawCasSociaux - withdrawnCasSociaux);
+    const extra = Math.max(0, rawExtra - withdrawnExtra);
+    const total = Math.max(0, rawTotal - totalWithdrawn);
+
+    return { 
+      total, 
+      cotisations, 
+      anniversaire, 
+      sorties, 
+      agr, 
+      casSociaux, 
+      extra,
+      rawTotal,
+      rawExtra,
+      withdrawnExtra,
+      totalWithdrawn,
+    };
   };
 
   // 2. ÉCOUTE EN TEMPS RÉEL (onSnapshot) DE LA COLLECTION 'payments'
@@ -752,8 +835,8 @@ export const AdminPortal: React.FC = () => {
     return Array.from(map.values());
   }, [declarations, firestorePayments, locallyHiddenPaymentIds]);
 
-  // Recalcul instantané et dynamique des soldes Trésorier
-  const treasuryBalances = useMemo(() => calculateBalances(payments), [payments]);
+  // Recalcul instantané et dynamique des soldes Trésorier (tenant compte des entrées et des décaissements validés)
+  const treasuryBalances = useMemo(() => calculateBalances(payments, withdrawals), [payments, withdrawals]);
 
   const liveFundBalances = useMemo<Record<FundType, number>>(() => ({
     COTISATION: treasuryBalances.cotisations,
@@ -829,9 +912,12 @@ export const AdminPortal: React.FC = () => {
   const [withReason, setWithReason] = useState<string>('');
   const [withProofRef, setWithProofRef] = useState<string>('');
 
-  // États pour le formulaire et l'historique d'entrée dédiée dans la Caisse Extra
+  // États pour le formulaire et l'historique d'entrée manuelle en Caisse (Extra & Bénéfices Projets AGR)
   const [showExtraDepositModal, setShowExtraDepositModal] = useState<boolean>(false);
   const [extraModalTab, setExtraModalTab] = useState<'NEW' | 'HISTORY'>('NEW');
+  const [manualEntryDestination, setManualEntryDestination] = useState<'EXTRA' | 'AGR_PROFIT'>('EXTRA');
+  const [manualEntrySelectedProjectId, setManualEntrySelectedProjectId] = useState<string>('');
+  const [manualEntryCustomProjectTitle, setManualEntryCustomProjectTitle] = useState<string>('');
   const [extraDepositDate, setExtraDepositDate] = useState<string>(() => new Date().toISOString().split('T')[0]);
   const [extraDepositReason, setExtraDepositReason] = useState<string>('');
   const [extraDepositAmount, setExtraDepositAmount] = useState<string>('');
@@ -839,7 +925,15 @@ export const AdminPortal: React.FC = () => {
   const [extraModalError, setExtraModalError] = useState<string | null>(null);
   const [extraModalSuccess, setExtraModalSuccess] = useState<string | null>(null);
 
-  // États pour la modification d'une entrée Caisse Extra (Fenêtre 1 heure)
+  // Filtres multicritères pour l'Historique Trésorier (Caisse & Membre)
+  const [historyFundFilter, setHistoryFundFilter] = useState<'ALL' | FundType>('ALL');
+  const [historyMemberFilter, setHistoryMemberFilter] = useState<'ALL' | string>('ALL');
+
+  // Filtres spécifiques au bloc dédié "Mouvements & Bénéfices Projets AGR"
+  const [agrHistoryProjectFilter, setAgrHistoryProjectFilter] = useState<'ALL' | string>('ALL');
+  const [agrHistoryFluxFilter, setAgrHistoryFluxFilter] = useState<'ALL' | 'APPORTS' | 'BENEFICES' | 'DECAISSEMENTS'>('ALL');
+
+  // États pour la modification d'une entrée manuelle (Fenêtre 1 heure)
   const [editingExtraEntry, setEditingExtraEntry] = useState<any | null>(null);
   const [editExtraAmount, setEditExtraAmount] = useState<string>('');
   const [editExtraReason, setEditExtraReason] = useState<string>('');
@@ -848,7 +942,7 @@ export const AdminPortal: React.FC = () => {
   const [editExtraError, setEditExtraError] = useState<string | null>(null);
   const [editExtraSuccess, setEditExtraSuccess] = useState<string | null>(null);
 
-  // États pour l'annulation d'une entrée Caisse Extra (Fenêtre 1 heure)
+  // États pour l'annulation d'une entrée manuelle (Fenêtre 1 heure)
   const [cancellingExtraEntry, setCancellingExtraEntry] = useState<any | null>(null);
   const [isSubmittingCancelExtra, setIsSubmittingCancelExtra] = useState<boolean>(false);
   const [cancelExtraError, setCancelExtraError] = useState<string | null>(null);
@@ -875,6 +969,17 @@ export const AdminPortal: React.FC = () => {
     );
   };
 
+  // Détection générique des entrées manuelles (Caisse Extra ou Bénéfice Projet)
+  const isManualEntry = (p: any): boolean => {
+    if (!p) return false;
+    return (
+      isExtraCaisseEntry(p) ||
+      p.subCategory === 'Bénéfice Projet' ||
+      p.entryType === 'BENEFIT' ||
+      String(p.reference || '').startsWith('Bénéfice [')
+    );
+  };
+
   // Récupération sécurisée du timestamp de création
   const getEntryCreatedAtMs = (p: any): number => {
     if (!p) return 0;
@@ -891,7 +996,7 @@ export const AdminPortal: React.FC = () => {
 
   // Éligibilité de l'entrée à la modification ou annulation (créée depuis <= 1 heure)
   const isExtraEntryEditable = (p: any, nowMs: number = nowTimestamp): boolean => {
-    if (!isExtraCaisseEntry(p)) return false;
+    if (!isManualEntry(p)) return false;
     const created = getEntryCreatedAtMs(p);
     if (!created) return false;
     const elapsed = nowMs - created;
@@ -924,10 +1029,10 @@ export const AdminPortal: React.FC = () => {
     setCancelExtraSuccess(null);
   };
 
-  // Liste consolidée des entrées Caisse Extra
+  // Liste consolidée des entrées manuelles (Caisse Extra & Bénéfices Projets)
   const extraCaisseEntries = useMemo(() => {
     return (payments || [])
-      .filter(p => isPaymentValidated(p) && isExtraCaisseEntry(p))
+      .filter(p => isPaymentValidated(p) && isManualEntry(p))
       .sort((a, b) => getEntryCreatedAtMs(b) - getEntryCreatedAtMs(a));
   }, [payments, nowTimestamp]);
 
@@ -935,6 +1040,209 @@ export const AdminPortal: React.FC = () => {
   const extraEntriesWithin1h = useMemo(() => {
     return extraCaisseEntries.filter(p => isExtraEntryEditable(p, nowTimestamp));
   }, [extraCaisseEntries, nowTimestamp]);
+
+  // Ventilation Caisse Projet (AGR) : Apports membres vs Bénéfices projets
+  const agrMemberApports = useMemo(() => {
+    return (payments || [])
+      .filter(p => isPaymentValidated(p))
+      .filter(p => {
+        const isAgr = p.fund === 'AGR' || p.type === 'Projets AGR' || p.caisse === 'Projets AGR' || p.type === 'AGR' || p.caisse === 'AGR';
+        const isProfit = p.subCategory === 'Bénéfice Projet' || (p as any).entryType === 'BENEFIT' || String(p.reference || '').startsWith('Bénéfice [');
+        return isAgr && !isProfit;
+      })
+      .reduce((acc, p) => acc + (Number(p.amount) || Number((p as any).montant) || 0), 0);
+  }, [payments]);
+
+  const agrProjectProfits = useMemo(() => {
+    return (payments || [])
+      .filter(p => isPaymentValidated(p))
+      .filter(p => {
+        const isAgr = p.fund === 'AGR' || p.type === 'Projets AGR' || p.caisse === 'Projets AGR' || p.type === 'AGR' || p.caisse === 'AGR';
+        const isProfit = p.subCategory === 'Bénéfice Projet' || (p as any).entryType === 'BENEFIT' || String(p.reference || '').startsWith('Bénéfice [');
+        return isAgr && isProfit;
+      })
+      .reduce((acc, p) => acc + (Number(p.amount) || Number((p as any).montant) || 0), 0);
+  }, [payments]);
+
+  // Filtrage multicritères de l'historique général (par Caisse et par Membre)
+  const filteredGeneralPayments = useMemo(() => {
+    return (payments || [])
+      .filter(p => isPaymentValidated(p))
+      .filter(p => {
+        if (historyFundFilter !== 'ALL') {
+          let pFund = p.fund;
+          if (!pFund) {
+            const t = String(p.type || p.caisse || '').toUpperCase();
+            if (t.includes('EXTRA')) pFund = 'EXTRA';
+            else if (t.includes('AGR') || t.includes('PROJET')) pFund = 'AGR';
+            else if (t.includes('COTIS')) pFund = 'COTISATION';
+            else if (t.includes('ANNIV')) pFund = 'ANNIVERSAIRE';
+            else if (t.includes('LOISIR') || t.includes('SORTIE')) pFund = 'LOISIRS';
+            else if (t.includes('CAS') || t.includes('SOCIAL')) pFund = 'CAS_SOCIAUX';
+          }
+          if (pFund !== historyFundFilter) return false;
+        }
+
+        if (historyMemberFilter !== 'ALL') {
+          const mId = String(p.memberId || '');
+          if (mId !== historyMemberFilter) return false;
+        }
+
+        return true;
+      });
+  }, [payments, historyFundFilter, historyMemberFilter]);
+
+  const filteredGeneralWithdrawals = useMemo(() => {
+    return (withdrawals || [])
+      .filter(w => w.status === 'APPROVED' || (w as any).isApproved === true || String(w.status).toLowerCase().includes('approuv'))
+      .filter(w => {
+        if (historyFundFilter !== 'ALL') {
+          const src = String(w.fund || (w as any).caisseSource || '').toUpperCase();
+          let wFund: FundType = 'EXTRA';
+          if (src.includes('EXTRA')) wFund = 'EXTRA';
+          else if (src.includes('AGR') || src.includes('PROJET')) wFund = 'AGR';
+          else if (src.includes('COTIS')) wFund = 'COTISATION';
+          else if (src.includes('ANNIV')) wFund = 'ANNIVERSAIRE';
+          else if (src.includes('LOISIR') || src.includes('SORTIE')) wFund = 'LOISIRS';
+          else if (src.includes('CAS') || src.includes('SOCIAL')) wFund = 'CAS_SOCIAUX';
+          if (wFund !== historyFundFilter) return false;
+        }
+        return true;
+      });
+  }, [withdrawals, historyFundFilter]);
+
+  // Tous les mouvements de la Caisse Projets AGR (Apports, Bénéfices & Décaissements)
+  const agrMovements = useMemo(() => {
+    const list: Array<{
+      id: string;
+      itemType: 'APPORT' | 'BENEFICE' | 'DECAISSEMENT';
+      date: string;
+      projectTitle: string;
+      projectId?: string;
+      memberDisplayName: string;
+      memberId?: string;
+      amount: number;
+      reason: string;
+      reference?: string;
+      receiptImage?: string;
+      rawItem: any;
+      createdAt: number;
+    }> = [];
+
+    // 1. Apports membres AGR
+    (payments || [])
+      .filter(p => isPaymentValidated(p))
+      .filter(p => {
+        const isAgr = p.fund === 'AGR' || p.type === 'Projets AGR' || p.caisse === 'Projets AGR' || p.type === 'AGR';
+        const isProfit = p.subCategory === 'Bénéfice Projet' || (p as any).entryType === 'BENEFIT' || String(p.reference || '').startsWith('Bénéfice [');
+        return isAgr && !isProfit;
+      })
+      .forEach(p => {
+        list.push({
+          id: p.id,
+          itemType: 'APPORT',
+          date: p.date || '',
+          projectTitle: (p as any).projectTitle || p.subCategory || 'Contribution Projet Fraternité',
+          projectId: (p as any).projectId,
+          memberDisplayName: p.memberNickname || p.memberName || 'Membre',
+          memberId: p.memberId,
+          amount: Number(p.amount) || Number((p as any).montant) || 0,
+          reason: p.reason || p.motif || p.reference || 'Contribution Projet',
+          reference: p.reference,
+          receiptImage: p.receiptImage,
+          rawItem: p,
+          createdAt: getEntryCreatedAtMs(p),
+        });
+      });
+
+    // 2. Bénéfices projets AGR
+    (payments || [])
+      .filter(p => isPaymentValidated(p))
+      .filter(p => {
+        const isAgr = p.fund === 'AGR' || p.type === 'Projets AGR' || p.caisse === 'Projets AGR' || p.type === 'AGR';
+        const isProfit = p.subCategory === 'Bénéfice Projet' || (p as any).entryType === 'BENEFIT' || String(p.reference || '').startsWith('Bénéfice [');
+        return isAgr && isProfit;
+      })
+      .forEach(p => {
+        list.push({
+          id: p.id,
+          itemType: 'BENEFICE',
+          date: p.date || '',
+          projectTitle: (p as any).projectTitle || 'Projet AGR',
+          projectId: (p as any).projectId,
+          memberDisplayName: (p as any).createdByName || 'Trésorier Général',
+          memberId: 'TRESORERIE',
+          amount: Number(p.amount) || Number((p as any).montant) || 0,
+          reason: p.reason || p.motif || 'Bénéfice généré par le projet',
+          reference: p.reference,
+          rawItem: p,
+          createdAt: getEntryCreatedAtMs(p),
+        });
+      });
+
+    // 3. Décaissements AGR
+    (withdrawals || [])
+      .filter(w => w.status === 'APPROVED' || (w as any).isApproved === true || String(w.status).toLowerCase().includes('approuv'))
+      .filter(w => {
+        const src = String(w.fund || (w as any).caisseSource || '').toUpperCase();
+        return src.includes('AGR') || src.includes('PROJET');
+      })
+      .forEach(w => {
+        list.push({
+          id: w.id,
+          itemType: 'DECAISSEMENT',
+          date: w.date || '',
+          projectTitle: (w as any).projectTitle || (w as any).caisseSource || 'Projets AGR',
+          projectId: (w as any).projectId,
+          memberDisplayName: w.requestedBy || 'Trésorier Général',
+          amount: Number(w.amount) || Number((w as any).montant) || 0,
+          reason: w.reason || 'Décaissement Projet',
+          rawItem: w,
+          createdAt: (w as any).createdAt || (w as any).approvedAt || 0,
+        });
+      });
+
+    return list.sort((a, b) => {
+      if (b.createdAt && a.createdAt) return b.createdAt - a.createdAt;
+      return String(b.date).localeCompare(String(a.date));
+    });
+  }, [payments, withdrawals]);
+
+  // Filtrage local du bloc dédié Projets AGR
+  const filteredAgrMovements = useMemo(() => {
+    return agrMovements.filter(item => {
+      if (agrHistoryProjectFilter !== 'ALL') {
+        const matchProj =
+          (item.projectId && item.projectId === agrHistoryProjectFilter) ||
+          (item.projectTitle && item.projectTitle.toLowerCase().includes(agrHistoryProjectFilter.toLowerCase()));
+        if (!matchProj) return false;
+      }
+
+      if (agrHistoryFluxFilter === 'APPORTS' && item.itemType !== 'APPORT') return false;
+      if (agrHistoryFluxFilter === 'BENEFICES' && item.itemType !== 'BENEFICE') return false;
+      if (agrHistoryFluxFilter === 'DECAISSEMENTS' && item.itemType !== 'DECAISSEMENT') return false;
+
+      if (historyMemberFilter !== 'ALL') {
+        if (item.memberId && item.memberId !== historyMemberFilter) return false;
+      }
+
+      return true;
+    });
+  }, [agrMovements, agrHistoryProjectFilter, agrHistoryFluxFilter, historyMemberFilter]);
+
+  const agrTotalApports = useMemo(() => {
+    return agrMovements.filter(m => m.itemType === 'APPORT').reduce((s, m) => s + m.amount, 0);
+  }, [agrMovements]);
+
+  const agrTotalBenefices = useMemo(() => {
+    return agrMovements.filter(m => m.itemType === 'BENEFICE').reduce((s, m) => s + m.amount, 0);
+  }, [agrMovements]);
+
+  const agrTotalDecaissements = useMemo(() => {
+    return agrMovements.filter(m => m.itemType === 'DECAISSEMENT').reduce((s, m) => s + m.amount, 0);
+  }, [agrMovements]);
+
+  const agrSoldeNet = Math.max(0, agrTotalApports + agrTotalBenefices - agrTotalDecaissements);
 
   // Handler de validation des modifications (Fenêtre 1 heure)
   const handleSaveEditExtra = async (e: React.FormEvent) => {
@@ -2288,7 +2596,7 @@ export const AdminPortal: React.FC = () => {
     // Extraction dynamique de la période (GLOBAL ou PERIODIC) et calcul rigoureux de 100% des transactions
     const periodParams = extractBilanPeriodParams(bilan);
     const computed = computeBilanData({
-      declarations,
+      declarations: payments,
       withdrawals,
       periodMode: periodParams.periodMode,
       startDate: periodParams.startDate,
@@ -2324,7 +2632,7 @@ export const AdminPortal: React.FC = () => {
           .card-title { font-size: 11px; font-weight: bold; color: #64748b; text-transform: uppercase; }
           .card-value { font-size: 20px; font-weight: 900; color: #0f172a; margin-top: 5px; }
           .sub-balances { margin-bottom: 30px; }
-          .sub-balances-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; }
+          .sub-balances-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 10px; }
           .sub-card { background: #f1f5f9; padding: 10px; border-radius: 8px; text-align: center; border: 1px solid #e2e8f0; }
           .sub-card-title { font-size: 10px; font-weight: bold; color: #475569; }
           .sub-card-val { font-size: 13px; font-weight: 800; color: #166534; margin-top: 3px; }
@@ -2543,7 +2851,7 @@ export const AdminPortal: React.FC = () => {
       : `Bilan Financier E-ROUAMA (${bilanPeriodMode === 'GLOBAL' ? 'Global' : 'Périodique'})`;
 
     const computed = computeBilanData({
-      declarations,
+      declarations: payments,
       withdrawals,
       periodMode: bilanPeriodMode,
       startDate: bilanPeriodMode === 'PERIODIC' ? bilanStartDate : undefined,
@@ -3495,7 +3803,7 @@ export const AdminPortal: React.FC = () => {
                 </p>
               </div>
 
-              <div className="flex items-center gap-3">
+              <div className="flex flex-wrap items-center gap-3">
                 <div className="bg-slate-900/90 border border-slate-800 px-4 py-3 rounded-2xl text-center">
                   <span className="block text-[10px] font-bold text-slate-400 uppercase">Reçus en Attente</span>
                   <span className="text-lg font-black text-amber-400">
@@ -3507,6 +3815,46 @@ export const AdminPortal: React.FC = () => {
                   <span className="text-lg font-black text-rose-400">
                     {members.filter(m => getMemberDuesStatus(m.id) === 'RETARD').length} / {members.length}
                   </span>
+                </div>
+
+                {/* Bouton d'Action Globale Trésorerie : Faire une Entrée en Caisse */}
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setManualEntryDestination('EXTRA');
+                      setExtraDepositDate(new Date().toISOString().split('T')[0]);
+                      setExtraDepositReason('');
+                      setExtraDepositAmount('');
+                      setManualEntrySelectedProjectId('');
+                      setManualEntryCustomProjectTitle('');
+                      setExtraModalError(null);
+                      setExtraModalSuccess(null);
+                      setExtraModalTab('NEW');
+                      setShowExtraDepositModal(true);
+                    }}
+                    className="px-4 py-3 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 font-black rounded-2xl text-xs sm:text-sm shadow-xl flex items-center gap-2 cursor-pointer transition-all active:scale-95 border border-amber-300"
+                    title="Enregistrer manuellement une entrée (Caisse Extra ou Bénéfice Projet AGR)"
+                  >
+                    <PlusCircle className="w-4 h-4 text-slate-950" />
+                    <span>+ Faire une Entrée en Caisse</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setExtraModalTab('HISTORY');
+                      setShowExtraDepositModal(true);
+                    }}
+                    className="p-3 bg-slate-950 hover:bg-slate-800 text-amber-300 border border-slate-800 hover:border-amber-500/40 rounded-2xl text-xs font-bold flex items-center gap-1.5 transition-all active:scale-95 cursor-pointer relative"
+                    title="Consulter l'historique des entrées manuelles et modifier/annuler dans l'heure"
+                  >
+                    <Clock className="w-4 h-4 text-amber-400" />
+                    <span className="hidden xl:inline">Gérer (&le; 1h)</span>
+                    {extraEntriesWithin1h.length > 0 && (
+                      <span className="w-2.5 h-2.5 rounded-full bg-amber-400 absolute -top-1 -right-1 animate-ping" />
+                    )}
+                  </button>
                 </div>
               </div>
             </div>
@@ -3552,15 +3900,22 @@ export const AdminPortal: React.FC = () => {
                   <span className="text-[10px] text-slate-500 block font-medium">Activités récréatives</span>
                 </div>
 
-                {/* Sous-Solde 4 : Projets AGR */}
+                {/* Sous-Solde 4 : Projets AGR (Montant cumulé global : Apports + Bénéfices - Décaissements) */}
                 <div className="bg-slate-950 border border-slate-800/80 rounded-2xl p-4 space-y-1 hover:border-purple-500/40 transition-all">
-                  <span className="text-[11px] font-bold text-slate-400 block truncate">
-                    Projets AGR
-                  </span>
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-bold text-slate-400 block truncate">
+                      Projets AGR
+                    </span>
+                    <span className="text-[9px] px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-300 font-bold border border-purple-500/30">
+                      Cumulé
+                    </span>
+                  </div>
                   <p className="text-xl font-black text-purple-400">
                     {(liveFundBalances.AGR || 0).toLocaleString('fr-FR')} <span className="text-xs font-bold text-slate-400">F CFA</span>
                   </p>
-                  <span className="text-[10px] text-slate-500 block font-medium">Investissements & AGR</span>
+                  <span className="text-[10px] text-purple-300/80 block font-medium truncate" title={`Apports membres: ${agrTotalApports.toLocaleString('fr-FR')} F • Bénéfices: ${agrTotalBenefices.toLocaleString('fr-FR')} F`}>
+                    Apports: {agrTotalApports.toLocaleString('fr-FR')} F • Bénéfices: {agrTotalBenefices.toLocaleString('fr-FR')} F
+                  </span>
                 </div>
 
                 {/* Sous-Solde 5 : Cas Sociaux & Entraide */}
@@ -3574,66 +3929,20 @@ export const AdminPortal: React.FC = () => {
                   <span className="text-[10px] text-slate-500 block font-medium">Mariage, Naissances, Décès</span>
                 </div>
 
-                {/* Sous-Solde 6 : Caisse Extra (Entrées libres, amendes & fonds antérieurs) */}
-                <div className="bg-slate-950 border border-amber-500/30 rounded-2xl p-4 space-y-2 hover:border-amber-500/60 transition-all flex flex-col justify-between">
-                  <div className="space-y-1">
-                    <div className="flex items-center justify-between">
-                      <span className="text-[11px] font-bold text-amber-300 block truncate">
-                        Caisse Extra
-                      </span>
-                      <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 font-bold border border-amber-500/30">
-                        Libre
-                      </span>
-                    </div>
-                    <p className="text-xl font-black text-amber-400">
-                      {(liveFundBalances.EXTRA || 0).toLocaleString('fr-FR')} <span className="text-xs font-bold text-slate-400">F CFA</span>
-                    </p>
-                    <span className="text-[10px] text-slate-500 block font-medium">Fonds antérieurs, amendes...</span>
-                    {extraEntriesWithin1h.length > 0 ? (
-                      <div className="mt-1 flex items-center gap-1 text-[10px] font-black text-amber-300 bg-amber-500/15 border border-amber-500/30 px-2 py-0.5 rounded-lg animate-pulse">
-                        <Clock className="w-3 h-3 text-amber-400 shrink-0" />
-                        <span>{extraEntriesWithin1h.length} entrée(s) modifiable(s) (&le; 1h)</span>
-                      </div>
-                    ) : (
-                      <div className="mt-1 flex items-center gap-1 text-[10px] font-medium text-slate-500">
-                        <Lock className="w-3 h-3 shrink-0" />
-                        <span>Entrées verrouillées après 1h</span>
-                      </div>
-                    )}
+                {/* Sous-Solde 6 : Caisse Extra (Harmonisée de manière neutre avec les autres cartes) */}
+                <div className="bg-slate-950 border border-slate-800/80 rounded-2xl p-4 space-y-1 hover:border-amber-500/40 transition-all">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-bold text-slate-400 block truncate">
+                      Caisse Extra
+                    </span>
+                    <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 font-bold border border-amber-500/30">
+                      Divers
+                    </span>
                   </div>
-                  <div className="grid grid-cols-2 gap-1.5 mt-2">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setExtraDepositDate(new Date().toISOString().split('T')[0]);
-                        setExtraDepositReason('');
-                        setExtraDepositAmount('');
-                        setExtraModalError(null);
-                        setExtraModalSuccess(null);
-                        setExtraModalTab('NEW');
-                        setShowExtraDepositModal(true);
-                      }}
-                      className="py-1.5 px-2 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 text-white rounded-xl text-xs font-black flex items-center justify-center gap-1 shadow-md shadow-amber-500/20 transition-all active:scale-95 cursor-pointer"
-                    >
-                      <PlusCircle className="w-3.5 h-3.5" />
-                      <span>Entrée</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setExtraModalTab('HISTORY');
-                        setShowExtraDepositModal(true);
-                      }}
-                      className="py-1.5 px-2 bg-slate-800 hover:bg-slate-700 text-amber-300 border border-amber-500/30 rounded-xl text-xs font-bold flex items-center justify-center gap-1 transition-all active:scale-95 cursor-pointer relative"
-                      title="Consulter l'historique et modifier/annuler les entrées dans l'heure"
-                    >
-                      <Clock className="w-3.5 h-3.5" />
-                      <span>Gérer</span>
-                      {extraEntriesWithin1h.length > 0 && (
-                        <span className="w-2 h-2 rounded-full bg-amber-400 absolute -top-1 -right-1 animate-ping" />
-                      )}
-                    </button>
-                  </div>
+                  <p className="text-xl font-black text-amber-400">
+                    {(liveFundBalances.EXTRA || 0).toLocaleString('fr-FR')} <span className="text-xs font-bold text-slate-400">F CFA</span>
+                  </p>
+                  <span className="text-[10px] text-slate-500 block font-medium">Fonds divers & amendes</span>
                 </div>
               </div>
             </div>
@@ -5572,26 +5881,32 @@ export const AdminPortal: React.FC = () => {
                   <p className="text-xs text-slate-500 italic">Aucune demande de décaissement soumise.</p>
                 ) : (
                   <div className="space-y-2">
-                    {withdrawals.map(w => (
-                      <div key={w.id} className="bg-slate-950 p-4 rounded-2xl border border-slate-800 flex items-center justify-between text-xs">
-                        <div>
-                          <p className="font-bold text-white">{w.reason}</p>
-                          <p className="text-slate-400">Caisse: {FUND_LABELS[w.fund]} • Date: {w.date}</p>
+                    {withdrawals.map(w => {
+                      const isAppr = w.status === 'APPROVED' || (w as any).isApproved === true || String(w.status).toLowerCase().includes('approuv');
+                      const isRej = w.status === 'REJECTED' || String(w.status).toLowerCase().includes('rejet');
+                      const amt = Number(w.amount) || Number((w as any).montant) || 0;
+                      const caisseName = FUND_LABELS[w.fund] || (w as any).caisseSource || w.fund || 'Caisse';
+                      return (
+                        <div key={w.id} className="bg-slate-950 p-4 rounded-2xl border border-slate-800 flex items-center justify-between text-xs">
+                          <div>
+                            <p className="font-bold text-white">{w.reason}</p>
+                            <p className="text-slate-400">Caisse: {caisseName} • Date: {w.date}</p>
+                          </div>
+                          <div className="flex items-center gap-3">
+                            <span className="font-black text-rose-400 text-sm">-{amt.toLocaleString('fr-FR')} F CFA</span>
+                            <span className={`px-2.5 py-1 rounded-full text-[10px] font-black ${
+                              isAppr
+                                ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                                : isRej
+                                ? 'bg-rose-500/20 text-rose-400 border border-rose-500/30'
+                                : 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
+                            }`}>
+                              {isAppr ? '✅ Approuvé (Cerveau)' : isRej ? '❌ Rejeté' : '⏳ En attente Cerveau'}
+                            </span>
+                          </div>
                         </div>
-                        <div className="flex items-center gap-3">
-                          <span className="font-black text-rose-400 text-sm">{w.amount.toLocaleString('fr-FR')} F CFA</span>
-                          <span className={`px-2.5 py-1 rounded-full text-[10px] font-black ${
-                            w.status === 'APPROVED'
-                              ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
-                              : w.status === 'REJECTED'
-                              ? 'bg-rose-500/20 text-rose-400 border border-rose-500/30'
-                              : 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
-                          }`}>
-                            {w.status === 'APPROVED' ? '✅ Approuvé (Cerveau)' : w.status === 'REJECTED' ? '❌ Rejeté' : '⏳ En attente Cerveau'}
-                          </span>
-                        </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
               </div>
@@ -5602,22 +5917,245 @@ export const AdminPortal: React.FC = () => {
           {/* RUBRIQUE 4 : HISTORIQUE DES MOUVEMENTS */}
           {/* ========================================================= */}
           {tresorierRubrique === 'HISTORIQUE' && (
-            <div className="space-y-6">
+            <div className="space-y-8">
+              {/* ========================================================= */}
+              {/* BARRE DE FILTRES MULTICRITÈRES : PAR CAISSE ET PAR MEMBRE */}
+              {/* ========================================================= */}
+              <div className="bg-slate-900/90 border border-slate-800 rounded-3xl p-5 shadow-xl flex flex-col md:flex-row items-stretch md:items-center justify-between gap-4">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-2xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-400">
+                    <Filter className="w-5 h-5 text-amber-400" />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-black text-white uppercase tracking-wider">
+                      Filtres Multicritères des Historiques
+                    </h3>
+                    <p className="text-[11px] text-slate-400">
+                      Affinez l'affichage par caisse et par membre contributeur
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-3">
+                  {/* Filtre 1 : Par Caisse */}
+                  <div className="flex items-center gap-2">
+                    <span className="text-[11px] font-bold text-slate-400 uppercase">Caisse :</span>
+                    <select
+                      value={historyFundFilter}
+                      onChange={e => setHistoryFundFilter(e.target.value as any)}
+                      className="bg-slate-950 border border-slate-700/80 rounded-xl px-3 py-2 text-xs font-bold text-white focus:outline-none focus:border-amber-500 cursor-pointer"
+                    >
+                      <option value="ALL">🏛️ Toutes les Caisses</option>
+                      <option value="COTISATION">📅 Cotisation Mensuelle</option>
+                      <option value="ANNIVERSAIRE">🎉 Célébration 21 Mars</option>
+                      <option value="LOISIRS">🏖️ Sorties & Loisirs</option>
+                      <option value="AGR">🌱 Projets AGR</option>
+                      <option value="CAS_SOCIAUX">🤝 Cas Sociaux & Entraide</option>
+                      <option value="EXTRA">⭐ Caisse Extra</option>
+                    </select>
+                  </div>
+
+                  {/* Filtre 2 : Par Membre */}
+                  <div className="flex items-center gap-2">
+                    <span className="text-[11px] font-bold text-slate-400 uppercase">Membre :</span>
+                    <select
+                      value={historyMemberFilter}
+                      onChange={e => setHistoryMemberFilter(e.target.value)}
+                      className="bg-slate-950 border border-slate-700/80 rounded-xl px-3 py-2 text-xs font-bold text-white focus:outline-none focus:border-amber-500 cursor-pointer max-w-[200px]"
+                    >
+                      <option value="ALL">👥 Tous les Membres</option>
+                      {members.map(m => (
+                        <option key={m.id} value={m.id}>
+                          {m.nickname || m.firstName} ({m.phone || 'Sans tel'})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {(historyFundFilter !== 'ALL' || historyMemberFilter !== 'ALL') && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setHistoryFundFilter('ALL');
+                        setHistoryMemberFilter('ALL');
+                      }}
+                      className="px-2.5 py-2 bg-slate-800 hover:bg-slate-700 text-rose-300 rounded-xl text-xs font-bold border border-rose-500/30 transition-all cursor-pointer"
+                    >
+                      ✕ Réinitialiser
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* ========================================================= */}
+              {/* BLOC SÉPARÉ DÉDIÉ : MOUVEMENTS & BÉNÉFICES PROJETS AGR */}
+              {/* ========================================================= */}
+              <div className="bg-slate-900 rounded-[2.5rem] p-6 sm:p-8 border-2 border-purple-500/40 shadow-2xl space-y-6 relative overflow-hidden">
+                <div className="absolute top-0 right-0 w-80 h-80 bg-purple-500/5 rounded-full blur-3xl pointer-events-none" />
+
+                {/* En-tête du bloc Projets AGR */}
+                <div className="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-4 pb-4 border-b border-purple-500/20">
+                  <div className="flex items-center gap-3">
+                    <div className="w-12 h-12 rounded-2xl bg-purple-500/20 border border-purple-500/50 flex items-center justify-center text-purple-400 text-2xl">
+                      🌱
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <h2 className="text-xl sm:text-2xl font-black text-white">
+                          Mouvements & Bénéfices Projets AGR
+                        </h2>
+                        <span className="text-[10px] font-black px-2.5 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/40 uppercase">
+                          Bloc Dédié AGR
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-400 mt-0.5">
+                        Double logique : Apports des membres validés par le trésorier & Bénéfices générés par chaque projet spécifique
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Sous-filtres spécifiques AGR (Projet et Type de flux) */}
+                  <div className="flex flex-wrap items-center gap-2">
+                    <select
+                      value={agrHistoryProjectFilter}
+                      onChange={e => setAgrHistoryProjectFilter(e.target.value)}
+                      className="bg-slate-950 border border-purple-500/40 rounded-xl px-3 py-2 text-xs font-bold text-purple-200 focus:outline-none focus:border-purple-400 cursor-pointer"
+                    >
+                      <option value="ALL">📁 Tous les Projets AGR</option>
+                      {projects.map(p => (
+                        <option key={p.id} value={p.id}>{p.title}</option>
+                      ))}
+                    </select>
+
+                    <select
+                      value={agrHistoryFluxFilter}
+                      onChange={e => setAgrHistoryFluxFilter(e.target.value as any)}
+                      className="bg-slate-950 border border-purple-500/40 rounded-xl px-3 py-2 text-xs font-bold text-purple-200 focus:outline-none focus:border-purple-400 cursor-pointer"
+                    >
+                      <option value="ALL">🔄 Tous les Flux AGR</option>
+                      <option value="APPORTS">📥 Apports Membres</option>
+                      <option value="BENEFICES">📈 Bénéfices Projets</option>
+                      <option value="DECAISSEMENTS">💸 Décaissements AGR</option>
+                    </select>
+                  </div>
+                </div>
+
+                {/* Synthèse financière des Projets AGR */}
+                <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+                  <div className="bg-slate-950/80 border border-purple-900/40 rounded-2xl p-4 space-y-1">
+                    <span className="text-[10px] font-black uppercase text-purple-300">1. Apports Membres</span>
+                    <p className="text-lg sm:text-2xl font-black text-purple-400 font-mono">
+                      {agrTotalApports.toLocaleString('fr-FR')} F
+                    </p>
+                    <span className="text-[10px] text-slate-500 block">Collectés via Wave</span>
+                  </div>
+
+                  <div className="bg-slate-950/80 border border-emerald-900/40 rounded-2xl p-4 space-y-1">
+                    <span className="text-[10px] font-black uppercase text-emerald-400">2. Bénéfices Projets</span>
+                    <p className="text-lg sm:text-2xl font-black text-emerald-400 font-mono">
+                      +{agrTotalBenefices.toLocaleString('fr-FR')} F
+                    </p>
+                    <span className="text-[10px] text-slate-500 block">Saisis par le Trésorier</span>
+                  </div>
+
+                  <div className="bg-slate-950/80 border border-rose-900/40 rounded-2xl p-4 space-y-1">
+                    <span className="text-[10px] font-black uppercase text-rose-400">3. Décaissements</span>
+                    <p className="text-lg sm:text-2xl font-black text-rose-400 font-mono">
+                      -{agrTotalDecaissements.toLocaleString('fr-FR')} F
+                    </p>
+                    <span className="text-[10px] text-slate-500 block">Sorties approuvées</span>
+                  </div>
+
+                  <div className="bg-slate-950 border-2 border-purple-500/50 rounded-2xl p-4 space-y-1 shadow-lg shadow-purple-500/10">
+                    <span className="text-[10px] font-black uppercase text-amber-300">Solde Cumulé Net AGR</span>
+                    <p className="text-lg sm:text-2xl font-black text-white font-mono">
+                      {(liveFundBalances.AGR || 0).toLocaleString('fr-FR')} F
+                    </p>
+                    <span className="text-[10px] text-amber-400/80 block font-bold">Apports + Bénéfices - Retraits</span>
+                  </div>
+                </div>
+
+                {/* Table des mouvements Projets AGR */}
+                {filteredAgrMovements.length === 0 ? (
+                  <div className="text-center py-10 bg-slate-950 rounded-2xl border border-dashed border-purple-900/50 text-slate-400 text-xs">
+                    Aucun mouvement enregistré pour les projets AGR selon les critères sélectionnés.
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-sm text-slate-300">
+                      <thead>
+                        <tr className="border-b border-purple-500/20 text-xs font-black text-purple-300 uppercase tracking-wider">
+                          <th className="py-3 px-4">Type de Flux</th>
+                          <th className="py-3 px-4">Projet Ciblé</th>
+                          <th className="py-3 px-4">Auteur / Source</th>
+                          <th className="py-3 px-4">Date</th>
+                          <th className="py-3 px-4">Montant (F CFA)</th>
+                          <th className="py-3 px-4 text-right">Réf / Preuve</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-800/60 font-medium">
+                        {filteredAgrMovements.map(m => (
+                          <tr key={m.id} className="hover:bg-purple-950/20 transition-colors">
+                            <td className="py-3 px-4">
+                              <span className={`inline-block px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase border ${
+                                m.itemType === 'APPORT'
+                                  ? 'bg-purple-500/20 text-purple-300 border-purple-500/40'
+                                  : m.itemType === 'BENEFICE'
+                                  ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40'
+                                  : 'bg-rose-500/20 text-rose-300 border-rose-500/40'
+                              }`}>
+                                {m.itemType === 'APPORT' ? '📥 Apport Membre' : m.itemType === 'BENEFICE' ? '📈 Bénéfice Projet' : '💸 Décaissement'}
+                              </span>
+                            </td>
+                            <td className="py-3 px-4 font-bold text-white">
+                              {m.projectTitle || m.reason || 'Projet AGR'}
+                            </td>
+                            <td className="py-3 px-4 text-xs text-slate-300">
+                              {m.memberDisplayName}
+                            </td>
+                            <td className="py-3 px-4 text-xs text-slate-400 font-mono">
+                              {m.date}
+                            </td>
+                            <td className="py-3 px-4 font-black font-mono text-base">
+                              <span className={m.itemType === 'DECAISSEMENT' ? 'text-rose-400' : m.itemType === 'BENEFICE' ? 'text-emerald-400' : 'text-purple-300'}>
+                                {m.itemType === 'DECAISSEMENT' ? '-' : '+'}{m.amount.toLocaleString('fr-FR')} F
+                              </span>
+                            </td>
+                            <td className="py-3 px-4 text-right font-mono text-xs text-amber-300">
+                              {m.reference ? (
+                                <span className="truncate max-w-[150px] inline-block" title={m.reference}>
+                                  {m.reference}
+                                </span>
+                              ) : (
+                                <span className="text-slate-500 text-[10px]">Validé Trésorerie</span>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+
+              {/* ========================================================= */}
+              {/* BLOC HISTORIQUE GÉNÉRAL : ENTRÉES & SORTIES */}
+              {/* ========================================================= */}
               {/* Bloc Entrées (Encaissements validés) */}
               <div className="bg-slate-900 rounded-[2.5rem] p-6 sm:p-8 border border-slate-800 shadow-xl space-y-6">
                 <div className="flex items-center justify-between">
                   <h2 className="text-xl font-black text-white flex items-center gap-2">
                     <CheckCircle2 className="w-5 h-5 text-emerald-400" />
-                    <span>Bloc Entrées (Encaissements Validés)</span>
+                    <span>Bloc Général Entrées (Encaissements Validés)</span>
                   </h2>
                   <span className="bg-emerald-500/20 text-emerald-300 text-xs font-black px-3 py-1 rounded-full border border-emerald-500/30">
-                    {payments.filter(p => isPaymentValidated(p)).length} encaissements
+                    {filteredGeneralPayments.length} encaissements
                   </span>
                 </div>
 
-                {payments.filter(p => isPaymentValidated(p)).length === 0 ? (
+                {filteredGeneralPayments.length === 0 ? (
                   <div className="text-center py-10 bg-slate-950 rounded-2xl border border-dashed border-slate-800 text-slate-500 text-sm">
-                    Aucun encaissement validé enregistré pour le moment.
+                    Aucun encaissement validé ne correspond aux filtres sélectionnés.
                   </div>
                 ) : (
                   <div className="overflow-x-auto">
@@ -5633,18 +6171,22 @@ export const AdminPortal: React.FC = () => {
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-800/60 font-medium">
-                        {payments
-                          .filter(p => isPaymentValidated(p))
+                        {filteredGeneralPayments
                           .map(d => (
                             <tr key={d.id} className="hover:bg-slate-800/40 transition-colors">
                               <td className="py-3 px-4 font-extrabold text-white">{d.memberNickname || d.memberName || 'Membre'}</td>
                               <td className="py-3 px-4 text-xs text-slate-400">{d.date || 'Récemment'}</td>
                               <td className="py-3 px-4 font-bold text-amber-400">
-                                <span className="flex items-center gap-1.5">
+                                <span className="flex items-center gap-1.5 flex-wrap">
                                   <span>{FUND_LABELS[d.fund] || d.caisse || d.type || 'Cotisation Mensuelle'}</span>
                                   {isExtraCaisseEntry(d) && (
                                     <span className="text-[9px] px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 font-black border border-amber-500/30">
                                       EXTRA
+                                    </span>
+                                  )}
+                                  {(d.subCategory === 'Bénéfice Projet' || (d as any).entryType === 'BENEFIT') && (
+                                    <span className="text-[9px] px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-300 font-black border border-emerald-500/30">
+                                      BÉNÉFICE
                                     </span>
                                   )}
                                 </span>
@@ -5730,16 +6272,16 @@ export const AdminPortal: React.FC = () => {
                 <div className="flex items-center justify-between">
                   <h2 className="text-xl font-black text-white flex items-center gap-2">
                     <XCircle className="w-5 h-5 text-rose-400" />
-                    <span>Bloc Sorties (Décaissements Approuvés par le CERVEAU)</span>
+                    <span>Bloc Général Sorties (Décaissements Approuvés par le CERVEAU)</span>
                   </h2>
                   <span className="bg-rose-500/20 text-rose-300 text-xs font-black px-3 py-1 rounded-full border border-rose-500/30">
-                    {withdrawals.filter(w => w.status === 'APPROVED').length} décaissements
+                    {filteredGeneralWithdrawals.length} décaissements
                   </span>
                 </div>
 
-                {withdrawals.filter(w => w.status === 'APPROVED').length === 0 ? (
+                {filteredGeneralWithdrawals.length === 0 ? (
                   <div className="text-center py-10 bg-slate-950 rounded-2xl border border-dashed border-slate-800 text-slate-500 text-sm">
-                    Aucun décaissement approuvé enregistré pour le moment.
+                    Aucun décaissement approuvé ne correspond aux critères sélectionnés.
                   </div>
                 ) : (
                   <div className="overflow-x-auto">
@@ -5754,21 +6296,24 @@ export const AdminPortal: React.FC = () => {
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-800/60 font-medium">
-                        {withdrawals
-                          .filter(w => w.status === 'APPROVED')
-                          .map(w => (
-                            <tr key={w.id} className="hover:bg-slate-800/40 transition-colors">
-                              <td className="py-3 px-4 font-extrabold text-white">{w.reason}</td>
-                              <td className="py-3 px-4 text-xs text-slate-400">{w.date}</td>
-                              <td className="py-3 px-4 font-bold text-amber-400">{FUND_LABELS[w.fund]}</td>
-                              <td className="py-3 px-4 font-black text-rose-400 text-base">
-                                -{w.amount.toLocaleString('fr-FR')} F CFA
-                              </td>
-                              <td className="py-3 px-4 font-bold text-emerald-300 text-xs">
-                                🛡️ {w.requestedBy} (Validé CERVEAU)
-                              </td>
-                            </tr>
-                          ))}
+                        {filteredGeneralWithdrawals
+                          .map(w => {
+                            const amt = Number(w.amount) || Number((w as any).montant) || 0;
+                            const caisseName = FUND_LABELS[w.fund] || (w as any).caisseSource || w.fund || 'Caisse';
+                            return (
+                              <tr key={w.id} className="hover:bg-slate-800/40 transition-colors">
+                                <td className="py-3 px-4 font-extrabold text-white">{w.reason}</td>
+                                <td className="py-3 px-4 text-xs text-slate-400">{w.date}</td>
+                                <td className="py-3 px-4 font-bold text-amber-400">{caisseName}</td>
+                                <td className="py-3 px-4 font-black text-rose-400 text-base">
+                                  -{amt.toLocaleString('fr-FR')} F CFA
+                                </td>
+                                <td className="py-3 px-4 font-bold text-emerald-300 text-xs">
+                                  🛡️ {w.requestedBy} (Validé CERVEAU)
+                                </td>
+                              </tr>
+                            );
+                          })}
                       </tbody>
                     </table>
                   </div>
@@ -7550,18 +8095,18 @@ export const AdminPortal: React.FC = () => {
                       .map(w => (
                         <tr key={w.id}>
                           <td className="py-3 px-4 font-bold text-white">{w.requestedBy}</td>
-                          <td className="py-3 px-4 font-bold text-amber-400">{FUND_LABELS[w.fund]}</td>
+                          <td className="py-3 px-4 font-bold text-amber-400">{FUND_LABELS[w.fund] || (w as any).caisseSource || w.fund}</td>
                           <td className="py-3 px-4 font-black text-rose-400">
-                            {w.amount.toLocaleString('fr-FR')} F CFA
+                            {(Number(w.amount) || Number((w as any).montant) || 0).toLocaleString('fr-FR')} F CFA
                           </td>
                           <td className="py-3 px-4 text-xs">{w.reason}</td>
                           <td className="py-3 px-4 text-right space-x-2">
                             <button
-                              onClick={() => {
-                                approveWithdrawal(w.id);
-                                alert('Retrait déverrouillé et approuvé par le CERVEAU !');
+                              onClick={async () => {
+                                await approveWithdrawal(w.id);
+                                alert('Retrait déverrouillé et approuvé par le CERVEAU ! Le solde de la sous-caisse a été débité.');
                               }}
-                              className="bg-emerald-600 hover:bg-emerald-500 text-white font-black px-3 py-1.5 rounded-xl text-xs shadow active:scale-95 transition-all inline-flex items-center gap-1"
+                              className="bg-emerald-600 hover:bg-emerald-500 text-white font-black px-3 py-1.5 rounded-xl text-xs shadow active:scale-95 transition-all inline-flex items-center gap-1 cursor-pointer"
                             >
                               <CheckCircle2 className="w-3.5 h-3.5" /> Approuver
                             </button>
@@ -10458,6 +11003,9 @@ export const AdminPortal: React.FC = () => {
       {/* ========================================================= */}
       {/* MODAL TRÉSORIER : ENTRÉE DÉDIÉE & HISTORIQUE CAISSE EXTRA */}
       {/* ========================================================= */}
+      {/* ========================================================= */}
+      {/* MODAL TRÉSORIER : ENTRÉE MANUELLE EN CAISSE & GESTION (1H) */}
+      {/* ========================================================= */}
       {showExtraDepositModal && (
         <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-3 sm:p-6 overflow-y-auto animate-fadeIn">
           <div className="bg-slate-900 border-2 border-amber-500/70 rounded-3xl max-w-xl w-full flex flex-col shadow-2xl my-auto overflow-hidden">
@@ -10469,13 +11017,13 @@ export const AdminPortal: React.FC = () => {
                 </div>
                 <div>
                   <h3 className="text-base font-black text-white flex items-center gap-2">
-                    <span>Gestion Caisse Extra</span>
+                    <span>Enregistrement Entrée en Caisse</span>
                     <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30">
-                      {(liveFundBalances.EXTRA || 0).toLocaleString('fr-FR')} F CFA
+                      Trésorerie
                     </span>
                   </h3>
-                  <p className="text-xs text-amber-400/90 font-mono">
-                    Entrées libres, amendes, fonds antérieurs • Fenêtre de sécurité 1h
+                  <p className="text-xs text-slate-400 font-mono">
+                    Option A : Caisse Extra • Option B : Bénéfices Projets AGR • Contrôle 1h
                   </p>
                 </div>
               </div>
@@ -10537,8 +11085,19 @@ export const AdminPortal: React.FC = () => {
                     return;
                   }
                   if (!extraDepositReason.trim()) {
-                    setExtraModalError('Veuillez renseigner le motif du dépôt.');
+                    setExtraModalError('Veuillez renseigner le motif du versement.');
                     return;
+                  }
+
+                  if (manualEntryDestination === 'AGR_PROFIT') {
+                    if (!manualEntrySelectedProjectId) {
+                      setExtraModalError('Veuillez sélectionner le projet AGR ciblé.');
+                      return;
+                    }
+                    if (manualEntrySelectedProjectId === 'CUSTOM' && !manualEntryCustomProjectTitle.trim()) {
+                      setExtraModalError('Veuillez préciser le titre du projet AGR.');
+                      return;
+                    }
                   }
 
                   setIsSubmittingExtra(true);
@@ -10549,46 +11108,101 @@ export const AdminPortal: React.FC = () => {
                       (currentUser?.type === 'ADMIN' ? currentUser.adminRole : undefined) ||
                       'Trésorier Général';
 
-                    const res = await addExtraCaisseEntry({
-                      date: extraDepositDate,
-                      reason: extraDepositReason.trim(),
-                      amount: amt,
-                      createdByName,
-                      caisseType: 'extra',
-                    });
-
-                    if (res && res.success) {
-                      const entryId = res.entryId || ('extra_' + Date.now());
-                      // Actualisation réactive instantanée des paiements locaux
-                      const localDoc = {
-                        id: entryId,
-                        fund: 'EXTRA',
-                        type: 'Caisse Extra',
-                        caisse: 'Caisse Extra',
-                        caisseType: 'extra',
-                        amount: amt,
-                        montant: amt,
+                    if (manualEntryDestination === 'EXTRA') {
+                      const res = await addExtraCaisseEntry({
                         date: extraDepositDate,
                         reason: extraDepositReason.trim(),
-                        motif: extraDepositReason.trim(),
-                        reference: extraDepositReason.trim(),
+                        amount: amt,
                         createdByName,
-                        status: 'valide',
-                        isValidated: true,
-                        isApproved: true,
-                        createdAt: Date.now(),
-                      };
-                      setFirestorePayments(prev => [localDoc, ...prev]);
+                        caisseType: 'extra',
+                      });
 
-                      setExtraModalSuccess(res.message);
-                      setTimeout(() => {
-                        setExtraDepositReason('');
-                        setExtraDepositAmount('');
-                        setExtraModalSuccess(null);
-                        setExtraModalTab('HISTORY');
-                      }, 1200);
+                      if (res && res.success) {
+                        const entryId = res.entryId || ('extra_' + Date.now());
+                        const localDoc = {
+                          id: entryId,
+                          fund: 'EXTRA',
+                          type: 'Caisse Extra',
+                          caisse: 'Caisse Extra',
+                          caisseType: 'extra',
+                          amount: amt,
+                          montant: amt,
+                          date: extraDepositDate,
+                          reason: extraDepositReason.trim(),
+                          motif: extraDepositReason.trim(),
+                          reference: extraDepositReason.trim(),
+                          createdByName,
+                          status: 'valide',
+                          isValidated: true,
+                          isApproved: true,
+                          createdAt: Date.now(),
+                        };
+                        setFirestorePayments(prev => [localDoc, ...prev]);
+
+                        setExtraModalSuccess(res.message);
+                        setTimeout(() => {
+                          setExtraDepositReason('');
+                          setExtraDepositAmount('');
+                          setExtraModalSuccess(null);
+                          setExtraModalTab('HISTORY');
+                        }, 1200);
+                      } else {
+                        setExtraModalError(res?.message || 'Une erreur est survenue lors de l’enregistrement.');
+                      }
                     } else {
-                      setExtraModalError(res?.message || 'Une erreur est survenue lors de l’enregistrement.');
+                      // Option B : Bénéfices Projets AGR
+                      const selectedProj = projects.find(p => p.id === manualEntrySelectedProjectId);
+                      const finalProjectTitle =
+                        manualEntrySelectedProjectId === 'CUSTOM'
+                          ? manualEntryCustomProjectTitle.trim()
+                          : (selectedProj?.title || manualEntryCustomProjectTitle.trim() || 'Projet AGR');
+
+                      const res = await addProjectProfitEntry({
+                        projectId: manualEntrySelectedProjectId,
+                        projectTitle: finalProjectTitle,
+                        date: extraDepositDate,
+                        reason: extraDepositReason.trim(),
+                        amount: amt,
+                        createdByName,
+                      });
+
+                      if (res && res.success) {
+                        const entryId = res.entryId || ('profit_' + Date.now());
+                        const localDoc = {
+                          id: entryId,
+                          fund: 'AGR',
+                          type: 'Projets AGR',
+                          caisse: 'Projets AGR',
+                          subCategory: 'Bénéfice Projet',
+                          entryType: 'BENEFIT',
+                          projectId: manualEntrySelectedProjectId,
+                          projectTitle: finalProjectTitle,
+                          amount: amt,
+                          montant: amt,
+                          date: extraDepositDate,
+                          reason: extraDepositReason.trim(),
+                          motif: extraDepositReason.trim(),
+                          reference: `Bénéfice [${finalProjectTitle}] : ${extraDepositReason.trim()}`,
+                          createdByName,
+                          status: 'valide',
+                          isValidated: true,
+                          isApproved: true,
+                          createdAt: Date.now(),
+                        };
+                        setFirestorePayments(prev => [localDoc, ...prev]);
+
+                        setExtraModalSuccess(res.message);
+                        setTimeout(() => {
+                          setExtraDepositReason('');
+                          setExtraDepositAmount('');
+                          setManualEntrySelectedProjectId('');
+                          setManualEntryCustomProjectTitle('');
+                          setExtraModalSuccess(null);
+                          setExtraModalTab('HISTORY');
+                        }, 1200);
+                      } else {
+                        setExtraModalError(res?.message || 'Une erreur est survenue lors de l’enregistrement du bénéfice.');
+                      }
                     }
                   } catch (err: any) {
                     setExtraModalError('Erreur lors de l’enregistrement : ' + (err?.message || 'Erreur réseau Firestore'));
@@ -10617,7 +11231,95 @@ export const AdminPortal: React.FC = () => {
                   </div>
                 )}
 
-                {/* 1. Date de l'entrée */}
+                {/* SÉLECTEUR DE DESTINATION : OPTION A vs OPTION B */}
+                <div>
+                  <label className="block text-xs font-black text-amber-300 uppercase tracking-wider mb-2">
+                    🎯 1. Choisir la Caisse de Destination *
+                  </label>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <label
+                      onClick={() => setManualEntryDestination('EXTRA')}
+                      className={`p-3.5 rounded-2xl border flex items-start gap-3 cursor-pointer transition-all ${
+                        manualEntryDestination === 'EXTRA'
+                          ? 'bg-amber-500/15 border-amber-400 text-white shadow-md'
+                          : 'bg-slate-950 border-slate-800 text-slate-400 hover:border-slate-700'
+                      }`}
+                    >
+                      <input
+                        type="radio"
+                        name="manualEntryDestination"
+                        checked={manualEntryDestination === 'EXTRA'}
+                        onChange={() => setManualEntryDestination('EXTRA')}
+                        className="w-4 h-4 text-amber-500 focus:ring-amber-500 mt-0.5"
+                      />
+                      <div>
+                        <span className="font-black text-xs text-white block">Option A : Caisse Extra</span>
+                        <span className="text-[11px] text-slate-400">
+                          Amendes pour indiscipline, reliquats et fonds divers reçus par le trésorier.
+                        </span>
+                      </div>
+                    </label>
+
+                    <label
+                      onClick={() => setManualEntryDestination('AGR_PROFIT')}
+                      className={`p-3.5 rounded-2xl border flex items-start gap-3 cursor-pointer transition-all ${
+                        manualEntryDestination === 'AGR_PROFIT'
+                          ? 'bg-purple-500/15 border-purple-400 text-white shadow-md'
+                          : 'bg-slate-950 border-slate-800 text-slate-400 hover:border-slate-700'
+                      }`}
+                    >
+                      <input
+                        type="radio"
+                        name="manualEntryDestination"
+                        checked={manualEntryDestination === 'AGR_PROFIT'}
+                        onChange={() => setManualEntryDestination('AGR_PROFIT')}
+                        className="w-4 h-4 text-purple-500 focus:ring-purple-500 mt-0.5"
+                      />
+                      <div>
+                        <span className="font-black text-xs text-white block">Option B : Caisse Projet / Bénéfices</span>
+                        <span className="text-[11px] text-slate-400">
+                          Bénéfices nets générés par un projet spécifique de la Commission Projets.
+                        </span>
+                      </div>
+                    </label>
+                  </div>
+                </div>
+
+                {/* SÉLECTEUR DYNAMIQUE DE PROJET (Si Option B) */}
+                {manualEntryDestination === 'AGR_PROFIT' && (
+                  <div className="p-3.5 bg-purple-950/40 border border-purple-500/40 rounded-2xl space-y-2">
+                    <label className="block text-xs font-bold text-purple-300 uppercase">
+                      🌱 2. Sélectionner le Projet Actif de la Commission Projets *
+                    </label>
+                    <select
+                      value={manualEntrySelectedProjectId}
+                      onChange={e => setManualEntrySelectedProjectId(e.target.value)}
+                      className="w-full bg-slate-950 border border-purple-500/50 rounded-xl px-4 py-2.5 text-xs font-bold text-white focus:outline-none focus:border-purple-400 cursor-pointer"
+                      required
+                    >
+                      <option value="">-- Sélectionnez un projet créé par le Département Projet --</option>
+                      {projects.map(p => (
+                        <option key={p.id} value={p.id}>
+                          {p.title} {p.status === 'PUBLISHED' ? '(Actif / Publié)' : `(${p.status})`}
+                        </option>
+                      ))}
+                      <option value="CUSTOM">+ Autre projet spécifique...</option>
+                    </select>
+
+                    {(manualEntrySelectedProjectId === 'CUSTOM' || projects.length === 0) && (
+                      <input
+                        type="text"
+                        placeholder="Préciser l'intitulé du projet (ex: Projet Champ d'Anacarde, Élevage Porcin...)"
+                        value={manualEntryCustomProjectTitle}
+                        onChange={e => setManualEntryCustomProjectTitle(e.target.value)}
+                        className="w-full bg-slate-950 border border-purple-500/50 rounded-xl px-3.5 py-2 text-xs font-medium text-white focus:outline-none focus:border-purple-400"
+                        required
+                      />
+                    )}
+                  </div>
+                )}
+
+                {/* Date de l'entrée */}
                 <div>
                   <label className="block text-xs font-bold text-slate-300 uppercase mb-2">
                     📅 Date de l'entrée *
@@ -10635,16 +11337,20 @@ export const AdminPortal: React.FC = () => {
                   />
                 </div>
 
-                {/* 2. Motif du dépôt */}
+                {/* Motif du versement / bénéfice */}
                 <div>
                   <label className="block text-xs font-bold text-slate-300 uppercase mb-2">
-                    📝 Motif du dépôt *
+                    📝 Motif ou Description *
                   </label>
                   <input
                     type="text"
                     required
                     disabled={isSubmittingExtra}
-                    placeholder="Ex: Fonds antérieurs d'activité, amende pour indiscipline..."
+                    placeholder={
+                      manualEntryDestination === 'AGR_PROFIT'
+                        ? "Ex: Vente première récolte, bénéfice commercialisation volailles..."
+                        : "Ex: Fonds antérieurs d'activité, amende pour indiscipline..."
+                    }
                     value={extraDepositReason}
                     onChange={(e) => {
                       setExtraModalError(null);
@@ -10654,12 +11360,20 @@ export const AdminPortal: React.FC = () => {
                   />
                   {/* Suggestions rapides */}
                   <div className="flex flex-wrap gap-1.5 mt-2">
-                    {[
-                      "Fonds antérieurs d'activité",
-                      "Amende pour indiscipline",
-                      "Donation libre",
-                      "Reliquat d'activité",
-                    ].map((sug) => (
+                    {(manualEntryDestination === 'AGR_PROFIT'
+                      ? [
+                          "Bénéfice de commercialisation",
+                          "Recettes première récolte",
+                          "Vente de production",
+                          "Dividendes projet",
+                        ]
+                      : [
+                          "Fonds antérieurs d'activité",
+                          "Amende pour indiscipline",
+                          "Donation libre",
+                          "Reliquat d'activité",
+                        ]
+                    ).map((sug) => (
                       <button
                         key={sug}
                         type="button"
@@ -10676,10 +11390,10 @@ export const AdminPortal: React.FC = () => {
                   </div>
                 </div>
 
-                {/* 3. Somme à déposer */}
+                {/* Somme à déposer */}
                 <div>
                   <label className="block text-xs font-bold text-slate-300 uppercase mb-2">
-                    💰 Somme à déposer (F CFA) *
+                    💰 Somme à enregistrer (F CFA) *
                   </label>
                   <input
                     type="number"
@@ -10696,20 +11410,39 @@ export const AdminPortal: React.FC = () => {
                   />
                 </div>
 
-                {/* Impact Card */}
+                {/* Impact Card Dynamique */}
                 <div className="bg-slate-950/80 border border-slate-800 rounded-2xl p-4 space-y-2">
-                  <div className="flex justify-between text-slate-400">
-                    <span>Solde actuel Caisse Extra :</span>
-                    <span className="font-bold text-white">{(liveFundBalances.EXTRA || 0).toLocaleString('fr-FR')} F CFA</span>
-                  </div>
-                  <div className="flex justify-between text-amber-400">
-                    <span>Montant de l'entrée :</span>
-                    <span className="font-bold">+{Number(extraDepositAmount || 0).toLocaleString('fr-FR')} F CFA</span>
-                  </div>
-                  <div className="flex justify-between text-emerald-400 pt-1.5 border-t border-slate-800 font-black">
-                    <span>Nouveau solde Caisse Extra :</span>
-                    <span>{((liveFundBalances.EXTRA || 0) + Number(extraDepositAmount || 0)).toLocaleString('fr-FR')} F CFA</span>
-                  </div>
+                  {manualEntryDestination === 'EXTRA' ? (
+                    <>
+                      <div className="flex justify-between text-slate-400">
+                        <span>Solde actuel Caisse Extra :</span>
+                        <span className="font-bold text-white">{(liveFundBalances.EXTRA || 0).toLocaleString('fr-FR')} F CFA</span>
+                      </div>
+                      <div className="flex justify-between text-amber-400">
+                        <span>Montant de l'entrée :</span>
+                        <span className="font-bold">+{Number(extraDepositAmount || 0).toLocaleString('fr-FR')} F CFA</span>
+                      </div>
+                      <div className="flex justify-between text-emerald-400 pt-1.5 border-t border-slate-800 font-black">
+                        <span>Nouveau solde Caisse Extra :</span>
+                        <span>{((liveFundBalances.EXTRA || 0) + Number(extraDepositAmount || 0)).toLocaleString('fr-FR')} F CFA</span>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div className="flex justify-between text-slate-400">
+                        <span>Solde cumulé actuel Projets AGR :</span>
+                        <span className="font-bold text-purple-300">{(liveFundBalances.AGR || 0).toLocaleString('fr-FR')} F CFA</span>
+                      </div>
+                      <div className="flex justify-between text-emerald-400">
+                        <span>Bénéfice ajouté :</span>
+                        <span className="font-bold">+{Number(extraDepositAmount || 0).toLocaleString('fr-FR')} F CFA</span>
+                      </div>
+                      <div className="flex justify-between text-white pt-1.5 border-t border-slate-800 font-black">
+                        <span>Nouveau solde cumulé Projets AGR :</span>
+                        <span className="text-emerald-400">{((liveFundBalances.AGR || 0) + Number(extraDepositAmount || 0)).toLocaleString('fr-FR')} F CFA</span>
+                      </div>
+                    </>
+                  )}
                 </div>
 
                 {/* Actions */}
@@ -10735,7 +11468,11 @@ export const AdminPortal: React.FC = () => {
                     ) : (
                       <>
                         <CheckCircle2 className="w-4 h-4" />
-                        <span>Valider et Créditer la Caisse Extra</span>
+                        <span>
+                          {manualEntryDestination === 'EXTRA'
+                            ? "Valider et Créditer la Caisse Extra"
+                            : "Valider et Créditer les Bénéfices Projet (AGR)"}
+                        </span>
                       </>
                     )}
                   </button>
@@ -10758,7 +11495,7 @@ export const AdminPortal: React.FC = () => {
 
                 {extraCaisseEntries.length === 0 ? (
                   <div className="text-center py-12 bg-slate-950 rounded-2xl border border-dashed border-slate-800 text-slate-500 text-xs">
-                    Aucune entrée enregistrée dans la Caisse Extra pour le moment.
+                    Aucune entrée manuelle enregistrée (Caisse Extra ou Bénéfice Projet) pour le moment.
                   </div>
                 ) : (
                   <div className="space-y-3">
@@ -10766,6 +11503,7 @@ export const AdminPortal: React.FC = () => {
                       const isEditable = isExtraEntryEditable(entry);
                       const remainingStr = getExtraEntryRemainingTimeStr(entry);
                       const amountNum = Number(entry.amount || entry.montant || 0);
+                      const isExtra = entry.fund === 'EXTRA' || entry.type === 'Caisse Extra' || entry.caisse === 'Caisse Extra';
 
                       return (
                         <div
@@ -10780,8 +11518,17 @@ export const AdminPortal: React.FC = () => {
                             <div className="space-y-1">
                               <div className="flex items-center gap-2 flex-wrap">
                                 <span className="font-extrabold text-white text-sm">
-                                  {entry.reason || entry.motif || entry.reference || 'Entrée Caisse Extra'}
+                                  {entry.reason || entry.motif || entry.reference || 'Entrée manuelle'}
                                 </span>
+                                {isExtra ? (
+                                  <span className="text-[9px] px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 font-bold border border-amber-500/30">
+                                    CAISSE EXTRA
+                                  </span>
+                                ) : (
+                                  <span className="text-[9px] px-2 py-0.5 rounded bg-purple-500/20 text-purple-300 font-bold border border-purple-500/30">
+                                    BÉNÉFICE PROJET {entry.projectTitle ? `[${entry.projectTitle}]` : ''}
+                                  </span>
+                                )}
                                 {isEditable ? (
                                   <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-black bg-amber-500/20 text-amber-300 border border-amber-500/40 animate-pulse">
                                     <Clock className="w-3 h-3 text-amber-400" />

@@ -177,6 +177,13 @@ export interface PaymentDeclaration {
   paymentType?: 'TOTAL' | 'TRANCHE';
   subCategory?: string;
   receiptImage?: string;
+  projectId?: string;
+  projectTitle?: string;
+  entryType?: 'BENEFIT' | 'APPORT' | 'EXTRA' | string;
+  reason?: string;
+  motif?: string;
+  createdByName?: string;
+  createdAt?: number;
 }
 
 export interface MemberRubricProgress {
@@ -206,10 +213,16 @@ export interface WithdrawalRequest {
   id: string;
   requestedBy: string;
   fund: FundType;
+  caisseSource?: string;
   amount: number;
+  montant?: number;
   reason: string;
   date: string;
   status: 'PENDING' | 'APPROVED' | 'REJECTED';
+  isApproved?: boolean;
+  approvedAt?: number | string;
+  approvedBy?: string;
+  createdAt?: number;
 }
 
 export type TargetAudience = 'TOUS' | 'RETARD' | 'A_JOUR' | 'EN_AVANCE';

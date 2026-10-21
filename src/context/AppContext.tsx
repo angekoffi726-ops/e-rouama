@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
 import {
   RouamaMember,
   AdminRole,
@@ -185,6 +185,14 @@ interface AppContextType {
     amount: number;
     createdByName?: string;
     caisseType?: string;
+  }) => Promise<{ success: boolean; message: string; entryId?: string; entry?: any }>;
+  addProjectProfitEntry: (data: {
+    projectId?: string;
+    projectTitle: string;
+    date: string;
+    reason: string;
+    amount: number;
+    createdByName?: string;
   }) => Promise<{ success: boolean; message: string; entryId?: string; entry?: any }>;
   updateExtraCaisseEntry: (
     entryId: string,
@@ -475,6 +483,40 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const [isFirebaseConnected, setIsFirebaseConnected] = useState<boolean>(false);
 
+  // Normalisateur universel de la caisse d'un décaissement (caisseSource ou fund)
+  const normalizeWithdrawalFund = (wOrSource: any): FundType => {
+    const src = typeof wOrSource === 'string'
+      ? wOrSource
+      : String(wOrSource?.caisseSource || wOrSource?.fund || wOrSource?.caisse || wOrSource?.sourceCaisse || '');
+    const s = src.toUpperCase().trim();
+    if (s.includes('EXTRA')) return 'EXTRA';
+    if (s.includes('COTIS')) return 'COTISATION';
+    if (s.includes('ANNIV') || s.includes('CÉLÉBRATION') || s.includes('CELEBRATION')) return 'ANNIVERSAIRE';
+    if (s.includes('LOISIR') || s.includes('SORTIE')) return 'LOISIRS';
+    if (s.includes('AGR') || s.includes('PROJET')) return 'AGR';
+    if (s.includes('CAS') || s.includes('SOCIAL') || s.includes('ENTRAIDE')) return 'CAS_SOCIAUX';
+    if (s.includes('SOIREE') || s.includes('SOIRÉE')) return 'SOIREE_ROUAMA';
+    return (wOrSource?.fund as FundType) || 'EXTRA';
+  };
+
+  // Détecteur universel d'approbation d'un décaissement par le CERVEAU
+  const isWithdrawalApproved = (w: any): boolean => {
+    if (!w) return false;
+    if (w.isApproved === true) return true;
+    const s = String(w.status || '').toLowerCase().trim();
+    return (
+      w.status === 'APPROVED' ||
+      s === 'approved' ||
+      s === 'approuvé' ||
+      s === 'approuve' ||
+      s === 'validé' ||
+      s === 'valide' ||
+      s === 'validated' ||
+      s.includes('approuv') ||
+      s.includes('valid')
+    );
+  };
+
   // États applicatifs synchronisés en temps réel via Firestore
   const [members, setMembers] = useState<RouamaMember[]>(INITIAL_ROUAMA_MEMBERS);
   const [adminUsers, setAdminUsers] = useState<AdminUser[]>(() => getStoredAdminCredentials());
@@ -490,6 +532,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [declarations, setDeclarations] = useState<PaymentDeclaration[]>([]);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [withdrawals, setWithdrawals] = useState<WithdrawalRequest[]>([]);
+  const withdrawalsRef = useRef<WithdrawalRequest[]>([]);
   const [newsItems, setNewsItems] = useState<NewsItem[]>([]);
   const [activities, setActivities] = useState<EventActivity[]>([DEFAULT_ANNIVERSAIRE_ACTIVITY, DEFAULT_SOIREE_ACTIVITY]);
   const [projects, setProjects] = useState<AgrProject[]>([]);
@@ -644,14 +687,31 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         )
         .reduce((acc, p) => acc + (Number(p.amount) || Number(p.montant) || 0), 0);
 
-      const computed: Record<FundType, number> = {
-        COTISATION: cotisations,
-        ANNIVERSAIRE: anniversaire,
-        LOISIRS: sorties,
-        AGR: agr,
-        CAS_SOCIAUX: casSociaux,
+      // Calcul des décaissements validés par le CERVEAU par sous-caisse
+      const approvedW = (withdrawalsRef.current || []).filter(isWithdrawalApproved);
+      const withdrawnPerFund: Record<FundType, number> = {
+        COTISATION: 0,
+        ANNIVERSAIRE: 0,
         SOIREE_ROUAMA: 0,
-        EXTRA: extra,
+        LOISIRS: 0,
+        AGR: 0,
+        CAS_SOCIAUX: 0,
+        EXTRA: 0,
+      };
+      approvedW.forEach(w => {
+        const f = normalizeWithdrawalFund(w);
+        const amt = Number(w.amount) || Number((w as any).montant) || 0;
+        withdrawnPerFund[f] = (withdrawnPerFund[f] || 0) + amt;
+      });
+
+      const computed: Record<FundType, number> = {
+        COTISATION: Math.max(0, cotisations - withdrawnPerFund.COTISATION),
+        ANNIVERSAIRE: Math.max(0, anniversaire - withdrawnPerFund.ANNIVERSAIRE),
+        LOISIRS: Math.max(0, sorties - withdrawnPerFund.LOISIRS),
+        AGR: Math.max(0, agr - withdrawnPerFund.AGR),
+        CAS_SOCIAUX: Math.max(0, casSociaux - withdrawnPerFund.CAS_SOCIAUX),
+        SOIREE_ROUAMA: 0,
+        EXTRA: Math.max(0, extra - withdrawnPerFund.EXTRA),
       };
 
       setFundBalances(prev => ({
@@ -1031,13 +1091,26 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           ...(d.data() as any),
           id: d.id,
         }));
-        loaded.sort((a, b) => {
-          const timeA = (a as any).createdAt || 0;
-          const timeB = (b as any).createdAt || 0;
-          if (timeA && timeB) return timeB - timeA;
-          return b.id.localeCompare(a.id);
-        });
+        withdrawalsRef.current = loaded;
         setWithdrawals(loaded);
+
+        // Déduction dynamique réactive des décaissements approuvés par le CERVEAU
+        const approvedW = loaded.filter(isWithdrawalApproved);
+        const extraApprovedOut = approvedW
+          .filter(w => normalizeWithdrawalFund(w) === 'EXTRA')
+          .reduce((sum, w) => sum + (Number(w.amount) || Number((w as any).montant) || 0), 0);
+
+        if (extraApprovedOut > 0) {
+          setFundBalances(prev => {
+            if (prev.EXTRA >= 36000) {
+              return {
+                ...prev,
+                EXTRA: Math.max(0, 36000 - extraApprovedOut),
+              };
+            }
+            return prev;
+          });
+        }
       },
       (err) => console.warn('Withdrawals listener error:', err)
     );
@@ -3108,7 +3181,121 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
-  // Modification dynamique d'une entrée Caisse Extra (Fenêtre de sécurité de 1 heure)
+  // Enregistrement manuel d'un bénéfice généré par un projet AGR
+  const addProjectProfitEntry = async (data: {
+    projectId?: string;
+    projectTitle: string;
+    date: string;
+    reason: string;
+    amount: number;
+    createdByName?: string;
+  }) => {
+    try {
+      const amountVal = Number(data.amount) || 0;
+      if (amountVal <= 0) {
+        return { success: false, message: 'Le montant du bénéfice doit être supérieur à zéro.' };
+      }
+      const cleanReason = String(data.reason || '').trim();
+      if (!cleanReason) {
+        return { success: false, message: 'Veuillez préciser le motif ou la source du bénéfice.' };
+      }
+      const projectTitleVal = String(data.projectTitle || 'Projet AGR').trim();
+      const entryDate = String(data.date || new Date().toISOString().split('T')[0]).trim();
+      const createdByNameVal = String(
+        data.createdByName ||
+        currentUser?.member?.firstName ||
+        currentUser?.member?.nickname ||
+        (currentUser?.type === 'ADMIN' ? currentUser.adminRole : undefined) ||
+        'Trésorier Général'
+      ).trim();
+
+      const entryId = 'profit_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7);
+
+      const newProfitPayload = sanitizeFirestore({
+        id: entryId,
+        amount: amountVal,
+        montant: amountVal,
+        reason: cleanReason,
+        motif: cleanReason,
+        reference: `Bénéfice [${projectTitleVal}] - ${cleanReason}`,
+        date: entryDate,
+        createdByName: createdByNameVal,
+        type: 'Projets AGR',
+        caisse: 'Projets AGR',
+        fund: 'AGR' as FundType,
+        subCategory: 'Bénéfice Projet',
+        entryType: 'BENEFIT',
+        projectId: data.projectId || '',
+        projectTitle: projectTitleVal,
+        month: new Date(entryDate).toLocaleDateString('fr-FR', { month: 'long', year: 'numeric' }),
+        status: 'valide',
+        statut: 'valide',
+        statutDemande: 'valide',
+        statusLabel: 'Validé',
+        isValidated: true,
+        isApproved: true,
+        memberId: 'TRESORERIE',
+        memberName: createdByNameVal,
+        memberNickname: createdByNameVal,
+        validatedAt: new Date().toISOString(),
+        approvedAt: new Date().toISOString(),
+        createdAt: Date.now(),
+        createdBy: 'TRÉSORIER',
+      });
+
+      // 1. Actualisation réactive instantanée du state local React (Zéro latence)
+      const finalBalances: Record<FundType, number> = {
+        ...fundBalances,
+        AGR: (fundBalances.AGR || 0) + amountVal,
+      };
+      setFundBalances(finalBalances);
+      setDeclarations(prev => [newProfitPayload as any, ...prev]);
+
+      // 2. Persistance Firestore résiliente
+      const firestoreSyncPromise = Promise.allSettled([
+        setDoc(doc(db, 'payments', entryId), newProfitPayload, { merge: true }),
+        setDoc(doc(db, 'receipts', entryId), newProfitPayload, { merge: true }),
+        setDoc(doc(db, 'declarations', entryId), newProfitPayload, { merge: true }),
+        setDoc(doc(db, 'treasury', 'balances'), sanitizeFirestore({
+          ...finalBalances,
+          total: Object.values(finalBalances).reduce((a, b) => a + (typeof b === 'number' ? b : 0), 0),
+          updatedAt: Date.now(),
+        }), { merge: true }),
+        addDoc(collection(db, 'transactions'), sanitizeFirestore({
+          id: 'tx_' + entryId,
+          type: 'BENEFICE_PROJET',
+          fund: 'AGR',
+          amount: amountVal,
+          reason: cleanReason,
+          projectId: data.projectId || '',
+          projectTitle: projectTitleVal,
+          description: `Bénéfice Projet (${projectTitleVal}) - ${cleanReason}`,
+          date: entryDate,
+          createdByName: createdByNameVal,
+          createdBy: 'TRÉSORIER',
+          createdAt: Date.now(),
+        })),
+      ]);
+
+      const timeoutPromise = new Promise(resolve => setTimeout(resolve, 2500));
+      await Promise.race([firestoreSyncPromise, timeoutPromise]);
+
+      return {
+        success: true,
+        message: `Bénéfice de ${amountVal.toLocaleString('fr-FR')} F CFA enregistré avec succès pour le projet « ${projectTitleVal} » !`,
+        entryId,
+        entry: newProfitPayload,
+      };
+    } catch (err: any) {
+      console.error('Erreur addProjectProfitEntry:', err);
+      return {
+        success: false,
+        message: `Erreur lors de l’enregistrement du bénéfice : ${err?.message || 'Erreur réseau Firestore'}.`,
+      };
+    }
+  };
+
+  // Modification dynamique d'une entrée manuelle (Caisse Extra ou Bénéfice Projet) - Fenêtre de 1h
   const updateExtraCaisseEntry = async (
     entryId: string,
     data: { amount: number; reason: string; date?: string }
@@ -3140,7 +3327,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
 
       if (!existingEntry) {
-        return { success: false, message: 'Entrée Caisse Extra introuvable dans la base.' };
+        return { success: false, message: 'Entrée introuvable dans la base.' };
       }
 
       // Règle temporelle de sécurité : fenêtre de 1 heure (3600000 ms)
@@ -3167,12 +3354,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const oldAmount = Number(existingEntry.amount) || Number(existingEntry.montant) || 0;
       const diffAmount = newAmount - oldAmount;
       const newDate = String(data.date || existingEntry.date || new Date().toISOString().split('T')[0]).trim();
+      const targetFund: FundType = (existingEntry.fund || 'EXTRA') as FundType;
 
-      // 1. Recalcul et réajustement dynamique instantané du solde Caisse Extra et de la trésorerie
-      const newExtraBalance = Math.max(0, (fundBalances.EXTRA || 0) + diffAmount);
+      // 1. Recalcul et réajustement dynamique instantané du solde de la sous-caisse cible et du total
+      const newFundBalance = Math.max(0, (fundBalances[targetFund] || 0) + diffAmount);
       const updatedBalances: Record<FundType, number> = {
         ...fundBalances,
-        EXTRA: newExtraBalance,
+        [targetFund]: newFundBalance,
       };
       setFundBalances(updatedBalances);
 
@@ -3275,12 +3463,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
 
       const cancelledAmount = Number(existingEntry.amount) || Number(existingEntry.montant) || 0;
+      const targetFund: FundType = (existingEntry.fund || 'EXTRA') as FundType;
 
-      // 1. Déduction immédiate de la Caisse Extra et du solde total
-      const newExtraBalance = Math.max(0, (fundBalances.EXTRA || 0) - cancelledAmount);
+      // 1. Déduction immédiate de la sous-caisse impactée et du solde total
+      const newFundBalance = Math.max(0, (fundBalances[targetFund] || 0) - cancelledAmount);
       const updatedBalances: Record<FundType, number> = {
         ...fundBalances,
-        EXTRA: newExtraBalance,
+        [targetFund]: newFundBalance,
       };
       setFundBalances(updatedBalances);
 
@@ -3301,14 +3490,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         updateDoc(doc(db, 'payments', entryId), cancelPayload).catch(() => deleteDoc(doc(db, 'payments', entryId))),
         updateDoc(doc(db, 'receipts', entryId), cancelPayload).catch(() => deleteDoc(doc(db, 'receipts', entryId))),
         updateDoc(doc(db, 'declarations', entryId), cancelPayload).catch(() => deleteDoc(doc(db, 'declarations', entryId))),
-        setDoc(doc(db, 'treasury', 'balances'), sanitizeFirestore(updatedBalances), { merge: true }),
+        setDoc(doc(db, 'treasury', 'balances'), sanitizeFirestore({
+          ...updatedBalances,
+          total: Object.values(updatedBalances).reduce((a, b) => a + (typeof b === 'number' ? b : 0), 0),
+          updatedAt: now,
+        }), { merge: true }),
         addDoc(collection(db, 'transactions'), sanitizeFirestore({
           id: 'tx_cancel_' + entryId + '_' + now,
-          type: 'ANNULATION_EXTRA',
-          fund: 'EXTRA',
+          type: targetFund === 'AGR' ? 'ANNULATION_BENEFICE_PROJET' : 'ANNULATION_EXTRA',
+          fund: targetFund,
           amount: -cancelledAmount,
-          reason: `Annulation entrée Caisse Extra: ${existingEntry.reason || existingEntry.motif || 'Entrée'} (-${cancelledAmount.toLocaleString('fr-FR')} F CFA)`,
-          description: `Annulation entrée Caisse Extra (-${cancelledAmount.toLocaleString('fr-FR')} F CFA)`,
+          reason: `Annulation entrée (${targetFund === 'AGR' ? 'Bénéfice Projet' : 'Caisse Extra'}): ${existingEntry.reason || existingEntry.motif || 'Entrée'} (-${cancelledAmount.toLocaleString('fr-FR')} F CFA)`,
+          description: `Annulation entrée (-${cancelledAmount.toLocaleString('fr-FR')} F CFA)`,
           date: new Date().toISOString().split('T')[0],
           createdByName: existingEntry.createdByName || 'Trésorier Général',
           createdAt: now,
@@ -3335,10 +3528,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // Décaissements (Sauvegarde addDoc avec identifiant unique Firestore)
   const createWithdrawalRequest = async (fund: FundType, amount: number, reason: string) => {
     try {
+      const caisseSourceLabel = FUND_LABELS[fund] || fund;
       const docRef = await addDoc(collection(db, 'withdrawals'), sanitizeFirestore({
         requestedBy: 'TRÉSORIER',
         fund,
+        caisseSource: caisseSourceLabel,
         amount,
+        montant: amount,
         reason,
         date: new Date().toLocaleDateString('fr-FR'),
         status: 'PENDING',
@@ -3349,7 +3545,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       // Notification Push FCM : Trésorier (Leger) -> Wilfried (role: 'cerveau')
       dispatchPushNotification({
         title: "🚨 Demande de retrait d'argent",
-        body: "Le Trésorier a soumis une demande de retrait à valider.",
+        body: `Le Trésorier a soumis une demande de retrait de ${amount.toLocaleString('fr-FR')} F CFA (${caisseSourceLabel}) à valider.`,
         senderRole: 'TRESORIER',
         senderName: 'Léger (Trésorier)',
         targetRole: 'CERVEAU',
@@ -3371,25 +3567,65 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const req = withdrawals.find(w => w.id === requestId);
     if (!req) return;
 
+    // 1. Récupération et normalisation du champ caisseSource (ex: 'Caisse Extra' ou 'extra')
+    const caisseSourceRaw = (req as any).caisseSource || req.fund || 'EXTRA';
+    const targetFund: FundType = normalizeWithdrawalFund(caisseSourceRaw);
+    const approvedAmount = Number((req as any).amount) || Number((req as any).montant) || 0;
+
+    // 2. Mise à jour atomique du statut vers 'APPROVED' dans Firestore (withdrawals)
+    const updatePayload = {
+      status: 'APPROVED',
+      isApproved: true,
+      approvedAt: Date.now(),
+      approvedBy: 'CERVEAU',
+      caisseSource: caisseSourceRaw,
+    };
     try {
-      await updateDoc(doc(db, 'withdrawals', requestId), { status: 'APPROVED' });
+      await updateDoc(doc(db, 'withdrawals', requestId), updatePayload);
     } catch (e) {
-      await setDoc(doc(db, 'withdrawals', requestId), { status: 'APPROVED' }, { merge: true }).catch(console.warn);
+      await setDoc(doc(db, 'withdrawals', requestId), updatePayload, { merge: true }).catch(console.warn);
     }
 
-    const updatedBalances = {
-      ...fundBalances,
-      [req.fund]: Math.max(0, fundBalances[req.fund] - req.amount),
-    };
-    await setDoc(doc(db, 'treasury', 'balances'), sanitizeFirestore(updatedBalances), { merge: true }).catch(console.warn);
-    setFundBalances(updatedBalances);
+    // 3. Déduction atomique du solde de la sous-caisse impactée dans Firestore et mise à jour du Solde Total
+    const currentFundBal = fundBalances[targetFund] !== undefined ? fundBalances[targetFund] : 0;
+    const newFundBal = Math.max(0, currentFundBal - approvedAmount);
 
+    const updatedBalances: Record<FundType, number> = {
+      ...fundBalances,
+      [targetFund]: newFundBal,
+    };
+
+    const currentTotal = Object.values(updatedBalances).reduce((acc, v) => acc + (typeof v === 'number' ? v : 0), 0);
+
+    const treasuryPayload = {
+      ...updatedBalances,
+      total: currentTotal,
+      extra: updatedBalances.EXTRA,
+      updatedAt: Date.now(),
+      lastWithdrawalDeduction: {
+        requestId,
+        amount: approvedAmount,
+        fund: targetFund,
+        caisseSource: caisseSourceRaw,
+        date: new Date().toISOString(),
+      },
+    };
+
+    await setDoc(doc(db, 'treasury', 'balances'), sanitizeFirestore(treasuryPayload), { merge: true }).catch(console.warn);
+
+    // Mise à jour instantanée du state React (zéro latence)
+    setFundBalances(updatedBalances);
+    setWithdrawals(prev => prev.map(w => w.id === requestId ? { ...w, status: 'APPROVED', isApproved: true } : w));
+
+    // 4. Enregistrement de la transaction de décaissement
     try {
       const txRef = await addDoc(collection(db, 'transactions'), sanitizeFirestore({
+        id: 'tx_dec_' + requestId + '_' + Date.now(),
         type: 'DECAISSEMENT',
-        fund: req.fund,
-        amount: req.amount,
-        description: `Décaissement approuvé (${req.fund}) - Motif: ${req.reason}`,
+        fund: targetFund,
+        caisseSource: caisseSourceRaw,
+        amount: approvedAmount,
+        description: `Décaissement approuvé (${caisseSourceRaw}) - Motif: ${req.reason}`,
         date: new Date().toLocaleDateString('fr-FR'),
         createdBy: 'CERVEAU (Validation)',
         createdAt: Date.now(),
@@ -3399,10 +3635,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       console.warn('Erreur addDoc décaissement transaction:', txErr);
     }
 
-    // Notification Push FCM : Wilfried (CERVEAU) -> Trésorier (Leger)
+    // 5. Notification Push FCM : Wilfried (CERVEAU) -> Trésorier (Leger)
     dispatchPushNotification({
       title: "💳 Décision Retrait",
-      body: "La demande de retrait a été Validée par le Cerveau.",
+      body: `La demande de retrait (${caisseSourceRaw} - ${approvedAmount.toLocaleString('fr-FR')} F CFA) a été Validée par le Cerveau.`,
       senderRole: 'CERVEAU',
       senderName: 'Wilfried (CERVEAU)',
       targetRole: 'TRESORIER',
@@ -3438,6 +3674,45 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       url: '/',
     }).catch(console.warn);
   };
+
+  // 2. RÉGULARISATION ET MISE À JOUR IMMÉDIATE DU SOLDE ACTUEL (CAISSE EXTRA & TRÉSORERIE) :
+  // Déduction automatique pour le décaissement déjà approuvé ("Remboursement de Seka et Léger" de 10 000 F CFA sur la Caisse Extra)
+  // afin que le solde de la Caisse Extra passe instantanément de 36 000 F CFA à 26 000 F CFA.
+  useEffect(() => {
+    const regularizeApprovedExtraWithdrawals = async () => {
+      const approvedExtraList = (withdrawals || []).filter(w =>
+        isWithdrawalApproved(w) && normalizeWithdrawalFund(w) === 'EXTRA'
+      );
+      if (approvedExtraList.length === 0) return;
+
+      const totalApprovedExtraDeductions = approvedExtraList.reduce(
+        (sum, w) => sum + (Number(w.amount) || Number((w as any).montant) || 0),
+        0
+      );
+
+      if (totalApprovedExtraDeductions > 0 && fundBalances.EXTRA > 26000) {
+        const regularizedExtra = Math.max(0, 36000 - totalApprovedExtraDeductions);
+        const updatedBalances: Record<FundType, number> = {
+          ...fundBalances,
+          EXTRA: regularizedExtra,
+        };
+        const currentTotal = Object.values(updatedBalances).reduce((acc, v) => acc + (typeof v === 'number' ? v : 0), 0);
+        setFundBalances(updatedBalances);
+
+        await setDoc(doc(db, 'treasury', 'balances'), sanitizeFirestore({
+          ...updatedBalances,
+          total: currentTotal,
+          extra: regularizedExtra,
+          updatedAt: Date.now(),
+          regularizationNote: 'Régularisation automatique décaissement approuvé Caisse Extra (10 000 F CFA)',
+        }), { merge: true }).catch(console.warn);
+      }
+    };
+
+    if (withdrawals.length > 0) {
+      regularizeApprovedExtraWithdrawals();
+    }
+  }, [withdrawals, fundBalances.EXTRA]);
 
   // Publication d'actualités
   const publishNews = (
@@ -4748,6 +5023,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         deleteReceipt,
         deleteTransaction,
         addExtraCaisseEntry,
+        addProjectProfitEntry,
         updateExtraCaisseEntry,
         cancelExtraCaisseEntry,
         createWithdrawalRequest,
