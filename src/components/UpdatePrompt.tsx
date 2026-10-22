@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { RefreshCw, Sparkles, X } from 'lucide-react';
+import { APP_VERSION } from '../version';
 
 export const UpdatePrompt: React.FC = () => {
   const [hasUpdate, setHasUpdate] = useState<boolean>(false);
@@ -24,6 +25,11 @@ export const UpdatePrompt: React.FC = () => {
         }
       }
 
+      // Enregistrer la version courante
+      try {
+        localStorage.setItem('erouama_app_version', APP_VERSION);
+      } catch (_) {}
+
       // Petit délai pour laisser le service worker s'activer
       setTimeout(() => {
         window.location.reload();
@@ -35,7 +41,7 @@ export const UpdatePrompt: React.FC = () => {
   }, [waitingWorker]);
 
   useEffect(() => {
-    if (typeof window === 'undefined' || !('serviceWorker' in navigator)) {
+    if (typeof window === 'undefined') {
       return;
     }
 
@@ -49,7 +55,23 @@ export const UpdatePrompt: React.FC = () => {
       }
     };
 
-    navigator.serviceWorker.addEventListener('controllerchange', handleControllerChange);
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.addEventListener('controllerchange', handleControllerChange);
+    }
+
+    // Vérification directe de la version déployée sur Vercel via version.json
+    const checkRemoteVersion = async () => {
+      try {
+        const res = await fetch(`/version.json?t=${Date.now()}`, { cache: 'no-store' });
+        if (res.ok) {
+          const data = await res.json();
+          if (data && data.version && data.version !== APP_VERSION) {
+            console.log(`[UpdatePrompt] Nouvelle version détectée sur Vercel : ${data.version} (actuelle : ${APP_VERSION})`);
+            setHasUpdate(true);
+          }
+        }
+      } catch (_) {}
+    };
 
     // Fonction de surveillance de l'enregistrement du Service Worker
     const trackInstalling = (worker: ServiceWorker) => {
@@ -63,6 +85,7 @@ export const UpdatePrompt: React.FC = () => {
     };
 
     const registerOrCheck = async () => {
+      if (!('serviceWorker' in navigator)) return;
       try {
         const registration = await navigator.serviceWorker.getRegistration();
         if (registration) {
@@ -88,14 +111,19 @@ export const UpdatePrompt: React.FC = () => {
           // 4. Vérification périodique des mises à jour sur le serveur (ex: déploiement Vercel)
           const intervalId = setInterval(() => {
             registration.update().catch(() => {});
-          }, 60 * 1000); // Toutes les 60 secondes
+            checkRemoteVersion();
+          }, 45 * 1000); // Toutes les 45 secondes
 
           // Vérifier également lorsque l'utilisateur revient sur l'onglet ou se reconnecte
           const handleFocus = () => {
             registration.update().catch(() => {});
+            checkRemoteVersion();
           };
           window.addEventListener('focus', handleFocus);
           window.addEventListener('online', handleFocus);
+
+          // Vérification immédiate au montage
+          checkRemoteVersion();
 
           return () => {
             clearInterval(intervalId);
@@ -109,9 +137,12 @@ export const UpdatePrompt: React.FC = () => {
     };
 
     registerOrCheck();
+    checkRemoteVersion();
 
     return () => {
-      navigator.serviceWorker.removeEventListener('controllerchange', handleControllerChange);
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.removeEventListener('controllerchange', handleControllerChange);
+      }
     };
   }, []);
 

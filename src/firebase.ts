@@ -12,14 +12,16 @@ import {
 import { getAuth, signInAnonymously } from 'firebase/auth';
 import firebaseConfigData from '../firebase-applet-config.json';
 
-// Identifiants Firebase officiels du projet E-ROUAMA (synchronisés avec firebase-applet-config.json)
+const env = typeof import.meta !== 'undefined' && import.meta.env ? import.meta.env : {} as any;
+
+// Identifiants Firebase officiels du projet DE PRODUCTION E-ROUAMA (e-rouama-f735a)
 export const firebaseConfig = {
-  apiKey: firebaseConfigData.apiKey,
-  authDomain: firebaseConfigData.authDomain,
-  projectId: firebaseConfigData.projectId,
-  storageBucket: firebaseConfigData.storageBucket,
-  messagingSenderId: firebaseConfigData.messagingSenderId,
-  appId: firebaseConfigData.appId,
+  apiKey: env.VITE_FIREBASE_API_KEY || firebaseConfigData.apiKey || "AIzaSyCxEO6-cd0Bld5FKxBE8j8KNoP9c7PeNI4",
+  authDomain: env.VITE_FIREBASE_AUTH_DOMAIN || firebaseConfigData.authDomain || "e-rouama-f735a.firebaseapp.com",
+  projectId: env.VITE_FIREBASE_PROJECT_ID || firebaseConfigData.projectId || "e-rouama-f735a",
+  storageBucket: env.VITE_FIREBASE_STORAGE_BUCKET || firebaseConfigData.storageBucket || "e-rouama-f735a.firebasestorage.app",
+  messagingSenderId: env.VITE_FIREBASE_MESSAGING_SENDER_ID || firebaseConfigData.messagingSenderId || "700309956720",
+  appId: env.VITE_FIREBASE_APP_ID || firebaseConfigData.appId || "1:700309956720:web:5dc3242ea580b5f39fecb5",
 };
 
 // Réduire le niveau de log Firestore pour éviter les alertes intempestives
@@ -29,39 +31,18 @@ try {
   // Ignorer si déjà initialisé
 }
 
-// Gestionnaire global pour intercepter gracieusement les dépassements temporaires de quota Free Tier
-if (typeof window !== 'undefined') {
-  window.addEventListener('unhandledrejection', (event) => {
-    const reason = event.reason;
-    if (
-      reason?.code === 'resource-exhausted' ||
-      reason?.message?.includes('Quota limit exceeded') ||
-      reason?.message?.includes('Free daily write units')
-    ) {
-      event.preventDefault();
-      console.warn('⚡ Quota journalier Firestore atteint (Free Tier). Le mode local résilient prend le relais.');
-    }
-  });
-}
-
-// Initialisation de Firebase avec les clés officielles du projet
+// Initialisation de Firebase avec les clés officielles du projet de production
 const app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
 
-// Initialisation de Firestore avec long-polling et base de données assignée à l'application
-const databaseId = (firebaseConfigData as any).firestoreDatabaseId || '(default)';
+// Initialisation de Firestore sur la base par défaut de production (default)
+const databaseId = env.VITE_FIREBASE_DATABASE_ID || (firebaseConfigData as any).firestoreDatabaseId || '(default)';
+const isDefaultDb = !databaseId || databaseId === '(default)';
 
 let firestoreInstance;
 try {
-  firestoreInstance = initializeFirestore(
-    app,
-    {
-      experimentalForceLongPolling: true,
-      useFetchStreams: false,
-    } as any,
-    databaseId
-  );
-} catch {
-  firestoreInstance = getFirestore(app, databaseId);
+  firestoreInstance = isDefaultDb ? getFirestore(app) : getFirestore(app, databaseId);
+} catch (e) {
+  firestoreInstance = getFirestore(app);
 }
 
 export const db = firestoreInstance;
@@ -69,10 +50,12 @@ export const db = firestoreInstance;
 // Initialisation du service d'authentification Firebase
 export const auth = getAuth(app);
 
-// Authentification anonyme pour assurer des échanges fluides en temps réel
-signInAnonymously(auth).catch((err) => {
-  console.warn('Firebase Auth note:', err);
-});
+// Authentification anonyme si supportée par le projet
+try {
+  signInAnonymously(auth).catch(() => {});
+} catch {
+  // Ignorer si non activée sur le projet Firebase
+}
 
 // Test de connectivité initiale avec Firestore avec garde-fou contre les blocages
 export async function testFirestoreConnection(): Promise<boolean> {

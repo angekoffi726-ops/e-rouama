@@ -604,6 +604,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     // Caches internes pour le recalcul dynamique et automatique des soldes
     let receiptsCache: any[] = [];
     let paymentsCache: any[] = [];
+    let declarationsCache: any[] = [];
+    let transactionsCache: any[] = [];
+    let treasuryBalances: Record<FundType, number> = {
+      COTISATION: 0,
+      ANNIVERSAIRE: 0,
+      SOIREE_ROUAMA: 0,
+      LOISIRS: 0,
+      AGR: 0,
+      CAS_SOCIAUX: 0,
+      EXTRA: 0,
+    };
 
     const syncDynamicBalances = () => {
       const mergedMap = new Map<string, any>();
@@ -611,6 +622,30 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       paymentsCache.forEach(p => {
         const existing = mergedMap.get(p.id) || {};
         mergedMap.set(p.id, { ...existing, ...p });
+      });
+      declarationsCache.forEach(d => {
+        const existing = mergedMap.get(d.id) || {};
+        mergedMap.set(d.id, { ...existing, ...d });
+      });
+      transactionsCache.forEach(t => {
+        if (t && t.id && !mergedMap.has(t.id)) {
+          if (t.type === 'DEPOT' || (Number(t.amount) > 0 && !t.type?.includes('RETRAIT'))) {
+            mergedMap.set(t.id, {
+              id: t.id,
+              amount: Number(t.amount) || 0,
+              montant: Number(t.amount) || 0,
+              fund: t.fund || (t.caisseType === 'extra' ? 'EXTRA' : 'COTISATION'),
+              date: t.date,
+              type: t.fund === 'EXTRA' || t.caisseType === 'extra' ? 'Caisse Extra' : (t.type || 'Cotisation Mensuelle'),
+              caisse: t.fund === 'EXTRA' || t.caisseType === 'extra' ? 'Caisse Extra' : (t.caisse || 'Cotisation Mensuelle'),
+              memberNickname: t.memberNickname || t.memberName || 'Membre',
+              status: 'valide',
+              isValidated: true,
+              isApproved: true,
+              createdAt: t.createdAt || 0,
+            });
+          }
+        }
       });
       const allDecls = Array.from(mergedMap.values());
 
@@ -635,7 +670,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       );
 
       // Calcul par sous-caisse
-      const cotisations = validatedPayments
+      let cotisations = validatedPayments
         .filter(p => 
           p.type === 'Cotisation Mensuelle' || 
           p.caisse === 'Cotisation Mensuelle' || 
@@ -645,7 +680,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         )
         .reduce((acc, p) => acc + (Number(p.amount) || Number(p.montant) || 0), 0);
 
-      const anniversaire = validatedPayments
+      let anniversaire = validatedPayments
         .filter(p => 
           p.type === 'Anniversaire' || 
           p.caisse === 'Anniversaire' || 
@@ -655,7 +690,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         )
         .reduce((acc, p) => acc + (Number(p.amount) || Number(p.montant) || 0), 0);
 
-      const sorties = validatedPayments
+      let sorties = validatedPayments
         .filter(p => 
           p.type === 'Sorties & Loisirs' || 
           p.caisse === 'Sorties & Loisirs' || 
@@ -667,7 +702,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         )
         .reduce((acc, p) => acc + (Number(p.amount) || Number(p.montant) || 0), 0);
 
-      const agr = validatedPayments
+      let agr = validatedPayments
         .filter(p => 
           p.type === 'Projets AGR' || 
           p.caisse === 'Projets AGR' || 
@@ -677,7 +712,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         )
         .reduce((acc, p) => acc + (Number(p.amount) || Number(p.montant) || 0), 0);
 
-      const casSociaux = validatedPayments
+      let casSociaux = validatedPayments
         .filter(p => 
           p.type === 'Cas Sociaux' || 
           p.caisse === 'Cas Sociaux' || 
@@ -687,7 +722,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         )
         .reduce((acc, p) => acc + (Number(p.amount) || Number(p.montant) || 0), 0);
 
-      const extra = validatedPayments
+      let extra = validatedPayments
         .filter(p =>
           p.type === 'Caisse Extra' ||
           p.caisse === 'Caisse Extra' ||
@@ -714,13 +749,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       });
 
       const computed: Record<FundType, number> = {
-        COTISATION: Math.max(0, cotisations - withdrawnPerFund.COTISATION),
-        ANNIVERSAIRE: Math.max(0, anniversaire - withdrawnPerFund.ANNIVERSAIRE),
-        LOISIRS: Math.max(0, sorties - withdrawnPerFund.LOISIRS),
-        AGR: Math.max(0, agr - withdrawnPerFund.AGR),
-        CAS_SOCIAUX: Math.max(0, casSociaux - withdrawnPerFund.CAS_SOCIAUX),
-        SOIREE_ROUAMA: 0,
-        EXTRA: Math.max(0, extra - withdrawnPerFund.EXTRA),
+        COTISATION: Math.max(treasuryBalances.COTISATION || 0, Math.max(0, cotisations - withdrawnPerFund.COTISATION)),
+        ANNIVERSAIRE: Math.max(treasuryBalances.ANNIVERSAIRE || 0, Math.max(0, anniversaire - withdrawnPerFund.ANNIVERSAIRE)),
+        LOISIRS: Math.max(treasuryBalances.LOISIRS || 0, Math.max(0, sorties - withdrawnPerFund.LOISIRS)),
+        AGR: Math.max(treasuryBalances.AGR || 0, Math.max(0, agr - withdrawnPerFund.AGR)),
+        CAS_SOCIAUX: Math.max(treasuryBalances.CAS_SOCIAUX || 0, Math.max(0, casSociaux - withdrawnPerFund.CAS_SOCIAUX)),
+        SOIREE_ROUAMA: Math.max(treasuryBalances.SOIREE_ROUAMA || 0, 0),
+        EXTRA: Math.max(treasuryBalances.EXTRA || 0, Math.max(0, extra - withdrawnPerFund.EXTRA)),
       };
 
       setFundBalances(prev => ({
@@ -807,136 +842,163 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     );
     unsubscribes.push(unsubPayments);
 
-    // 2. ÉCOUTEUR UNIQUE EN TEMPS RÉEL DE LA COLLECTION 'users'
-    // Harmonisation stricte : un seul et unique écouteur Firestore en temps réel pour tous les membres
+    // 1.ter DÉCLARATIONS DE PAIEMENT (Collection 'declarations' synchronisée en temps réel depuis Firestore)
+    const unsubDeclarations = onSnapshot(
+      collection(db, 'declarations'),
+      (snapshot) => {
+        setIsFirebaseConnected(true);
+        const loadedDecls: any[] = [];
+        snapshot.docs.forEach((docSnap) => {
+          const data = docSnap.data() as any;
+          if (data.status === 'deleted' || data.isHidden === true || data.status === 'hidden') return;
+          loadedDecls.push({ id: docSnap.id, ...data });
+        });
+        declarationsCache = loadedDecls;
+        syncDynamicBalances();
+      },
+      (err) => {
+        console.warn('Firestore declarations listener notification:', err);
+      }
+    );
+    unsubscribes.push(unsubDeclarations);
+
+    // 2. ÉCOUTEURS EN TEMPS RÉEL UNIFIÉS DES COLLECTIONS 'users' ET 'members'
+    // Harmonisation stricte et synchronisation temps réel des membres inscrits (10/12)
+    let usersDocsMap = new Map<string, any>();
+    let membersDocsMap = new Map<string, any>();
+
+    const reconcileMembers = () => {
+      setIsFirebaseConnected(true);
+
+      const reconciledList: RouamaMember[] = INITIAL_ROUAMA_MEMBERS.map((official) => {
+        let uDoc = usersDocsMap.get(official.id) || membersDocsMap.get(official.id);
+        if (!uDoc) {
+          for (const docData of [...usersDocsMap.values(), ...membersDocsMap.values()]) {
+            if (
+              normalizeRosterString(docData.firstName) === normalizeRosterString(official.firstName) ||
+              normalizeRosterString(docData.nickname) === normalizeRosterString(official.nickname) ||
+              (docData.fullRosterName && normalizeRosterString(docData.fullRosterName).includes(normalizeRosterString(official.firstName))) ||
+              (official.fullRosterName && normalizeRosterString(official.fullRosterName).includes(normalizeRosterString(docData.firstName))) ||
+              (official.id === '2' && (normalizeRosterString(docData.firstName) === 'ORTINIEL' || normalizeRosterString(docData.nickname) === 'ESPRIT')) ||
+              (official.id === '11' && (normalizeRosterString(docData.nickname) === 'CLEMSO' || normalizeRosterString(docData.firstName) === 'LEGER'))
+            ) {
+              uDoc = docData;
+              break;
+            }
+          }
+        }
+
+        // Fusion des données de 'members' et 'users' si disponibles
+        const mDoc = membersDocsMap.get(official.id) || {};
+        const mergedDoc = uDoc ? { ...mDoc, ...uDoc } : mDoc;
+
+        const rawPin = mergedDoc.pinCode !== undefined
+          ? mergedDoc.pinCode
+          : (mergedDoc.pin !== undefined
+            ? mergedDoc.pin
+            : (mergedDoc.password || mergedDoc.code || official.pinCode || official.pin || ''));
+        const cleanPin = rawPin && String(rawPin).trim() !== '' && String(rawPin).trim() !== 'Non défini' ? String(rawPin).trim() : '';
+
+        // RÈGLE : Un membre est considéré comme "INSCRIT ET ACTIVÉ" dans TOUTE l'application si ET SEULEMENT SI :
+        // - Son document Firestore possède un code PIN valide (non vide) : m.pinCode && String(m.pinCode).trim() !== ""
+        // OU
+        // - Son champ d'activation est vrai : m.isRegistered === true OU m.statut === "Activé" (ou dans INITIAL_ROUAMA_MEMBERS).
+        const isActive = Boolean(
+          (cleanPin !== '') ||
+          mergedDoc.isRegistered === true ||
+          mergedDoc.statut === 'Activé' ||
+          official.isRegistered === true ||
+          official.statut === 'Activé'
+        );
+
+        const photo =
+          (typeof mergedDoc?.photoUrl === 'string' && mergedDoc.photoUrl.trim() ? mergedDoc.photoUrl.trim() : '') ||
+          (typeof mergedDoc?.avatar === 'string' && mergedDoc.avatar.trim() ? mergedDoc.avatar.trim() : '') ||
+          (typeof mergedDoc?.photoURL === 'string' && mergedDoc.photoURL.trim() ? mergedDoc.photoURL.trim() : '') ||
+          official.photoUrl ||
+          official.avatar ||
+          '';
+
+        const effectivePin = cleanPin || (isActive ? (official.pinCode || official.pin || undefined) : undefined);
+
+        const defaultRoles = getDefaultRolesForMember(official.id, official.firstName, official.nickname);
+        const memberRoles = mergedDoc?.roles || (official as any).roles || defaultRoles.roles;
+        const memberDepts = mergedDoc?.departments || (official as any).departments || defaultRoles.departments;
+        const memberFcmTokens = Array.isArray(mergedDoc?.fcmTokens) ? mergedDoc.fcmTokens : (mergedDoc?.fcmToken ? [mergedDoc.fcmToken] : []);
+
+        return {
+          id: official.id,
+          firstName: official.firstName,
+          nickname: official.nickname,
+          fullRosterName: official.fullRosterName,
+          phone: mergedDoc?.phone || official.phone,
+          email: mergedDoc?.email || official.email || '',
+          pin: effectivePin,
+          pinCode: effectivePin,
+          statut: isActive ? 'Activé' : 'En attente',
+          isRegistered: isActive,
+          avatar: photo,
+          photoUrl: photo,
+          assignedRole: mergedDoc?.assignedRole || official.assignedRole || defaultRoles.adminRole,
+          roles: memberRoles,
+          departments: memberDepts,
+          fcmTokens: memberFcmTokens,
+          fcmToken: mergedDoc?.fcmToken || memberFcmTokens[0] || undefined,
+          resteADevoir: typeof mergedDoc?.resteADevoir === 'number' ? mergedDoc.resteADevoir : (official.resteADevoir || 0),
+          totalPaid: typeof mergedDoc?.totalPaid === 'number' ? mergedDoc.totalPaid : (typeof mergedDoc?.solde === 'number' ? mergedDoc.solde : (typeof mergedDoc?.montantPaye === 'number' ? mergedDoc.montantPaye : undefined)),
+          solde: typeof mergedDoc?.solde === 'number' ? mergedDoc.solde : (typeof mergedDoc?.totalPaid === 'number' ? mergedDoc.totalPaid : undefined),
+          unpaidMonths: typeof mergedDoc?.unpaidMonths === 'number' ? mergedDoc.unpaidMonths : (typeof mergedDoc?.moisRetard === 'number' ? mergedDoc.moisRetard : undefined),
+          moisRetard: typeof mergedDoc?.moisRetard === 'number' ? mergedDoc.moisRetard : (typeof mergedDoc?.unpaidMonths === 'number' ? mergedDoc.unpaidMonths : undefined),
+          duesStatus: mergedDoc?.duesStatus || mergedDoc?.statutCotisation || undefined,
+          statutCotisation: mergedDoc?.statutCotisation || mergedDoc?.duesStatus || undefined,
+          statutDemande: mergedDoc?.statutDemande || undefined,
+          updatedAt: mergedDoc?.updatedAt || official.updatedAt,
+          lastLogin: mergedDoc?.lastLogin || official.lastLogin,
+        };
+      });
+
+      setMembers(reconciledList);
+
+      // Mettre à jour l'utilisateur actif si c'est un membre et rafraîchir sa photo de profil / infos
+      setCurrentUser((prev) => {
+        if (prev && prev.type === 'MEMBER' && prev.member) {
+          const fresh = reconciledList.find((m) =>
+            m.id === prev.member!.id ||
+            normalizeRosterString(m.firstName) === normalizeRosterString(prev.member!.firstName) ||
+            normalizeRosterString(m.nickname) === normalizeRosterString(prev.member!.nickname)
+          );
+          if (fresh) {
+            const photo = fresh.photoUrl || fresh.avatar || prev.member.photoUrl || prev.member.avatar;
+            const updatedMember = {
+              ...prev.member,
+              ...fresh,
+              avatar: photo,
+              photoUrl: photo,
+            };
+            try {
+              localStorage.setItem(EROUAMA_ACTIVE_SESSION_KEY, JSON.stringify({ ...prev, member: updatedMember }));
+              localStorage.setItem('rouama_user', JSON.stringify(updatedMember));
+            } catch (e) {}
+            return { ...prev, member: updatedMember };
+          }
+        }
+        return prev;
+      });
+    };
+
+    // 2.a Écouteur en temps réel de la collection 'users'
     const unsubUsers = onSnapshot(
       collection(db, 'users'),
       (snapshot) => {
-        setIsFirebaseConnected(true);
-
-        const usersDocsMap = new Map<string, any>();
+        usersDocsMap.clear();
         snapshot.docs.forEach((docSnap) => {
           const d = docSnap.data();
-          // Ignorer les identifiants de rôles admin s'ils existent dans users
-          if (['TRESORIER', 'CERVEAU', 'PAYOR', 'SDP', 'ORGANISATEUR', 'PROJET', 'COM', 'SECRETARIAT', 'SPIRITUALITE'].includes(docSnap.id)) {
+          if (['TRESORIER', 'CERVEAU', 'PAYOR', 'SDP', 'ORGANISATEUR', 'ORGANISATION', 'PROJET', 'COM', 'SECRETARIAT', 'SPIRITUALITE'].includes(docSnap.id)) {
             return;
           }
           usersDocsMap.set(docSnap.id, { ...d, _docId: docSnap.id });
         });
-
-        // Harmonisation stricte avec les 12 membres officiels
-        const reconciledList: RouamaMember[] = INITIAL_ROUAMA_MEMBERS.map((official) => {
-          let uDoc = usersDocsMap.get(official.id);
-          if (!uDoc) {
-            for (const docData of usersDocsMap.values()) {
-              if (
-                normalizeRosterString(docData.firstName) === normalizeRosterString(official.firstName) ||
-                normalizeRosterString(docData.nickname) === normalizeRosterString(official.nickname) ||
-                (docData.fullRosterName && normalizeRosterString(docData.fullRosterName).includes(normalizeRosterString(official.firstName))) ||
-                (official.fullRosterName && normalizeRosterString(official.fullRosterName).includes(normalizeRosterString(docData.firstName))) ||
-                (official.id === '2' && (normalizeRosterString(docData.firstName) === 'ORTINIEL' || normalizeRosterString(docData.nickname) === 'ESPRIT')) ||
-                (official.id === '11' && (normalizeRosterString(docData.nickname) === 'CLEMSO' || normalizeRosterString(docData.firstName) === 'LEGER'))
-              ) {
-                uDoc = docData;
-                break;
-              }
-            }
-          }
-
-          const rawPin = uDoc
-            ? (uDoc.pinCode !== undefined ? uDoc.pinCode : (uDoc.pin !== undefined ? uDoc.pin : (uDoc.password || uDoc.code || '')))
-            : (official.pinCode || official.pin || '');
-          const cleanPin = rawPin && String(rawPin).trim() !== '' && String(rawPin).trim() !== 'Non défini' ? String(rawPin).trim() : '';
-
-          // RÈGLE : Un membre est considéré comme "INSCRIT ET ACTIVÉ" dans TOUTE l'application si ET SEULEMENT SI :
-          // - Son document Firestore possède un code PIN valide (non vide) : m.pinCode && String(m.pinCode).trim() !== ""
-          // OU
-          // - Son champ d'activation est vrai : m.isRegistered === true OU m.statut === "Activé".
-          const isActive = uDoc
-            ? Boolean(
-                (cleanPin !== '') ||
-                uDoc.isRegistered === true ||
-                uDoc.statut === 'Activé'
-              )
-            : Boolean(
-                (cleanPin !== '') ||
-                official.isRegistered === true ||
-                official.statut === 'Activé'
-              );
-
-          const photo =
-            (typeof uDoc?.photoUrl === 'string' && uDoc.photoUrl.trim() ? uDoc.photoUrl.trim() : '') ||
-            (typeof uDoc?.avatar === 'string' && uDoc.avatar.trim() ? uDoc.avatar.trim() : '') ||
-            (typeof uDoc?.photoURL === 'string' && uDoc.photoURL.trim() ? uDoc.photoURL.trim() : '') ||
-            official.photoUrl ||
-            official.avatar ||
-            '';
-
-          const effectivePin = cleanPin || (isActive && !uDoc ? (official.pinCode || official.pin || undefined) : undefined);
-
-          const defaultRoles = getDefaultRolesForMember(official.id, official.firstName, official.nickname);
-          const memberRoles = uDoc?.roles || (official as any).roles || defaultRoles.roles;
-          const memberDepts = uDoc?.departments || (official as any).departments || defaultRoles.departments;
-          const memberFcmTokens = Array.isArray(uDoc?.fcmTokens) ? uDoc.fcmTokens : (uDoc?.fcmToken ? [uDoc.fcmToken] : []);
-
-          return {
-            id: official.id,
-            firstName: official.firstName,
-            nickname: official.nickname,
-            fullRosterName: official.fullRosterName,
-            phone: uDoc?.phone || official.phone,
-            email: uDoc?.email || official.email || '',
-            pin: effectivePin,
-            pinCode: effectivePin,
-            statut: isActive ? 'Activé' : 'En attente',
-            isRegistered: isActive,
-            avatar: photo,
-            photoUrl: photo,
-            assignedRole: uDoc?.assignedRole || official.assignedRole || defaultRoles.adminRole,
-            roles: memberRoles,
-            departments: memberDepts,
-            fcmTokens: memberFcmTokens,
-            fcmToken: uDoc?.fcmToken || memberFcmTokens[0] || undefined,
-            resteADevoir: typeof uDoc?.resteADevoir === 'number' ? uDoc.resteADevoir : (official.resteADevoir || 0),
-            totalPaid: typeof uDoc?.totalPaid === 'number' ? uDoc.totalPaid : (typeof uDoc?.solde === 'number' ? uDoc.solde : (typeof uDoc?.montantPaye === 'number' ? uDoc.montantPaye : undefined)),
-            solde: typeof uDoc?.solde === 'number' ? uDoc.solde : (typeof uDoc?.totalPaid === 'number' ? uDoc.totalPaid : undefined),
-            unpaidMonths: typeof uDoc?.unpaidMonths === 'number' ? uDoc.unpaidMonths : (typeof uDoc?.moisRetard === 'number' ? uDoc.moisRetard : undefined),
-            moisRetard: typeof uDoc?.moisRetard === 'number' ? uDoc.moisRetard : (typeof uDoc?.unpaidMonths === 'number' ? uDoc.unpaidMonths : undefined),
-            duesStatus: uDoc?.duesStatus || uDoc?.statutCotisation || undefined,
-            statutCotisation: uDoc?.statutCotisation || uDoc?.duesStatus || undefined,
-            statutDemande: uDoc?.statutDemande || undefined,
-            updatedAt: uDoc?.updatedAt || official.updatedAt,
-            lastLogin: uDoc?.lastLogin || official.lastLogin,
-          };
-        });
-
-        setMembers(reconciledList);
-
-        // Mettre à jour l'utilisateur actif si c'est un membre et rafraîchir sa photo de profil / infos
-        setCurrentUser((prev) => {
-          if (prev && prev.type === 'MEMBER' && prev.member) {
-            const fresh = reconciledList.find((m) =>
-              m.id === prev.member!.id ||
-              normalizeRosterString(m.firstName) === normalizeRosterString(prev.member!.firstName) ||
-              normalizeRosterString(m.nickname) === normalizeRosterString(prev.member!.nickname)
-            );
-            if (fresh) {
-              const photo = fresh.photoUrl || fresh.avatar || prev.member.photoUrl || prev.member.avatar;
-              const updatedMember = {
-                ...prev.member,
-                ...fresh,
-                avatar: photo,
-                photoUrl: photo,
-              };
-              try {
-                localStorage.setItem(EROUAMA_ACTIVE_SESSION_KEY, JSON.stringify({ ...prev, member: updatedMember }));
-                localStorage.setItem('rouama_user', JSON.stringify(updatedMember));
-              } catch (e) {}
-              return { ...prev, member: updatedMember };
-            }
-          }
-          return prev;
-        });
+        reconcileMembers();
       },
       (err) => {
         console.warn('Firestore users listener notification:', err);
@@ -944,17 +1006,39 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     );
     unsubscribes.push(unsubUsers);
 
-    // 3. CAISSES & TRÉSORERIE
+    // 2.b Écouteur en temps réel de la collection 'members'
+    const unsubMembersCol = onSnapshot(
+      collection(db, 'members'),
+      (snapshot) => {
+        membersDocsMap.clear();
+        snapshot.docs.forEach((docSnap) => {
+          const d = docSnap.data();
+          membersDocsMap.set(docSnap.id, { ...d, _docId: docSnap.id });
+        });
+        reconcileMembers();
+      },
+      (err) => {
+        console.warn('Firestore members listener notification:', err);
+      }
+    );
+    unsubscribes.push(unsubMembersCol);
+
+    // 3. CAISSES & TRÉSORERIE (Collections 'treasury' et 'caisses')
     const unsubTreasury = onSnapshot(
       doc(db, 'treasury', 'balances'),
       (docSnap) => {
         setIsFirebaseConnected(true);
         if (docSnap.exists()) {
           const data = docSnap.data() as Record<FundType, number>;
-          setFundBalances(prev => {
-            const hasPositive = Object.values(data || {}).some(v => typeof v === 'number' && v > 0);
-            return hasPositive ? { ...prev, ...data } : prev;
-          });
+          treasuryBalances = {
+            ...treasuryBalances,
+            ...data,
+          };
+          setFundBalances(prev => ({
+            ...prev,
+            ...data,
+          }));
+          syncDynamicBalances();
         }
       },
       (err) => {
@@ -962,6 +1046,64 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
     );
     unsubscribes.push(unsubTreasury);
+
+    // 3.bis Écouteur en temps réel de la collection 'caisses'
+    const unsubCaisses = onSnapshot(
+      collection(db, 'caisses'),
+      (snapshot) => {
+        setIsFirebaseConnected(true);
+        const updates: Partial<Record<FundType, number>> = {};
+        snapshot.docs.forEach((docSnap) => {
+          const d = docSnap.data();
+          const idUpper = docSnap.id.toUpperCase();
+          if (docSnap.id === 'balances' || docSnap.id === 'general' || docSnap.id === 'total') {
+            Object.assign(updates, d);
+          } else {
+            let fundKey: FundType | null = null;
+            if (idUpper.includes('EXTRA')) fundKey = 'EXTRA';
+            else if (idUpper.includes('COTISAT')) fundKey = 'COTISATION';
+            else if (idUpper.includes('ANNIV')) fundKey = 'ANNIVERSAIRE';
+            else if (idUpper.includes('SOCIAU') || idUpper.includes('SOCIAL')) fundKey = 'CAS_SOCIAUX';
+            else if (idUpper.includes('LOISIR') || idUpper.includes('SORTIE')) fundKey = 'LOISIRS';
+            else if (idUpper.includes('AGR')) fundKey = 'AGR';
+            else if (idUpper.includes('SOIREE') || idUpper.includes('ROUAMA')) fundKey = 'SOIREE_ROUAMA';
+            else if (d.fund && ['COTISATION', 'ANNIVERSAIRE', 'CAS_SOCIAUX', 'LOISIRS', 'AGR', 'SOIREE_ROUAMA', 'EXTRA'].includes(d.fund)) {
+              fundKey = d.fund as FundType;
+            }
+
+            const val = typeof d.solde === 'number' ? d.solde
+              : typeof d.balance === 'number' ? d.balance
+              : typeof d.montant === 'number' ? d.montant
+              : typeof d.amount === 'number' ? d.amount
+              : typeof d.total === 'number' ? d.total : null;
+
+            if (fundKey && val !== null) {
+              (updates as any)[fundKey] = val;
+            }
+            if (typeof d.EXTRA === 'number') updates.EXTRA = d.EXTRA;
+            if (typeof d.extra === 'number') updates.EXTRA = d.extra;
+            if (typeof d.caisseExtra === 'number') updates.EXTRA = d.caisseExtra;
+            if (typeof d.COTISATION === 'number') updates.COTISATION = d.COTISATION;
+            if (typeof d.cotisation === 'number') updates.COTISATION = d.cotisation;
+          }
+        });
+        if (Object.keys(updates).length > 0) {
+          treasuryBalances = {
+            ...treasuryBalances,
+            ...updates,
+          };
+          setFundBalances(prev => ({
+            ...prev,
+            ...updates,
+          }));
+          syncDynamicBalances();
+        }
+      },
+      (err) => {
+        console.warn('Firestore caisses listener notification:', err);
+      }
+    );
+    unsubscribes.push(unsubCaisses);
 
     // 4. ACTIVITÉS & SORTIES
     const unsubActivities = onSnapshot(
@@ -1093,7 +1235,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           if (timeA && timeB) return timeB - timeA;
           return b.id.localeCompare(a.id);
         });
+        transactionsCache = loaded;
         setTransactions(loaded);
+        syncDynamicBalances();
       },
       (err) => console.warn('Transactions listener error:', err)
     );
@@ -1145,13 +1289,49 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     );
     unsubscribes.push(unsubFinancialEvents);
 
-    // 10. SPIRITUALITÉ (Verset, Intentions, Événements)
+    // 10. SPIRITUALITÉ & VERSETS (Collections 'spiritual' et 'versets' synchronisées en temps réel)
     const unsubVerse = onSnapshot(doc(db, 'spiritual', 'verse'), (docSnap) => {
       if (docSnap.exists()) {
-        setVerseOfTheDay(docSnap.data() as VerseOfTheDay);
+        const data = docSnap.data() as VerseOfTheDay;
+        setVerseOfTheDay(data);
       }
-    });
+    }, (err) => console.warn('Firestore spiritual/verse listener warning:', err));
     unsubscribes.push(unsubVerse);
+
+    const unsubVerseOfTheDay = onSnapshot(doc(db, 'spiritual', 'verse_of_the_day'), (docSnap) => {
+      if (docSnap.exists()) {
+        const data = docSnap.data() as VerseOfTheDay;
+        setVerseOfTheDay(data);
+      }
+    }, (err) => console.warn('Firestore spiritual/verse_of_the_day listener warning:', err));
+    unsubscribes.push(unsubVerseOfTheDay);
+
+    const unsubVersetsCollection = onSnapshot(collection(db, 'versets'), (snapshot) => {
+      if (!snapshot.empty) {
+        const list: VerseOfTheDay[] = [];
+        snapshot.docs.forEach(d => {
+          const dt = d.data() as any;
+          if (dt.verse || dt.verset || dt.content || dt.texte) {
+            list.push({
+              verse: dt.verse || dt.verset || dt.content || dt.texte,
+              reference: dt.reference || dt.ref || '',
+              date: dt.date || dt.dateStr || (dt.createdAt ? new Date(dt.createdAt).toLocaleDateString('fr-FR') : ''),
+              updatedBy: dt.updatedBy || dt.author || 'SPIRITUALITÉ',
+              ...(dt.createdAt ? { createdAt: dt.createdAt } : {}),
+            });
+          }
+        });
+        if (list.length > 0) {
+          list.sort((a, b) => {
+            const timeA = (a as any).createdAt || 0;
+            const timeB = (b as any).createdAt || 0;
+            return timeB - timeA;
+          });
+          setVerseOfTheDay(list[0]);
+        }
+      }
+    }, (err) => console.warn('Firestore versets collection listener warning:', err));
+    unsubscribes.push(unsubVersetsCollection);
 
     const unsubIntentions = onSnapshot(collection(db, 'prayer_intentions'), (snapshot) => {
       const loaded: PrayerIntention[] = [];
@@ -1287,14 +1467,26 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
     unsubscribes.push(unsubAdminLogs);
 
-    // 15. DEMANDES D'INFORMATION INTER-ADMINS (MESSAGERIE B2B - info_requests)
-    const unsubInfoReqs = onSnapshot(collection(db, 'info_requests'), (snapshot) => {
-      const loaded: InfoRequest[] = [];
-      snapshot.forEach(d => loaded.push({ id: d.id, ...(d.data() as any) }));
+    // 15. DEMANDES D'INFORMATION INTER-ADMINS (MESSAGERIE B2B - info_requests & navettes)
+    const infoRequestsMap = new Map<string, InfoRequest>();
+
+    const updateCombinedInfoRequests = () => {
+      const loaded = Array.from(infoRequestsMap.values());
       loaded.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
       setInfoRequests(loaded);
+    };
+
+    const unsubInfoReqs = onSnapshot(collection(db, 'info_requests'), (snapshot) => {
+      snapshot.forEach(d => infoRequestsMap.set(d.id, { id: d.id, ...(d.data() as any) }));
+      updateCombinedInfoRequests();
     });
     unsubscribes.push(unsubInfoReqs);
+
+    const unsubNavettes = onSnapshot(collection(db, 'navettes'), (snapshot) => {
+      snapshot.forEach(d => infoRequestsMap.set(d.id, { id: d.id, ...(d.data() as any) }));
+      updateCombinedInfoRequests();
+    });
+    unsubscribes.push(unsubNavettes);
 
     return () => {
       unsubscribes.forEach(u => u());
@@ -5057,7 +5249,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       date: new Date().toLocaleDateString('fr-FR'),
       updatedBy: 'SPIRITUALITÉ',
     };
+    // Synchronisation multi-collections dans Firestore de production
     setDoc(doc(db, 'spiritual', 'verse'), sanitizeFirestore(updated)).catch(console.warn);
+    setDoc(doc(db, 'spiritual', 'verse_of_the_day'), sanitizeFirestore(updated)).catch(console.warn);
+    setDoc(doc(db, 'versets', 'today'), sanitizeFirestore({ ...updated, createdAt: Date.now() })).catch(console.warn);
     setVerseOfTheDay(updated);
 
     // Notification Push FCM : TOUS LES MEMBRES

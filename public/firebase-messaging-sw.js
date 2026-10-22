@@ -215,11 +215,105 @@ self.addEventListener('message', async (event) => {
   }
 });
 
-// Installation et activation immédiate
-self.addEventListener('install', () => {
+// Versioning et stratégie de cache PWA (2026.10.22.1)
+const APP_VERSION = '2026.10.22.1';
+const CACHE_NAME = 'erouama-cache-v-' + APP_VERSION;
+
+// Installation : forcer le nouveau Service Worker à devenir actif immédiatement
+self.addEventListener('install', (event) => {
+  console.log('[firebase-messaging-sw.js] Installation nouvelle version:', APP_VERSION);
   self.skipWaiting();
 });
 
+// Activation : suppression stricte de tous les anciens caches obsolètes et prise de contrôle
 self.addEventListener('activate', (event) => {
-  event.waitUntil(clients.claim());
+  console.log('[firebase-messaging-sw.js] Activation nouvelle version:', APP_VERSION);
+  event.waitUntil(
+    caches.keys().then((cacheNames) => {
+      return Promise.all(
+        cacheNames.map((cacheName) => {
+          if (cacheName !== CACHE_NAME) {
+            console.log('[firebase-messaging-sw.js] Invalidation ancien cache PWA:', cacheName);
+            return caches.delete(cacheName);
+          }
+        })
+      );
+    }).then(() => self.clients.claim())
+  );
 });
+
+// Stratégie de mise en cache HTTP / PWA :
+// - HTML & Navigations : Network First avec timeout puis fallback cache
+// - Actifs statiques locaux (JS/CSS versionnés, images) : StaleWhileRevalidate
+// - Firestore / Firebase APIs / requêtes POST / PUT : Network Only direct (aucun cache)
+self.addEventListener('fetch', (event) => {
+  const req = event.request;
+  const url = new URL(req.url);
+
+  // Ignorer les requêtes non-GET et les requêtes internes/externes Firebase
+  if (req.method !== 'GET') return;
+  if (
+    url.hostname.includes('firestore.googleapis.com') ||
+    url.hostname.includes('firebaseinstallations.googleapis.com') ||
+    url.hostname.includes('fcmregistrations.googleapis.com') ||
+    url.hostname.includes('identitytoolkit.googleapis.com') ||
+    url.hostname.includes('firebase.googleapis.com') ||
+    url.pathname.includes('/api/') ||
+    url.pathname.includes('version.json')
+  ) {
+    return; // Laisser passer directement au réseau
+  }
+
+  // 1. Pour les requêtes de navigation (HTML index) : NETWORK FIRST STRICT
+  // Garantit que le navigateur charge toujours le tout dernier index.html de Vercel
+  if (req.mode === 'navigate' || req.destination === 'document' || url.pathname === '/' || url.pathname.endsWith('index.html')) {
+    event.respondWith(
+      (async () => {
+        try {
+          // Tente le réseau avec timeout de 2.5 secondes
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 2500);
+          const networkResponse = await fetch(req, {
+            cache: 'no-cache',
+            signal: controller.signal,
+          });
+          clearTimeout(timeoutId);
+
+          if (networkResponse && networkResponse.status === 200) {
+            const cache = await caches.open(CACHE_NAME);
+            cache.put(req, networkResponse.clone());
+            return networkResponse;
+          }
+        } catch (_) {
+          // Hors ligne ou échec réseau : retour de secours sur le cache
+        }
+        const cachedResponse = await caches.match(req);
+        if (cachedResponse) return cachedResponse;
+        const rootMatch = await caches.match('/index.html');
+        if (rootMatch) return rootMatch;
+        return fetch(req);
+      })()
+    );
+    return;
+  }
+
+  // 2. Pour les actifs statiques locaux (assets JS/CSS hashés Vite) : StaleWhileRevalidate
+  if (url.origin === self.location.origin) {
+    event.respondWith(
+      caches.match(req).then((cachedResponse) => {
+        const fetchPromise = fetch(req)
+          .then((networkResponse) => {
+            if (networkResponse && networkResponse.status === 200) {
+              const resClone = networkResponse.clone();
+              caches.open(CACHE_NAME).then((cache) => cache.put(req, resClone));
+            }
+            return networkResponse;
+          })
+          .catch(() => cachedResponse);
+
+        return cachedResponse || fetchPromise;
+      })
+    );
+  }
+});
+

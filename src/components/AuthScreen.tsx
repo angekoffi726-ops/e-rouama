@@ -19,29 +19,50 @@ const normalizeName = (str: string): string => {
 export const AuthScreen: React.FC = () => {
   const { registerMember, loginMember, loginAdmin, members, adminUsers, setCurrentUser } = useApp();
 
-  // Écoute directe en temps réel de tous les documents de la collection 'users' dans Firestore
+  // Écoute directe en temps réel de tous les documents des collections 'users' et 'members' dans Firestore
   const [firestoreUsers, setFirestoreUsers] = useState<any[]>([]);
 
   useEffect(() => {
     // Reconstitution et rafraîchissement automatique du token FCM dès l'ouverture de l'écran de Login
     refreshFcmTokenOnStartup();
 
-    const unsub = onSnapshot(
+    const usersMap = new Map<string, any>();
+
+    const updateCombined = () => {
+      setFirestoreUsers(Array.from(usersMap.values()));
+    };
+
+    const unsubUsers = onSnapshot(
       collection(db, 'users'),
       (snapshot) => {
-        const list = snapshot.docs.map((d) => ({
-          _docId: d.id,
-          id: d.id,
-          ...d.data(),
-        }));
-        setFirestoreUsers(list);
+        snapshot.docs.forEach((d) => {
+          usersMap.set(d.id, { _docId: d.id, id: d.id, ...d.data() });
+        });
+        updateCombined();
       },
       (error) => {
         console.warn('Erreur écoute collection users dans AuthScreen:', error);
       }
     );
 
-    return () => unsub();
+    const unsubMembers = onSnapshot(
+      collection(db, 'members'),
+      (snapshot) => {
+        snapshot.docs.forEach((d) => {
+          const prev = usersMap.get(d.id) || {};
+          usersMap.set(d.id, { ...prev, _docId: d.id, id: d.id, ...d.data() });
+        });
+        updateCombined();
+      },
+      (error) => {
+        console.warn('Erreur écoute collection members dans AuthScreen:', error);
+      }
+    );
+
+    return () => {
+      unsubUsers();
+      unsubMembers();
+    };
   }, []);
 
   // 1. DÉFINITION UNIQUE ET SYNCHRONISATION EN TEMPS RÉEL DU COMPTEUR DE MEMBRES
@@ -59,13 +80,15 @@ export const AuthScreen: React.FC = () => {
         return false;
       }) || (members || []).find((m) => m.id === official.id) || {};
 
-      const rawPin = uDoc.pinCode !== undefined ? uDoc.pinCode : (uDoc.pin !== undefined ? uDoc.pin : '');
+      const rawPin = uDoc.pinCode !== undefined ? uDoc.pinCode : (uDoc.pin !== undefined ? uDoc.pin : (official.pinCode || official.pin || ''));
       const cleanPin = rawPin && String(rawPin).trim() !== '' && String(rawPin).trim() !== 'Non défini' ? String(rawPin).trim() : '';
 
       const isActif = Boolean(
         (cleanPin !== '') ||
         uDoc.isRegistered === true ||
-        uDoc.statut === 'Activé'
+        uDoc.statut === 'Activé' ||
+        official.isRegistered === true ||
+        official.statut === 'Activé'
       );
 
       return {

@@ -50,22 +50,43 @@ export const CerveauMembersCredentialsViewer: React.FC<CerveauMembersCredentials
   const [firestoreUsers, setFirestoreUsers] = useState<any[]>([]);
 
   useEffect(() => {
-    const unsub = onSnapshot(
+    const usersMap = new Map<string, any>();
+
+    const updateCombined = () => {
+      setFirestoreUsers(Array.from(usersMap.values()));
+    };
+
+    const unsubUsers = onSnapshot(
       collection(db, 'users'),
       (snapshot) => {
-        const list = snapshot.docs.map((d) => ({
-          _docId: d.id,
-          id: d.id,
-          ...d.data(),
-        }));
-        setFirestoreUsers(list);
+        snapshot.docs.forEach((d) => {
+          usersMap.set(d.id, { _docId: d.id, id: d.id, ...d.data() });
+        });
+        updateCombined();
       },
       (error) => {
         console.warn('Erreur écoute collection users dans CERVEAU:', error);
       }
     );
 
-    return () => unsub();
+    const unsubMembers = onSnapshot(
+      collection(db, 'members'),
+      (snapshot) => {
+        snapshot.docs.forEach((d) => {
+          const prev = usersMap.get(d.id) || {};
+          usersMap.set(d.id, { ...prev, _docId: d.id, id: d.id, ...d.data() });
+        });
+        updateCombined();
+      },
+      (error) => {
+        console.warn('Erreur écoute collection members dans CERVEAU:', error);
+      }
+    );
+
+    return () => {
+      unsubUsers();
+      unsubMembers();
+    };
   }, []);
 
   const [searchQuery, setSearchQuery] = useState('');
@@ -86,7 +107,7 @@ export const CerveauMembersCredentialsViewer: React.FC<CerveauMembersCredentials
   const [pinActionSuccess, setPinActionSuccess] = useState<string | null>(null);
   const [pinActionError, setPinActionError] = useState<string | null>(null);
 
-  // 2. SYNCHRONISATION EN TEMPS RÉEL DEPUIS FIRESTORE ('users')
+  // 2. SYNCHRONISATION EN TEMPS RÉEL DEPUIS FIRESTORE ('users' et 'members')
   // RÈGLE : Un membre est considéré comme ACTIF si et seulement si :
   // m.isRegistered === true OU m.statut === 'Activé' OU (m.pinCode !== null && m.pinCode !== '')
   const registeredMembers = useMemo(() => {
@@ -103,13 +124,15 @@ export const CerveauMembersCredentialsViewer: React.FC<CerveauMembersCredentials
         return false;
       }) || (members || []).find((m) => m.id === official.id) || {};
 
-      const rawPin = uDoc.pinCode !== undefined ? uDoc.pinCode : (uDoc.pin !== undefined ? uDoc.pin : '');
+      const rawPin = uDoc.pinCode !== undefined ? uDoc.pinCode : (uDoc.pin !== undefined ? uDoc.pin : (official.pinCode || official.pin || ''));
       const cleanPin = rawPin && String(rawPin).trim() !== '' && String(rawPin).trim() !== 'Non défini' ? String(rawPin).trim() : '';
 
       const isActif = Boolean(
         (cleanPin !== '') ||
         uDoc.isRegistered === true ||
-        uDoc.statut === 'Activé'
+        uDoc.statut === 'Activé' ||
+        official.isRegistered === true ||
+        official.statut === 'Activé'
       );
       const realPin = isActif && cleanPin ? cleanPin : '';
 

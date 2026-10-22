@@ -32,6 +32,12 @@ service cloud.firestore {
     match /treasury/{docId} {
       allow read, write: if true;
     }
+    match /caisses/{docId} {
+      allow read, write: if true;
+    }
+    match /navettes/{docId} {
+      allow read, write: if true;
+    }
 
     // 5. Activités et sorties
     match /activities/{activityId} {
