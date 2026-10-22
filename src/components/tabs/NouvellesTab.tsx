@@ -228,7 +228,9 @@ export const NouvellesTab: React.FC<NouvellesTabProps> = ({ onNavigateTab }) => 
           ) : (
             visibleNews.map(item => {
               const isRead = currentMemberId
-                ? (item.readBy || []).includes(currentMemberId) || (currentUser?.id && (item.readBy || []).includes(currentUser.id))
+                ? (item.readBy || []).map(String).includes(String(currentMemberId)) ||
+                  (currentUser?.id && (item.readBy || []).map(String).includes(String(currentUser.id))) ||
+                  (currentNick && (item.readBy || []).map(String).some(r => r.toUpperCase() === currentNick.toUpperCase()))
                 : true;
               const isArchiveRelated =
                 item.linkTab === 'ARCHIVES' ||
@@ -289,7 +291,11 @@ export const NouvellesTab: React.FC<NouvellesTabProps> = ({ onNavigateTab }) => 
                       {isMember && !isRead && (
                         <button
                           type="button"
-                          onClick={() => markNewsAsRead(item.id)}
+                          onClick={() => {
+                            markNewsAsRead(item.id);
+                            setToastFeedback(`Le message « ${item.title} » est marqué comme lu !`);
+                            setTimeout(() => setToastFeedback(null), 3000);
+                          }}
                           className="bg-[#355E3B] hover:bg-[#2A4B2F] text-white font-extrabold px-3 py-1 rounded-full text-[11px] flex items-center gap-1 shadow transition-all active:scale-95 cursor-pointer"
                         >
                           <Eye className="w-3 h-3" />

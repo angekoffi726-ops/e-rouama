@@ -254,6 +254,48 @@ export interface NewsItem {
   status?: string;
 }
 
+export const DEFAULT_GBAIRAI_NEWS: NewsItem[] = [
+  {
+    id: 'NEWS-INIT-01',
+    title: '📢 Bienvenue sur la Plateforme Officielle E-ROUAMA',
+    content: 'Chers frères et sœurs de la famille ROUAMA,\nBienvenue sur votre espace digital officiel. Retrouvez ici toutes les actualités, bilans des caisses et résolutions des PV.',
+    category: 'ANNONCE',
+    targetAudience: 'TOUS',
+    authorRole: 'BIC',
+    author: 'Base d\'Information et de Communication',
+    createdBy: 'COM',
+    date: '15/10/2026 à 10:00',
+    readBy: ['1', '3', 'CAPELO', 'LA MADRE'],
+    dispatchChannel: 'APP',
+  },
+  {
+    id: 'NEWS-INIT-02',
+    title: '💰 Rappel des Cotisations Mensuelles (500 F CFA / mois)',
+    content: 'La Trésorerie Générale rappelle que le versement régulier des cotisations mensuelles permet de maintenir nos caisses à jour et d\'assurer nos engagements de solidarité fraternelle.',
+    category: 'RELANCE',
+    targetAudience: 'TOUS',
+    authorRole: 'TRESORIER',
+    author: 'Trésorerie Générale',
+    createdBy: 'TRESORIER',
+    date: '18/10/2026 à 14:30',
+    readBy: ['1', '3', 'CAPELO', 'LA MADRE'],
+    dispatchChannel: 'APP',
+  },
+  {
+    id: 'NEWS-INIT-03',
+    title: '🎪 Préparation des Événements Statutaires : Soirée & Anniversaire',
+    content: 'La Commission Organisation informe l\'ensemble des membres que les préparatifs de la Soirée ROUAMA (19 Décembre 2026) et de l\'Anniversaire ROUAMA (21 Mars 2027) sont activement lancés.',
+    category: 'ANNONCE',
+    targetAudience: 'TOUS',
+    authorRole: 'ORGANISATION',
+    author: 'Commission Organisation',
+    createdBy: 'ORGANISATION',
+    date: '20/10/2026 à 09:15',
+    readBy: ['1', '3', 'CAPELO', 'LA MADRE'],
+    dispatchChannel: 'APP',
+  },
+];
+
 export interface Committee {
   name: string;
   leaderNickname: string;

@@ -10,6 +10,7 @@ import {
   AdminLoginLog,
   InfoRequest,
   RouamaMember,
+  NewsItem,
 } from '../../types';
 import {
   Shield,
@@ -35,6 +36,12 @@ import {
   Send,
   AlertCircle,
   TrendingUp,
+  Newspaper,
+  CheckCircle2,
+  ChevronDown,
+  ChevronUp,
+  UserCheck,
+  X,
 } from 'lucide-react';
 import { InfoRequestsModule } from './InfoRequestsModule';
 import { OFFICIAL_DEPARTMENTS } from '../../data/departmentMapping';
@@ -381,10 +388,20 @@ export const SuiviProgrammeConsole: React.FC<SuiviProgrammeConsoleProps> = () =>
     religiousEvents = [],
     infoRequests = [],
     adminLogs = [],
+    newsItems = [],
+    getMemberDuesStatus,
+    markNewsAsRead,
+    markAllGbairaiAsRead,
   } = useApp();
 
   // Navigation par onglets clairs et structurés
-  const [activeTab, setActiveTab] = useState<'ACTIVITES' | 'DEMANDES_INFO' | 'CONNEXIONS' | 'NAVETTE'>('ACTIVITES');
+  const [activeTab, setActiveTab] = useState<'ACTIVITES' | 'DEMANDES_INFO' | 'CONNEXIONS' | 'GBAIRAI_READS' | 'NAVETTE'>('ACTIVITES');
+
+  // Filtres pour le suivi des lectures Gbairai
+  const [gbairaiFilter, setGbairaiFilter] = useState<'ALL' | 'UNREAD' | 'ALL_READ'>('ALL');
+  const [gbairaiSearchQuery, setGbairaiSearchQuery] = useState<string>('');
+  const [expandedMemberGbairaiId, setExpandedMemberGbairaiId] = useState<string | null>(null);
+  const [gbairaiFeedbackToast, setGbairaiFeedbackToast] = useState<string | null>(null);
 
   // Filtres pour la rubrique Activités
   const [activityDeptFilter, setActivityDeptFilter] = useState<'ALL' | 'ORGANISATION' | 'SPIRITUALITE' | 'PROJET'>('ALL');
@@ -521,6 +538,160 @@ export const SuiviProgrammeConsole: React.FC<SuiviProgrammeConsoleProps> = () =>
       console.warn('Erreur simulation admin_logs:', err);
     } finally {
       setIsSimulatingLogin(false);
+    }
+  };
+
+  // =========================================================
+  // 0. SUIVI DES LECTURES GBAIRAI EN TEMPS RÉEL PAR MEMBRE
+  // =========================================================
+  interface MemberGbairaiReadStatus {
+    member: RouamaMember;
+    totalEligible: number;
+    readCount: number;
+    unreadCount: number;
+    unreadMessages: NewsItem[];
+    allRead: boolean;
+    readPercentage: number;
+  }
+
+  const memberGbairaiStatuses = useMemo<MemberGbairaiReadStatus[]>(() => {
+    const activeNews = (newsItems || []).filter((msg) => {
+      if (!msg) return false;
+      if (msg.dispatchChannel === 'MAIL') return false;
+      if (
+        msg.isDeleted === true ||
+        msg.deleted === true ||
+        msg.status === 'deleted' ||
+        msg.status === 'supprime' ||
+        msg.status === 'hidden' ||
+        msg.isHidden === true
+      ) {
+        return false;
+      }
+      return true;
+    });
+
+    return members.map((m) => {
+      const memberId = String(m.id).trim();
+      const memberNick = (m.nickname || '').trim().toUpperCase();
+      const memberFirst = (m.firstName || '').trim().toUpperCase();
+      const memberDues = getMemberDuesStatus ? getMemberDuesStatus(m.id) : 'RETARD';
+
+      // Messages auxquels ce membre est éligible / ciblé
+      const eligibleMessages = activeNews.filter((msg) => {
+        const targetIds: string[] = [];
+        if (msg.recipientId) targetIds.push(String(msg.recipientId));
+        if (msg.targetMemberId) targetIds.push(String(msg.targetMemberId));
+        if (Array.isArray(msg.targetMembers)) msg.targetMembers.forEach((id: any) => targetIds.push(String(id)));
+        if (Array.isArray(msg.targetMemberIds)) msg.targetMemberIds.forEach((id: any) => targetIds.push(String(id)));
+
+        const hasSpecificTargeting =
+          targetIds.length > 0 &&
+          !targetIds.includes('ALL') &&
+          !targetIds.includes('TOUS') &&
+          !targetIds.includes('PUBLIC');
+
+        if (hasSpecificTargeting) {
+          const isTargeted =
+            targetIds.includes(memberId) ||
+            (memberNick && targetIds.some((t) => t.toUpperCase() === memberNick));
+          if (!isTargeted) return false;
+        }
+
+        // Exclusion stricte
+        if (msg.excludedMemberIds && msg.excludedMemberIds.length > 0) {
+          const isExcluded =
+            msg.excludedMemberIds.map(String).includes(memberId) ||
+            (memberNick && msg.excludedMemberIds.some((e) => e.toUpperCase() === memberNick));
+          if (isExcluded) return false;
+        }
+
+        // Masquage si le membre est l'auteur du paiement pour une alerte de versement
+        if (!hasSpecificTargeting && msg.payerId && String(msg.payerId) === memberId) {
+          return false;
+        }
+
+        // Audience ciblée
+        if (msg.targetAudience && msg.targetAudience !== 'TOUS') {
+          if (msg.targetAudience !== memberDues) return false;
+        }
+
+        return true;
+      });
+
+      // Messages non lus par ce membre
+      const unreadMessages = eligibleMessages.filter((msg) => {
+        const readList = (msg.readBy || []).map((r) => String(r).trim().toUpperCase());
+        const isRead =
+          readList.includes(memberId.toUpperCase()) ||
+          (memberNick && readList.includes(memberNick)) ||
+          (memberFirst && readList.includes(memberFirst));
+        return !isRead;
+      });
+
+      const totalEligible = eligibleMessages.length;
+      const unreadCount = unreadMessages.length;
+      const readCount = Math.max(0, totalEligible - unreadCount);
+      const allRead = unreadCount === 0;
+      const readPercentage = totalEligible > 0 ? Math.round((readCount / totalEligible) * 100) : 100;
+
+      return {
+        member: m,
+        totalEligible,
+        readCount,
+        unreadCount,
+        unreadMessages,
+        allRead,
+        readPercentage,
+      };
+    });
+  }, [members, newsItems, getMemberDuesStatus]);
+
+  // Compteurs dérivés pour le suivi Gbairai
+  const membersWithUnreadCount = useMemo(
+    () => memberGbairaiStatuses.filter((s) => s.unreadCount > 0).length,
+    [memberGbairaiStatuses]
+  );
+  const membersAllReadCount = useMemo(
+    () => memberGbairaiStatuses.filter((s) => s.allRead).length,
+    [memberGbairaiStatuses]
+  );
+  const totalGbairaiUnreadCount = useMemo(
+    () => memberGbairaiStatuses.reduce((acc, s) => acc + s.unreadCount, 0),
+    [memberGbairaiStatuses]
+  );
+
+  // Filtrage pour la vue du tableau Gbairai
+  const filteredMemberGbairaiStatuses = useMemo(() => {
+    return memberGbairaiStatuses.filter((s) => {
+      if (gbairaiFilter === 'UNREAD' && s.unreadCount === 0) return false;
+      if (gbairaiFilter === 'ALL_READ' && !s.allRead) return false;
+
+      if (gbairaiSearchQuery.trim()) {
+        const q = gbairaiSearchQuery.toLowerCase();
+        const m = s.member;
+        const matchesName = (m.firstName || '').toLowerCase().includes(q);
+        const matchesNick = (m.nickname || '').toLowerCase().includes(q);
+        const matchesRoster = (m.fullRosterName || '').toLowerCase().includes(q);
+        const matchesPhone = (m.phone || '').includes(q);
+        if (!matchesName && !matchesNick && !matchesRoster && !matchesPhone) return false;
+      }
+      return true;
+    });
+  }, [memberGbairaiStatuses, gbairaiFilter, gbairaiSearchQuery]);
+
+  // Action pour marquer tous les messages comme lus pour un membre (validation directe par le SDP)
+  const handleMarkAllReadForMember = async (member: RouamaMember) => {
+    try {
+      if (markAllGbairaiAsRead) {
+        markAllGbairaiAsRead(member.id);
+        setGbairaiFeedbackToast(
+          `Tous les messages Gbairai ont été confirmés comme lus pour ${member.nickname || member.firstName}. Le compteur s'est actualisé.`
+        );
+        setTimeout(() => setGbairaiFeedbackToast(null), 4000);
+      }
+    } catch (err: any) {
+      console.warn('Erreur validation lecture:', err);
     }
   };
 
@@ -738,7 +909,7 @@ export const SuiviProgrammeConsole: React.FC<SuiviProgrammeConsoleProps> = () =>
           </div>
 
           {/* KPI CARDS EN EN-TÊTE */}
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 w-full md:w-auto">
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2.5 w-full md:w-auto">
             <div className="bg-slate-950/80 p-3 rounded-2xl border border-slate-800 text-center">
               <span className="text-[10px] font-bold text-slate-400 uppercase block">Activités</span>
               <span className="text-xl font-black text-white font-mono">{allDepartmentActivities.length}</span>
@@ -761,6 +932,23 @@ export const SuiviProgrammeConsole: React.FC<SuiviProgrammeConsoleProps> = () =>
               <span className="text-[10px] font-bold text-emerald-400 uppercase block">Admins Présents</span>
               <span className="text-xl font-black text-emerald-400 font-mono">{connectedDepts.length}/{ADMIN_DEPARTMENTS_CONFIG.length}</span>
               <span className="text-[9px] text-emerald-500/80 block">Aujourd'hui</span>
+            </div>
+
+            <div
+              onClick={() => setActiveTab('GBAIRAI_READS')}
+              className={`p-3 rounded-2xl border text-center cursor-pointer transition-all ${
+                membersWithUnreadCount > 0
+                  ? 'bg-amber-950/30 border-amber-500/40 hover:border-amber-400'
+                  : 'bg-emerald-950/30 border-emerald-500/40 hover:border-emerald-400'
+              }`}
+            >
+              <span className="text-[10px] font-bold text-slate-300 uppercase block">Lectures Gbairai</span>
+              <span className={`text-xl font-black font-mono ${membersWithUnreadCount > 0 ? 'text-amber-400' : 'text-emerald-400'}`}>
+                {membersAllReadCount}/{members.length}
+              </span>
+              <span className="text-[9px] text-slate-400 block">
+                {membersWithUnreadCount > 0 ? `${membersWithUnreadCount} avec non lus` : '100% à jour'}
+              </span>
             </div>
           </div>
         </div>
@@ -819,6 +1007,26 @@ export const SuiviProgrammeConsole: React.FC<SuiviProgrammeConsoleProps> = () =>
           <span>AUDIT CONNEXIONS ADMINS ({connectedDepts.length}/{ADMIN_DEPARTMENTS_CONFIG.length})</span>
           {connectedDepts.length > 0 && (
             <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping inline-block" />
+          )}
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveTab('GBAIRAI_READS')}
+          className={`flex items-center gap-2 px-4 py-2.5 rounded-xl font-black text-xs sm:text-sm transition-all cursor-pointer ${
+            activeTab === 'GBAIRAI_READS'
+              ? 'bg-amber-500 text-slate-950 shadow-md scale-102 font-black'
+              : 'text-slate-400 hover:text-white hover:bg-slate-800'
+          }`}
+        >
+          <Newspaper className="w-4 h-4 text-amber-400" />
+          <span>SUIVI DES LECTURES GBAÏRAÏ</span>
+          {membersWithUnreadCount > 0 ? (
+            <span className="bg-rose-500 text-white text-[10px] font-black px-1.5 py-0.2 rounded-full shadow animate-pulse">
+              {membersWithUnreadCount}
+            </span>
+          ) : (
+            <span className="w-2 h-2 rounded-full bg-emerald-400 inline-block" />
           )}
         </button>
 
@@ -1454,6 +1662,333 @@ export const SuiviProgrammeConsole: React.FC<SuiviProgrammeConsoleProps> = () =>
               </div>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* ========================================================= */}
+      {/* 5. SECTION GBAÏRAÏ : SUIVI DES LECTURES GBAIRAI (MESSAGES NON LUS) */}
+      {/* ========================================================= */}
+      {activeTab === 'GBAIRAI_READS' && (
+        <div className="space-y-6 animate-fadeIn">
+          {/* Toast Feedback */}
+          {gbairaiFeedbackToast && (
+            <div className="flex items-center justify-between p-4 rounded-2xl border text-xs font-bold bg-emerald-500/15 border-emerald-500/40 text-emerald-300 animate-fadeIn">
+              <div className="flex items-center gap-2.5">
+                <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                <span>{gbairaiFeedbackToast}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setGbairaiFeedbackToast(null)}
+                className="text-slate-400 hover:text-white p-1"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          )}
+
+          {/* Bandeau d'en-tête du Suivi Gbairai */}
+          <div className="bg-gradient-to-br from-slate-900 via-slate-900 to-slate-950 border border-slate-800 rounded-3xl p-5 sm:p-7 shadow-xl">
+            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-5">
+              <div className="space-y-2">
+                <div className="inline-flex items-center gap-2 bg-amber-500/10 border border-amber-500/30 text-amber-300 px-3 py-1 rounded-full text-xs font-black tracking-wide">
+                  <Newspaper className="w-3.5 h-3.5 text-amber-400" />
+                  <span>GBAÏRAÏ • CONTRÔLE D'AUDIT &amp; TRAÇABILITÉ DES LECTURES EN TEMPS RÉEL</span>
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                </div>
+
+                <h2 className="text-xl sm:text-2xl font-black text-white flex items-center gap-2.5 flex-wrap">
+                  <span>Suivi des Lectures Gbairai (Messages Non Lus)</span>
+                </h2>
+
+                <p className="text-xs text-slate-400 max-w-2xl leading-relaxed">
+                  Supervisez en temps réel le nombre de messages et annonces non lus pour chaque membre de l'association.
+                  Dès qu'un membre consulte son espace Gbairai ou clique sur « Marquer comme lu », le compteur diminue
+                  instantanément. Lorsqu'un membre passe à 0 message non lu, son indicateur passe au vert.
+                </p>
+              </div>
+
+              {/* KPI Synthétiques en temps réel */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 w-full lg:w-auto">
+                <div className="bg-slate-950/80 p-3 rounded-2xl border border-slate-800 text-center">
+                  <span className="text-[10px] font-bold text-slate-400 uppercase block">Membres Suivis</span>
+                  <span className="text-xl font-black text-white font-mono">{members.length}</span>
+                  <span className="text-[9px] text-slate-500 block">Effectif total</span>
+                </div>
+
+                <div className="bg-slate-950/80 p-3 rounded-2xl border border-emerald-500/30 text-center">
+                  <span className="text-[10px] font-bold text-emerald-400 uppercase block">À Jour (0 non lu)</span>
+                  <span className="text-xl font-black text-emerald-400 font-mono">{membersAllReadCount}</span>
+                  <span className="text-[9px] text-emerald-500/80 block">
+                    {members.length > 0 ? Math.round((membersAllReadCount / members.length) * 100) : 100}% des membres
+                  </span>
+                </div>
+
+                <div className="bg-slate-950/80 p-3 rounded-2xl border border-amber-500/30 text-center">
+                  <span className="text-[10px] font-bold text-amber-400 uppercase block">Avec Non Lus</span>
+                  <span className="text-xl font-black text-amber-400 font-mono">{membersWithUnreadCount}</span>
+                  <span className="text-[9px] text-amber-500/80 block">À relancer</span>
+                </div>
+
+                <div className="bg-slate-950/80 p-3 rounded-2xl border border-rose-500/30 text-center">
+                  <span className="text-[10px] font-bold text-rose-400 uppercase block">Total Non Lus</span>
+                  <span className="text-xl font-black text-rose-400 font-mono">{totalGbairaiUnreadCount}</span>
+                  <span className="text-[9px] text-rose-500/80 block">Messages cumulés</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Barre de recherche et filtres de lecture */}
+          <div className="bg-slate-900 border border-slate-800 p-4 rounded-2xl flex flex-col md:flex-row items-center justify-between gap-3 shadow-md">
+            <div className="relative flex-1 w-full md:w-80">
+              <Search className="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
+              <input
+                type="text"
+                placeholder="Rechercher par membre (ex: KILO CARTUS, LA MADRE, CAPELO)..."
+                value={gbairaiSearchQuery}
+                onChange={(e) => setGbairaiSearchQuery(e.target.value)}
+                className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-9 pr-8 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-amber-500"
+              />
+              {gbairaiSearchQuery && (
+                <button
+                  type="button"
+                  onClick={() => setGbairaiSearchQuery('')}
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-500 hover:text-white"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
+
+            <div className="flex items-center gap-1.5 w-full md:w-auto overflow-x-auto pb-1 md:pb-0">
+              <span className="text-[10px] font-bold text-slate-500 uppercase mr-1 flex items-center gap-1 shrink-0">
+                <Filter className="w-3 h-3" />
+                <span>Statut :</span>
+              </span>
+
+              <button
+                type="button"
+                onClick={() => setGbairaiFilter('ALL')}
+                className={`px-3 py-1.5 rounded-xl text-[11px] font-bold transition-all shrink-0 cursor-pointer ${
+                  gbairaiFilter === 'ALL'
+                    ? 'bg-slate-700 text-white font-black'
+                    : 'text-slate-400 hover:text-white hover:bg-slate-800'
+                }`}
+              >
+                Tous les membres ({members.length})
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setGbairaiFilter('UNREAD')}
+                className={`px-3 py-1.5 rounded-xl text-[11px] font-bold transition-all shrink-0 cursor-pointer ${
+                  gbairaiFilter === 'UNREAD'
+                    ? 'bg-amber-500 text-slate-950 font-black'
+                    : 'text-amber-400 hover:bg-amber-500/10'
+                }`}
+              >
+                ⚠️ Messages non lus ({membersWithUnreadCount})
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setGbairaiFilter('ALL_READ')}
+                className={`px-3 py-1.5 rounded-xl text-[11px] font-bold transition-all shrink-0 cursor-pointer ${
+                  gbairaiFilter === 'ALL_READ'
+                    ? 'bg-emerald-600 text-white font-black'
+                    : 'text-emerald-400 hover:bg-emerald-500/10'
+                }`}
+              >
+                🟢 Tous les messages lus ({membersAllReadCount})
+              </button>
+            </div>
+          </div>
+
+          {/* Tableau & Liste des Membres */}
+          {filteredMemberGbairaiStatuses.length === 0 ? (
+            <div className="bg-slate-900 border border-slate-800 rounded-3xl p-10 text-center space-y-3">
+              <div className="w-12 h-12 mx-auto rounded-2xl bg-slate-800/80 border border-slate-700 flex items-center justify-center text-slate-400">
+                <Newspaper className="w-6 h-6" />
+              </div>
+              <h4 className="text-sm font-bold text-white">Aucun membre ne correspond aux critères de recherche</h4>
+              <p className="text-xs text-slate-400 max-w-md mx-auto">
+                Modifiez vos filtres ou videz la recherche pour réafficher la liste complète des membres.
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {filteredMemberGbairaiStatuses.map((item) => {
+                const member = item.member;
+                const cleanPhone = (member.phone || '').replace(/[^0-9]/g, '');
+                const isExpanded = expandedMemberGbairaiId === member.id;
+                const whatsappMsg = encodeURIComponent(
+                  `Bonjour ${member.nickname || member.firstName}, en tant que Chargé du Suivi du Programme E-ROUAMA, je constate que tu as ${item.unreadCount} message(s) non lu(s) dans ton espace Gbairai. Merci de bien vouloir te connecter sur l'application pour prendre connaissance des annonces officielles !`
+                );
+                const whatsappUrl = `https://wa.me/${cleanPhone}?text=${whatsappMsg}`;
+
+                return (
+                  <div
+                    key={member.id}
+                    className={`bg-slate-900 border rounded-2xl transition-all shadow-md overflow-hidden ${
+                      item.unreadCount > 0
+                        ? 'border-amber-500/30 hover:border-amber-500/60 bg-gradient-to-r from-slate-900 via-slate-900 to-amber-950/10'
+                        : 'border-slate-800 hover:border-emerald-500/30'
+                    }`}
+                  >
+                    <div className="p-4 sm:p-5 flex flex-col md:flex-row md:items-center justify-between gap-4">
+                      {/* Identité du membre */}
+                      <div className="flex items-center gap-3.5 min-w-0">
+                        <div className="w-12 h-12 rounded-2xl overflow-hidden bg-slate-800 border border-slate-700 shrink-0 flex items-center justify-center text-white font-black text-sm">
+                          {member.photoUrl || member.avatar ? (
+                            <img
+                              src={member.photoUrl || member.avatar}
+                              alt={member.nickname || member.firstName}
+                              className="w-full h-full object-cover"
+                            />
+                          ) : (
+                            <span>{(member.nickname || member.firstName || 'M').charAt(0)}</span>
+                          )}
+                        </div>
+
+                        <div className="min-w-0 space-y-0.5">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <h4 className="text-sm font-black text-white truncate">
+                              {member.firstName} ({member.nickname})
+                            </h4>
+                            {item.allRead ? (
+                              <span className="bg-emerald-500/15 border border-emerald-500/40 text-emerald-400 text-[10px] font-black px-2 py-0.5 rounded-md flex items-center gap-1 shadow-sm">
+                                <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+                                <span>Tous les messages lus</span>
+                              </span>
+                            ) : (
+                              <span className="bg-amber-500/15 border border-amber-500/40 text-amber-400 text-[10px] font-black px-2 py-0.5 rounded-md flex items-center gap-1 shadow-sm">
+                                <AlertCircle className="w-3 h-3 text-amber-400" />
+                                <span>{item.unreadCount} non lu{item.unreadCount > 1 ? 's' : ''}</span>
+                              </span>
+                            )}
+                          </div>
+
+                          <div className="flex items-center gap-3 text-[11px] text-slate-400 flex-wrap">
+                            <span>Tél: <strong className="text-slate-300 font-mono">{member.phone || 'Non renseigné'}</strong></span>
+                            <span>•</span>
+                            <span className="text-slate-400">
+                              Progression: <strong className="text-white">{item.readCount}/{item.totalEligible}</strong> lus ({item.readPercentage}%)
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Statut & Progression de lecture */}
+                      <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3 self-stretch md:self-auto justify-between md:justify-end">
+                        {/* Barre de progression miniature */}
+                        <div className="w-full sm:w-32 bg-slate-950 p-1 rounded-xl border border-slate-800">
+                          <div className="h-2 rounded-lg bg-slate-800 overflow-hidden">
+                            <div
+                              className={`h-full transition-all duration-500 ${
+                                item.allRead ? 'bg-emerald-400' : 'bg-amber-400'
+                              }`}
+                              style={{ width: `${item.readPercentage}%` }}
+                            />
+                          </div>
+                        </div>
+
+                        {/* Actions : Relance WhatsApp & Détail */}
+                        <div className="flex items-center gap-2 shrink-0 flex-wrap">
+                          {item.unreadCount > 0 && (
+                            <a
+                              href={whatsappUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-1.5 bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-400 border border-emerald-500/40 px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer shadow-sm"
+                              title={`Envoyer un rappel WhatsApp à ${member.nickname}`}
+                            >
+                              <PhoneCall className="w-3.5 h-3.5 text-emerald-400" />
+                              <span>Relancer sur WhatsApp</span>
+                            </a>
+                          )}
+
+                          {item.unreadCount > 0 && (
+                            <button
+                              type="button"
+                              onClick={() => handleMarkAllReadForMember(member)}
+                              className="inline-flex items-center gap-1 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white px-3 py-1.5 rounded-xl text-xs font-bold transition-all border border-slate-700 cursor-pointer"
+                              title="Marquer manuellement comme lu pour ce membre"
+                            >
+                              <Check className="w-3.5 h-3.5 text-emerald-400" />
+                              <span>Valider lecture</span>
+                            </button>
+                          )}
+
+                          {item.unreadCount > 0 && (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setExpandedMemberGbairaiId(isExpanded ? null : member.id)
+                              }
+                              className="p-1.5 bg-slate-950 hover:bg-slate-800 text-slate-400 hover:text-white rounded-xl border border-slate-800 transition-all text-xs"
+                              title={isExpanded ? 'Masquer le détail' : 'Voir les messages non lus'}
+                            >
+                              {isExpanded ? (
+                                <ChevronUp className="w-4 h-4" />
+                              ) : (
+                                <ChevronDown className="w-4 h-4" />
+                              )}
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Liste dépliable des messages non lus par ce membre */}
+                    {isExpanded && item.unreadMessages.length > 0 && (
+                      <div className="px-5 pb-5 pt-2 border-t border-slate-800/80 bg-slate-950/60 space-y-2 animate-fadeIn">
+                        <div className="text-[10px] font-black uppercase tracking-wider text-slate-400 flex items-center gap-1.5 pt-1">
+                          <AlertCircle className="w-3 h-3 text-amber-400" />
+                          <span>Détail des {item.unreadCount} message{item.unreadCount > 1 ? 's' : ''} non lu{item.unreadCount > 1 ? 's' : ''} par {member.nickname || member.firstName} :</span>
+                        </div>
+
+                        <div className="space-y-2 pt-1">
+                          {item.unreadMessages.map((msg) => (
+                            <div
+                              key={msg.id}
+                              className="bg-slate-900/90 border border-slate-800 p-3 rounded-xl flex items-center justify-between gap-3 text-xs"
+                            >
+                              <div className="min-w-0 space-y-0.5">
+                                <div className="flex items-center gap-2">
+                                  <span
+                                    className={`text-[9px] font-black uppercase px-2 py-0.5 rounded ${
+                                      msg.category === 'ALERTE'
+                                        ? 'bg-rose-500/20 text-rose-300 border border-rose-500/40'
+                                        : msg.category === 'RELANCE'
+                                        ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
+                                        : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                                    }`}
+                                  >
+                                    {msg.category}
+                                  </span>
+                                  <span className="font-bold text-white truncate">
+                                    {msg.title}
+                                  </span>
+                                </div>
+                                <p className="text-[11px] text-slate-400 line-clamp-1 font-sans">
+                                  {msg.content}
+                                </p>
+                              </div>
+
+                              <span className="text-[10px] font-mono text-slate-500 shrink-0">
+                                {msg.date}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
       )}
 

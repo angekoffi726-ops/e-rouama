@@ -12,6 +12,7 @@ import {
   EventActivity,
   DEFAULT_ANNIVERSAIRE_ACTIVITY,
   DEFAULT_SOIREE_ACTIVITY,
+  DEFAULT_GBAIRAI_NEWS,
   AgrProject,
   FinancialEvent,
   ArchiveDoc,
@@ -223,7 +224,7 @@ interface AppContextType {
     linkTab?: TabType,
     targetDocId?: string
   ) => void;
-  markNewsAsRead: (newsId: string) => void;
+  markNewsAsRead: (newsId: string, specificMemberId?: string) => void;
 
   createActivity: (activity: Omit<EventActivity, 'id' | 'status' | 'budgetStatus'>) => void;
   updateActivity: (activityId: string, updatedData: Partial<EventActivity>) => Promise<void>;
@@ -283,7 +284,7 @@ interface AppContextType {
   ) => void;
   deleteNewsItem: (newsId: string) => void;
   dismissNewsForMember: (newsId: string) => void;
-  markAllGbairaiAsRead: () => void;
+  markAllGbairaiAsRead: (specificMemberId?: string) => void;
   assignMemberRole: (memberId: string, role?: AdminRole) => void;
   resetMemberPin: (memberId: string) => void;
   updateMemberAvatar: (memberId: string, avatarDataUrl: string) => Promise<boolean>;
@@ -541,7 +542,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [withdrawals, setWithdrawals] = useState<WithdrawalRequest[]>([]);
   const withdrawalsRef = useRef<WithdrawalRequest[]>([]);
-  const [newsItems, setNewsItems] = useState<NewsItem[]>([]);
+  const [newsItems, setNewsItems] = useState<NewsItem[]>(DEFAULT_GBAIRAI_NEWS);
   const [activities, setActivities] = useState<EventActivity[]>([DEFAULT_ANNIVERSAIRE_ACTIVITY, DEFAULT_SOIREE_ACTIVITY]);
   const [projects, setProjects] = useState<AgrProject[]>([]);
   const [financialEvents, setFinancialEvents] = useState<FinancialEvent[]>([]);
@@ -1047,8 +1048,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             loaded.push(item);
           }
         });
-        loaded.sort((a, b) => b.id.localeCompare(a.id));
-        setNewsItems(loaded);
+        if (loaded.length === 0) {
+          DEFAULT_GBAIRAI_NEWS.forEach(initItem => {
+            setDoc(doc(db, 'news', initItem.id), sanitizeFirestore(initItem)).catch(console.warn);
+          });
+          setNewsItems(DEFAULT_GBAIRAI_NEWS);
+        } else {
+          loaded.sort((a, b) => b.id.localeCompare(a.id));
+          setNewsItems(loaded);
+        }
       },
       (err) => console.warn('News listener error:', err)
     );
@@ -3758,35 +3766,71 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setNewsItems(prev => [item, ...prev]);
   };
 
-  const markNewsAsRead = (newsId: string) => {
-    const memberId = currentUser?.member?.id || (currentUser as any)?.id;
-    if (!memberId) return;
+  const markNewsAsRead = (newsId: string, specificMemberId?: string) => {
+    const targetMemberId = specificMemberId || currentUser?.member?.id || (currentUser as any)?.id;
+    if (!targetMemberId) return;
+
+    const targetMember = members.find(m => String(m.id) === String(targetMemberId));
+    const targetNick = targetMember?.nickname || (currentUser?.member?.id === targetMemberId ? currentUser?.member?.nickname : undefined);
+
     const item = newsItems.find(n => n.id === newsId);
-    if (item && !(item.readBy || []).includes(memberId)) {
-      const updatedReadBy = [...(item.readBy || []), memberId];
-      setDoc(doc(db, 'news', newsId), { readBy: updatedReadBy }, { merge: true }).catch(console.warn);
-      try {
-        setDoc(doc(db, 'announcements', newsId), { readBy: updatedReadBy }, { merge: true }).catch(console.warn);
-      } catch (_) {}
-      setNewsItems(prev =>
-        prev.map(n => n.id === newsId ? { ...n, readBy: updatedReadBy } : n)
-      );
+    if (item) {
+      const currentRead = (item.readBy || []).map(String);
+      const isAlreadyRead =
+        currentRead.includes(String(targetMemberId)) ||
+        (targetNick && currentRead.some(r => r.toUpperCase() === targetNick.toUpperCase()));
+
+      if (!isAlreadyRead) {
+        const toAdd = [String(targetMemberId)];
+        if (targetNick) toAdd.push(targetNick);
+        const updatedReadBy = Array.from(new Set([...currentRead, ...toAdd]));
+
+        setDoc(doc(db, 'news', newsId), { readBy: updatedReadBy }, { merge: true }).catch(console.warn);
+        try {
+          setDoc(doc(db, 'announcements', newsId), { readBy: updatedReadBy }, { merge: true }).catch(console.warn);
+        } catch (_) {}
+
+        setNewsItems(prev =>
+          prev.map(n => (n.id === newsId ? { ...n, readBy: updatedReadBy } : n))
+        );
+      }
     }
   };
 
-  const markAllGbairaiAsRead = () => {
-    const memberId = currentUser?.member?.id || (currentUser as any)?.id;
-    if (!memberId) return;
-    const unreadItems = newsItems.filter(n => !(n.readBy || []).includes(memberId));
-    unreadItems.forEach(item => {
-      const updatedReadBy = [...(item.readBy || []), memberId];
-      setDoc(doc(db, 'news', item.id), { readBy: updatedReadBy }, { merge: true }).catch(console.warn);
-      try {
-        setDoc(doc(db, 'announcements', item.id), { readBy: updatedReadBy }, { merge: true }).catch(console.warn);
-      } catch (_) {}
+  const markAllGbairaiAsRead = (specificMemberId?: string) => {
+    const targetMemberId = specificMemberId || currentUser?.member?.id || (currentUser as any)?.id;
+    if (!targetMemberId) return;
+
+    const targetMember = members.find(m => String(m.id) === String(targetMemberId));
+    const targetNick = targetMember?.nickname || (currentUser?.member?.id === targetMemberId ? currentUser?.member?.nickname : undefined);
+    const toAdd = [String(targetMemberId)];
+    if (targetNick) toAdd.push(targetNick);
+
+    newsItems.forEach(item => {
+      const currentRead = (item.readBy || []).map(String);
+      const isAlreadyRead =
+        currentRead.includes(String(targetMemberId)) ||
+        (targetNick && currentRead.some(r => r.toUpperCase() === targetNick.toUpperCase()));
+
+      if (!isAlreadyRead) {
+        const updatedReadBy = Array.from(new Set([...currentRead, ...toAdd]));
+        setDoc(doc(db, 'news', item.id), { readBy: updatedReadBy }, { merge: true }).catch(console.warn);
+        try {
+          setDoc(doc(db, 'announcements', item.id), { readBy: updatedReadBy }, { merge: true }).catch(console.warn);
+        } catch (_) {}
+      }
     });
+
     setNewsItems(prev =>
-      prev.map(n => ((n.readBy || []).includes(memberId) ? n : { ...n, readBy: [...(n.readBy || []), memberId] }))
+      prev.map(n => {
+        const currentRead = (n.readBy || []).map(String);
+        const isAlreadyRead =
+          currentRead.includes(String(targetMemberId)) ||
+          (targetNick && currentRead.some(r => r.toUpperCase() === targetNick.toUpperCase()));
+
+        if (isAlreadyRead) return n;
+        return { ...n, readBy: Array.from(new Set([...currentRead, ...toAdd])) };
+      })
     );
   };
 
