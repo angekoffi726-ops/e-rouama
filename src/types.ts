@@ -486,6 +486,15 @@ export interface AdminLoginLog {
   dateString: string;
 }
 
+export interface InfoRequestMessage {
+  id: string;
+  senderRole: string;
+  senderRoleLabel?: string;
+  senderName: string;
+  message: string;
+  createdAt: string;
+}
+
 export interface InfoRequest {
   id: string;
   senderRole: string;
@@ -497,9 +506,14 @@ export interface InfoRequest {
   message: string;
   replyMessage?: string | null;
   isRead: boolean;
-  status: 'En attente' | 'Répondu' | string;
+  status: 'En attente' | 'Répondu' | 'Clôturé' | string;
   createdAt: string;
   updatedAt?: string;
   repliedAt?: string;
   repliedBy?: string;
+  messages?: InfoRequestMessage[];
+  isClosed?: boolean;
+  closedAt?: string;
+  closedBy?: string;
 }
+

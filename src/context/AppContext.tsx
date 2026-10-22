@@ -31,6 +31,7 @@ import {
   FUND_LABELS,
   AdminLoginLog,
   InfoRequest,
+  InfoRequestMessage,
 } from '../types';
 import { INITIAL_ROUAMA_MEMBERS, ADMIN_USERS, isMemberActive, getRegisteredMembersCount } from '../data/membersData';
 import { getDefaultRolesForMember } from '../data/departmentMapping';
@@ -80,7 +81,7 @@ interface AppContextType {
   createProgrammeAlert: (alert: Omit<ProgrammeAlert, 'id' | 'sentAt' | 'status'>) => Promise<{ success: boolean; id: string }>;
   resolveProgrammeAlert: (alertId: string) => Promise<{ success: boolean }>;
 
-  // Demandes d'Information Inter-Admins (Messagerie B2B - info_requests)
+  // Navette d'Échange Inter-Admins (Fils de discussion continus - info_requests)
   infoRequests: InfoRequest[];
   createInfoRequest: (
     req: Omit<InfoRequest, 'id' | 'createdAt' | 'status' | 'isRead'>
@@ -88,7 +89,14 @@ interface AppContextType {
   replyInfoRequest: (
     id: string,
     replyMessage: string,
-    replierName: string
+    replierName: string,
+    replierRole?: string,
+    replierRoleLabel?: string
+  ) => Promise<{ success: boolean; message: string }>;
+  closeInfoRequest: (
+    id: string,
+    closedBy: string,
+    reopen?: boolean
   ) => Promise<{ success: boolean; message: string }>;
   markInfoRequestRead: (id: string) => Promise<{ success: boolean }>;
   deleteInfoRequest: (id: string) => Promise<{ success: boolean }>;
@@ -4781,7 +4789,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   // =========================================================================
-  // DEMANDES D'INFORMATION INTER-ADMINISTRATIONS (MESSAGERIE B2B)
+  // NAVETTE D'ÉCHANGE INTER-ADMINISTRATIONS (FILS DE DISCUSSION CONTINUS)
   // =========================================================================
   const createInfoRequest = async (
     req: Omit<InfoRequest, 'id' | 'createdAt' | 'status' | 'isRead'>
@@ -4789,22 +4797,32 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     try {
       const id = 'REQ-' + Date.now() + '-' + Math.random().toString(36).substring(2, 6).toUpperCase();
       const nowIso = new Date().toISOString();
+      const initialMsg: InfoRequestMessage = {
+        id: 'msg_' + Date.now() + '_1',
+        senderRole: req.senderRole,
+        senderRoleLabel: req.senderRoleLabel || req.senderRole,
+        senderName: req.senderName,
+        message: req.message.trim(),
+        createdAt: nowIso,
+      };
       const newReq: InfoRequest = {
         ...req,
         id,
         isRead: false,
+        isClosed: false,
         status: 'En attente',
         replyMessage: null,
         createdAt: nowIso,
         updatedAt: nowIso,
+        messages: [initialMsg],
       };
       await setDoc(doc(db, 'info_requests', id), sanitizeFirestore(newReq));
       setInfoRequests(prev => [newReq, ...prev.filter(r => r.id !== id)]);
 
       // Notification Push FCM envoyée au rôle / département destinataire
       dispatchPushNotification({
-        title: `E-ROUAMA : ${req.senderRoleLabel || req.senderRole}`,
-        body: `Demande d'information : "${req.subject}"\n${req.message.substring(0, 100)}...`,
+        title: `Navette d'Échange : ${req.senderRoleLabel || req.senderRole}`,
+        body: `Nouvelle demande : "${req.subject}"\n${req.message.substring(0, 100)}...`,
         senderRole: req.senderRole,
         senderName: req.senderName,
         targetRole: req.recipientRole,
@@ -4816,7 +4834,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         url: '/',
       }).catch(console.warn);
 
-      return { success: true, id, message: "Demande d'information transmise avec succès." };
+      return { success: true, id, message: "Navette d'échange initiée avec succès." };
     } catch (err: any) {
       console.warn("Erreur createInfoRequest:", err);
       return { success: false, message: err?.message || "Erreur lors de l'envoi de la demande." };
@@ -4826,32 +4844,92 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const replyInfoRequest = async (
     id: string,
     replyMessage: string,
-    replierName: string
+    replierName: string,
+    replierRole?: string,
+    replierRoleLabel?: string
   ): Promise<{ success: boolean; message: string }> => {
     try {
       const nowIso = new Date().toISOString();
-      const updates = {
+      const targetReq = infoRequests.find(r => r.id === id);
+
+      // Reconstituer le fil chronologique existant
+      const existingMessages: InfoRequestMessage[] = [];
+      if (targetReq?.messages && Array.isArray(targetReq.messages) && targetReq.messages.length > 0) {
+        existingMessages.push(...targetReq.messages);
+      } else if (targetReq) {
+        existingMessages.push({
+          id: 'msg_init_' + targetReq.id,
+          senderRole: targetReq.senderRole,
+          senderRoleLabel: targetReq.senderRoleLabel || targetReq.senderRole,
+          senderName: targetReq.senderName,
+          message: targetReq.message,
+          createdAt: targetReq.createdAt,
+        });
+        if (targetReq.replyMessage) {
+          existingMessages.push({
+            id: 'msg_legacy_' + targetReq.id,
+            senderRole: targetReq.recipientRole,
+            senderRoleLabel: targetReq.recipientRoleLabel || targetReq.recipientRole,
+            senderName: targetReq.repliedBy || targetReq.recipientRoleLabel || 'Destinataire',
+            message: targetReq.replyMessage,
+            createdAt: targetReq.repliedAt || targetReq.updatedAt || targetReq.createdAt,
+          });
+        }
+      }
+
+      const roleKey = (replierRole || (targetReq ? targetReq.recipientRole : '')).toUpperCase().trim();
+      const roleLabel = replierRoleLabel || replierName;
+
+      const newMsg: InfoRequestMessage = {
+        id: 'msg_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6),
+        senderRole: roleKey,
+        senderRoleLabel: roleLabel,
+        senderName: replierName,
+        message: replyMessage.trim(),
+        createdAt: nowIso,
+      };
+
+      const updatedMessages = [...existingMessages, newMsg];
+
+      // Dynamisme de statut :
+      // - Si le dernier message vient de l'émetteur initial -> "En attente" (en attente du destinataire)
+      // - Si le dernier message vient de l'autre département -> "Répondu" (ou "Répondu / En cours d'échange")
+      const isFromOriginalSender = !!(targetReq && (
+        roleKey === targetReq.senderRole.toUpperCase().trim() ||
+        roleKey.includes(targetReq.senderRole.toUpperCase().trim()) ||
+        targetReq.senderRole.toUpperCase().trim().includes(roleKey)
+      ));
+
+      const newStatus = isFromOriginalSender ? 'En attente' : 'Répondu';
+
+      const updates: Partial<InfoRequest> = {
         replyMessage: replyMessage.trim(),
-        status: 'Répondu',
-        isRead: true,
+        status: newStatus,
+        isRead: false,
+        isClosed: false,
         repliedAt: nowIso,
         repliedBy: replierName,
         updatedAt: nowIso,
+        messages: updatedMessages,
       };
+
       await updateDoc(doc(db, 'info_requests', id), sanitizeFirestore(updates));
       setInfoRequests(prev =>
         prev.map(r => (r.id === id ? { ...r, ...updates } : r))
       );
 
-      // Notification Push FCM envoyée en réponse au demandeur
-      const targetReq = infoRequests.find(r => r.id === id);
+      // Notification Push FCM envoyée à l'autre partie
+      const targetRole = isFromOriginalSender
+        ? (targetReq ? targetReq.recipientRole : 'ALL')
+        : (targetReq ? targetReq.senderRole : 'ALL');
+
       dispatchPushNotification({
-        title: `E-ROUAMA : ${replierName}`,
-        body: `Réponse à "${targetReq?.subject || 'Demande d\'information'}" : ${replyMessage.substring(0, 100)}...`,
+        title: `Navette d'Échange : ${replierName}`,
+        body: `Nouveau message sur "${targetReq?.subject || 'Échange'}" : ${replyMessage.substring(0, 100)}...`,
         senderRole: replierName,
         senderName: replierName,
-        targetRole: targetReq ? targetReq.senderRole : 'ALL',
-        targetDepartment: targetReq ? targetReq.senderRole : 'ALL',
+        targetRole,
+        targetDepartment: targetRole,
         type: 'INFO_REQUEST',
         priority: 'high',
         sound: 'default',
@@ -4859,10 +4937,48 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         url: '/',
       }).catch(console.warn);
 
-      return { success: true, message: "Réponse transmise avec succès au département demandeur." };
+      return { success: true, message: "Réplique transmise avec succès dans le fil d'échange." };
     } catch (err: any) {
       console.warn("Erreur replyInfoRequest:", err);
-      return { success: false, message: err?.message || "Erreur lors de l'envoi de la réponse." };
+      return { success: false, message: err?.message || "Erreur lors de l'envoi de la réplique." };
+    }
+  };
+
+  const closeInfoRequest = async (
+    id: string,
+    closedBy: string,
+    reopen: boolean = false
+  ): Promise<{ success: boolean; message: string }> => {
+    try {
+      const nowIso = new Date().toISOString();
+      const updates: Partial<InfoRequest> = reopen
+        ? {
+            isClosed: false,
+            status: 'Répondu',
+            updatedAt: nowIso,
+          }
+        : {
+            isClosed: true,
+            status: 'Clôturé',
+            closedAt: nowIso,
+            closedBy,
+            updatedAt: nowIso,
+          };
+
+      await updateDoc(doc(db, 'info_requests', id), sanitizeFirestore(updates));
+      setInfoRequests(prev =>
+        prev.map(r => (r.id === id ? { ...r, ...updates } : r))
+      );
+
+      return {
+        success: true,
+        message: reopen
+          ? "Le fil de la navette d'échange a été réouvert."
+          : "La navette d'échange a été marquée comme clôturée et solvabilisée.",
+      };
+    } catch (err: any) {
+      console.warn("Erreur closeInfoRequest:", err);
+      return { success: false, message: err?.message || "Erreur lors de la mise à jour de la clôture." };
     }
   };
 
@@ -4991,6 +5107,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         infoRequests,
         createInfoRequest,
         replyInfoRequest,
+        closeInfoRequest,
         markInfoRequestRead,
         deleteInfoRequest,
         verseOfTheDay,

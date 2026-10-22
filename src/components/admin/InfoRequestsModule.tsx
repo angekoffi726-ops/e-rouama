@@ -17,14 +17,18 @@ import {
   FileQuestion,
   CornerDownRight,
   MessageCircle,
-  HelpCircle,
   Sparkles,
   Trash2,
   Check,
-  Eye,
+  CheckCheck,
+  Lock,
+  Unlock,
+  PhoneCall,
+  ExternalLink,
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
-import { AdminRole, InfoRequest } from '../../types';
+import { AdminRole, InfoRequest, InfoRequestMessage } from '../../types';
+import { getDepartmentContact } from './SuiviProgrammeConsole';
 
 // =========================================================================
 // CONFIGURATION STRICTE DES DÉPARTEMENTS ÉLIGIBLES (RBAC STRICT)
@@ -118,14 +122,14 @@ export const ELIGIBLE_ADMIN_DEPARTMENTS: EligibleDeptConfig[] = [
     badgeBg: 'bg-violet-500/10',
     badgeText: 'text-violet-400',
     borderColor: 'border-violet-500/30',
-    description: 'Visa de conformité et validation administrative avant publication par la BIC.',
+    description: 'Médiation, audit de justice interne, discipline communautaire et conformité.',
   },
   {
-    key: 'COM',
-    name: "Base d'Information et Communication (BIC)",
+    key: 'COMMUNICATION',
+    name: 'Commission Communication (BIC)',
     shortName: 'Communication',
     icon: '📢',
-    roleAliases: ['COM', 'BIC', 'COMMUNICATION', 'RESP_COM', 'RESPONSABLE_COM'],
+    roleAliases: ['COMMUNICATION', 'COM', 'BIC', 'COMMISSAIRE_COM'],
     badgeBg: 'bg-rose-500/10',
     badgeText: 'text-rose-400',
     borderColor: 'border-rose-500/30',
@@ -167,6 +171,37 @@ export const getEligibleDeptConfig = (roleKeyOrName?: string): EligibleDeptConfi
   );
 };
 
+// Helper: Récupère la liste ordonnée des messages du fil d'échange avec rétro-compatibilité
+export function getThreadMessages(req: InfoRequest): InfoRequestMessage[] {
+  if (req.messages && req.messages.length > 0) {
+    return req.messages;
+  }
+
+  // Rétrocompatibilité : reconstruction automatique si la requête provient de l'ancienne version
+  const msgs: InfoRequestMessage[] = [];
+  if (req.message) {
+    msgs.push({
+      id: `${req.id}-init`,
+      senderRole: req.senderRole,
+      senderRoleLabel: req.senderRoleLabel || req.senderRole,
+      senderName: req.senderName || req.senderRole,
+      message: req.message,
+      createdAt: req.createdAt,
+    });
+  }
+  if (req.replyMessage) {
+    msgs.push({
+      id: `${req.id}-rep`,
+      senderRole: req.recipientRole,
+      senderRoleLabel: req.recipientRoleLabel || req.recipientRole,
+      senderName: req.repliedBy || req.recipientRole,
+      message: req.replyMessage,
+      createdAt: req.repliedAt || req.createdAt,
+    });
+  }
+  return msgs;
+}
+
 interface InfoRequestsModuleProps {
   currentRole: AdminRole | string;
   senderNameOverride?: string;
@@ -177,13 +212,14 @@ interface InfoRequestsModuleProps {
 export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
   currentRole,
   senderNameOverride,
-  compactHeader = false,
 }) => {
   const {
     currentUser,
     infoRequests = [],
+    members = [],
     createInfoRequest,
     replyInfoRequest,
+    closeInfoRequest,
     markInfoRequestRead,
     deleteInfoRequest,
   } = useApp();
@@ -193,7 +229,7 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
   const normalizedCurrentDeptKey = normalizeToEligibleDeptKey(currentRole);
   const currentDeptConfig = getEligibleDeptConfig(normalizedCurrentDeptKey);
 
-  // Nom de l'émetteur
+  // Nom de l'émetteur courant
   const senderDisplayName = useMemo(() => {
     if (senderNameOverride) return senderNameOverride;
     if (currentUser?.type === 'MEMBER' && currentUser.member) {
@@ -204,13 +240,12 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
 
   // États locaux du module
   const [activeView, setActiveView] = useState<'RECEIVED' | 'SENT' | 'COMPOSE'>('RECEIVED');
-  const [statusFilter, setStatusFilter] = useState<'ALL' | 'UNREAD' | 'PENDING' | 'REPLIED'>('ALL');
+  const [statusFilter, setStatusFilter] = useState<'ALL' | 'UNREAD' | 'PENDING' | 'REPLIED' | 'CLOSED'>('ALL');
   const [searchQuery, setSearchQuery] = useState('');
   const [expandedRequestId, setExpandedRequestId] = useState<string | null>(null);
 
-  // Formulaire "Nouvelle Demande"
+  // Formulaire "Nouvelle Navette d'Échange"
   const [targetDeptKey, setTargetDeptKey] = useState<string>(() => {
-    // Premier département éligible différent du département courant
     const firstOther = ELIGIBLE_ADMIN_DEPARTMENTS.find(d => d.key !== normalizedCurrentDeptKey);
     return firstOther ? firstOther.key : 'TRESORIER';
   });
@@ -219,9 +254,10 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [feedbackToast, setFeedbackToast] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
-  // Zone de réponse active
+  // Zone de réponse active sous les fils de discussion
   const [replyInputs, setReplyInputs] = useState<Record<string, string>>({});
   const [isReplyingId, setIsReplyingId] = useState<string | null>(null);
+  const [closingId, setClosingId] = useState<string | null>(null);
 
   // Filtrage des demandes pour ce département
   // 1. Demandes Reçues (adressées à ce département)
@@ -240,42 +276,100 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
     });
   }, [infoRequests, normalizedCurrentDeptKey]);
 
-  // Compteurs
+  // Helper pour obtenir le statut dynamique du fil d'échange
+  const getDynamicStatus = (req: InfoRequest) => {
+    const isClosed = req.isClosed || req.status === 'Clôturé';
+    if (isClosed) {
+      return {
+        key: 'CLOSED' as const,
+        label: 'Clôturée / Solvabilisée',
+        badgeBg: 'bg-slate-700/60',
+        badgeText: 'text-slate-300',
+        borderColor: 'border-slate-600',
+        icon: '✓',
+        isPendingResponse: false,
+      };
+    }
+
+    const thread = getThreadMessages(req);
+    const lastMsg = thread[thread.length - 1];
+
+    // Si le dernier message vient de l'émetteur initial -> "En attente de réponse"
+    const isLastFromSender =
+      !lastMsg ||
+      normalizeToEligibleDeptKey(lastMsg.senderRole) === normalizeToEligibleDeptKey(req.senderRole);
+
+    if (isLastFromSender) {
+      return {
+        key: 'PENDING' as const,
+        label: 'En attente de réponse',
+        badgeBg: 'bg-amber-500/15',
+        badgeText: 'text-amber-400',
+        borderColor: 'border-amber-500/30',
+        icon: '⏳',
+        isPendingResponse: true,
+        pendingForDeptKey: normalizeToEligibleDeptKey(req.recipientRole),
+      };
+    } else {
+      return {
+        key: 'REPLIED' as const,
+        label: 'Répondu / En cours d’échange',
+        badgeBg: 'bg-emerald-500/15',
+        badgeText: 'text-emerald-400',
+        borderColor: 'border-emerald-500/30',
+        icon: '💬',
+        isPendingResponse: false,
+        pendingForDeptKey: normalizeToEligibleDeptKey(req.senderRole),
+      };
+    }
+  };
+
+  // Compteurs dynamiques
+  const currentViewList = activeView === 'RECEIVED' ? receivedRequests : sentRequests;
+
   const unreadCount = useMemo(() => {
     return receivedRequests.filter(r => !r.isRead).length;
   }, [receivedRequests]);
 
   const pendingCount = useMemo(() => {
-    return receivedRequests.filter(r => r.status === 'En attente').length;
-  }, [receivedRequests]);
+    return currentViewList.filter(r => getDynamicStatus(r).key === 'PENDING').length;
+  }, [currentViewList]);
 
-  const repliedReceivedCount = useMemo(() => {
-    return receivedRequests.filter(r => r.status === 'Répondu').length;
-  }, [receivedRequests]);
+  const repliedCount = useMemo(() => {
+    return currentViewList.filter(r => getDynamicStatus(r).key === 'REPLIED').length;
+  }, [currentViewList]);
+
+  const closedCount = useMemo(() => {
+    return currentViewList.filter(r => getDynamicStatus(r).key === 'CLOSED').length;
+  }, [currentViewList]);
 
   // Filtrage par texte et statut pour la vue active
   const displayedRequests = useMemo(() => {
     const list = activeView === 'RECEIVED' ? receivedRequests : sentRequests;
     return list.filter(req => {
+      const statusInfo = getDynamicStatus(req);
+
       // Filtre statut
       if (statusFilter === 'UNREAD' && req.isRead) return false;
-      if (statusFilter === 'PENDING' && req.status !== 'En attente') return false;
-      if (statusFilter === 'REPLIED' && req.status !== 'Répondu') return false;
+      if (statusFilter === 'PENDING' && statusInfo.key !== 'PENDING') return false;
+      if (statusFilter === 'REPLIED' && statusInfo.key !== 'REPLIED') return false;
+      if (statusFilter === 'CLOSED' && statusInfo.key !== 'CLOSED') return false;
 
-      // Filtre recherche
+      // Filtre recherche textuelle
       if (searchQuery.trim()) {
         const q = searchQuery.toLowerCase();
         const matchSubj = req.subject?.toLowerCase().includes(q);
-        const matchMsg = req.message?.toLowerCase().includes(q);
         const matchSender = req.senderName?.toLowerCase().includes(q);
-        const matchReply = req.replyMessage?.toLowerCase().includes(q);
-        return matchSubj || matchMsg || matchSender || matchReply;
+        const matchThread = getThreadMessages(req).some(m =>
+          m.message?.toLowerCase().includes(q) || m.senderName?.toLowerCase().includes(q)
+        );
+        return matchSubj || matchSender || matchThread;
       }
       return true;
     });
   }, [activeView, receivedRequests, sentRequests, statusFilter, searchQuery]);
 
-  // Soumission d'une nouvelle demande
+  // Soumission d'une nouvelle demande (création du premier message du fil)
   const handleSendRequest = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!targetDeptKey) {
@@ -283,11 +377,11 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
       return;
     }
     if (!subject.trim()) {
-      setFeedbackToast({ type: 'error', message: "Veuillez préciser l'objet de votre demande." });
+      setFeedbackToast({ type: 'error', message: "Veuillez préciser l'objet de votre échange." });
       return;
     }
     if (!message.trim()) {
-      setFeedbackToast({ type: 'error', message: 'Veuillez rédiger le corps de votre demande.' });
+      setFeedbackToast({ type: 'error', message: 'Veuillez rédiger le premier message de votre échange.' });
       return;
     }
 
@@ -311,11 +405,11 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
         setMessage('');
         setFeedbackToast({
           type: 'success',
-          message: `Demande envoyée avec succès à la commission : ${recipientConfig?.name || targetDeptKey}`,
+          message: `Fil d'échange ouvert avec succès vers : ${recipientConfig?.name || targetDeptKey}`,
         });
         setActiveView('SENT');
       } else {
-        setFeedbackToast({ type: 'error', message: res.message || "Échec de l'envoi de la demande." });
+        setFeedbackToast({ type: 'error', message: res.message || "Échec de l'ouverture du fil d'échange." });
       }
     } catch (err: any) {
       setFeedbackToast({ type: 'error', message: err?.message || 'Erreur inattendue.' });
@@ -324,11 +418,11 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
     }
   };
 
-  // Traitement de la réponse à une demande reçue
+  // Traitement d'une réponse continue dans le fil de discussion
   const handleSendReply = async (requestId: string) => {
     const text = replyInputs[requestId];
     if (!text || !text.trim()) {
-      setFeedbackToast({ type: 'error', message: 'Veuillez saisir votre réponse avant de valider.' });
+      setFeedbackToast({ type: 'error', message: 'Veuillez rédiger votre réponse avant d’envoyer.' });
       return;
     }
 
@@ -336,12 +430,18 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
     setFeedbackToast(null);
 
     try {
-      const res = await replyInfoRequest(requestId, text.trim(), senderDisplayName);
+      const res = await replyInfoRequest(
+        requestId,
+        text.trim(),
+        senderDisplayName,
+        normalizedCurrentDeptKey,
+        currentDeptConfig?.name || normalizedCurrentDeptKey
+      );
       if (res.success) {
-        setFeedbackToast({ type: 'success', message: 'Votre réponse a été transmise en temps réel !' });
+        setFeedbackToast({ type: 'success', message: 'Message ajouté au fil de discussion en temps réel !' });
         setReplyInputs(prev => ({ ...prev, [requestId]: '' }));
       } else {
-        setFeedbackToast({ type: 'error', message: res.message || "Échec de l'envoi de la réponse." });
+        setFeedbackToast({ type: 'error', message: res.message || "Échec de l'envoi du message." });
       }
     } catch (err: any) {
       setFeedbackToast({ type: 'error', message: err?.message || 'Erreur inattendue.' });
@@ -350,7 +450,32 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
     }
   };
 
-  // Marquer comme lu
+  // Clôture ou réouverture de la navette d'échange
+  const handleToggleClose = async (req: InfoRequest) => {
+    const isCurrentlyClosed = req.isClosed || req.status === 'Clôturé';
+    setClosingId(req.id);
+    setFeedbackToast(null);
+
+    try {
+      const res = await closeInfoRequest(req.id, senderDisplayName, isCurrentlyClosed);
+      if (res.success) {
+        setFeedbackToast({
+          type: 'success',
+          message: isCurrentlyClosed
+            ? 'Le fil d’échange a été réouvert. Les réponses peuvent continuer.'
+            : 'La navette a été marquée comme Clôturée / Solvabilisée.',
+        });
+      } else {
+        setFeedbackToast({ type: 'error', message: res.message || "Échec de l'opération." });
+      }
+    } catch (err: any) {
+      setFeedbackToast({ type: 'error', message: err?.message || 'Erreur inattendue.' });
+    } finally {
+      setClosingId(null);
+    }
+  };
+
+  // Basculer l'affichage détaillé et marquer comme lu
   const handleToggleExpand = async (req: InfoRequest) => {
     if (expandedRequestId === req.id) {
       setExpandedRequestId(null);
@@ -381,10 +506,10 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
         </div>
         <h3 className="text-lg font-black text-white">Module Réservé aux Administrations Opérationnelles</h3>
         <p className="text-xs text-slate-400 max-w-lg mx-auto">
-          Conformément aux directives RBAC strictes, la Navette de Demandes d'Information Inter-Admins est réservée
+          Conformément aux directives RBAC strictes, la <strong>Navette d'Échange</strong> est réservée
           exclusivement aux commissions opérationnelles (Secrétariat, Trésorerie, Organisation, Projets AGR, Suivi
           Programme, Spiritualité, Payor et Communication). La Présidence (CERVEAU) et le Super Admin sont strictement
-          exclus des correspondances de travail bilatérales.
+          exclus des correspondances bilatérales opérationnelles.
         </p>
       </div>
     );
@@ -419,18 +544,18 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
         </div>
       )}
 
-      {/* BANNIÈRE D'EN-TÊTE DU MODULE */}
+      {/* BANNIÈRE D'EN-TÊTE DU MODULE : NAVETTE D'ÉCHANGE */}
       <div className="bg-gradient-to-br from-slate-900 via-slate-900 to-slate-950 border border-slate-800 rounded-3xl p-5 sm:p-7 shadow-xl">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-5">
           <div className="space-y-2">
             <div className="inline-flex items-center gap-2 bg-indigo-500/10 border border-indigo-500/30 text-indigo-300 px-3 py-1 rounded-full text-xs font-black tracking-wide">
               <MessageSquare className="w-3.5 h-3.5 text-indigo-400" />
-              <span>NAVETTE ADMINISTRATIVE • MESSAGERIE B2B INTER-ADMINS</span>
+              <span>NAVETTE D'ÉCHANGE • FIL DE DISCUSSION CONTINU</span>
               <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
             </div>
 
             <h2 className="text-xl sm:text-2xl font-black text-white flex items-center gap-2.5 flex-wrap">
-              <span>Demandes d'Information & Échanges Opérationnels</span>
+              <span>NAVETTE D'ÉCHANGE</span>
               <span
                 className={`text-xs px-2.5 py-1 rounded-xl font-bold border ${currentDeptConfig?.badgeBg} ${currentDeptConfig?.badgeText} ${currentDeptConfig?.borderColor}`}
               >
@@ -439,14 +564,15 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
             </h2>
 
             <p className="text-xs text-slate-400 max-w-2xl leading-relaxed">
-              Outil officiel de navette directe entre départements pour éclaircir une dépense de trésorerie, obtenir une
-              précision pour un PV du Secrétariat, coordonner un événement ou auditer une échéance.
+              Canal officiel d'échanges continus entre départements administratifs. Chaque requête constitue un fil de
+              discussion interactif : répondez à la suite sans verrouillage pour coordonner les résolutions et marquez la
+              navette comme clôturée une fois résolue.
             </p>
           </div>
 
           {/* KPI RÉCAPITULATIFS EN TEMPS RÉEL */}
-          <div className="flex items-center gap-2.5 flex-wrap">
-            <div className="bg-slate-950/80 border border-slate-800 p-3 rounded-2xl min-w-[100px] text-center shadow-inner">
+          <div className="flex items-center gap-2 flex-wrap">
+            <div className="bg-slate-950/80 border border-slate-800 p-3 rounded-2xl min-w-[90px] text-center shadow-inner">
               <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Non lues</div>
               <div className="text-xl font-black text-rose-400 font-mono flex items-center justify-center gap-1">
                 <span>{unreadCount}</span>
@@ -454,19 +580,19 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
               </div>
             </div>
 
-            <div className="bg-slate-950/80 border border-slate-800 p-3 rounded-2xl min-w-[100px] text-center shadow-inner">
+            <div className="bg-slate-950/80 border border-slate-800 p-3 rounded-2xl min-w-[90px] text-center shadow-inner">
               <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">En attente</div>
               <div className="text-xl font-black text-amber-400 font-mono">{pendingCount}</div>
             </div>
 
-            <div className="bg-slate-950/80 border border-slate-800 p-3 rounded-2xl min-w-[100px] text-center shadow-inner">
-              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Répondues</div>
-              <div className="text-xl font-black text-emerald-400 font-mono">{repliedReceivedCount}</div>
+            <div className="bg-slate-950/80 border border-slate-800 p-3 rounded-2xl min-w-[90px] text-center shadow-inner">
+              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">En échange</div>
+              <div className="text-xl font-black text-emerald-400 font-mono">{repliedCount}</div>
             </div>
 
-            <div className="bg-slate-950/80 border border-slate-800 p-3 rounded-2xl min-w-[100px] text-center shadow-inner">
-              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Envoyées</div>
-              <div className="text-xl font-black text-cyan-400 font-mono">{sentRequests.length}</div>
+            <div className="bg-slate-950/80 border border-slate-800 p-3 rounded-2xl min-w-[90px] text-center shadow-inner">
+              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Clôturées</div>
+              <div className="text-xl font-black text-slate-400 font-mono">{closedCount}</div>
             </div>
           </div>
         </div>
@@ -502,7 +628,7 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
               }`}
             >
               <SendHorizontal className="w-4 h-4" />
-              <span>DEMANDES ENVOYÉES ({sentRequests.length})</span>
+              <span>NAVETTES ÉMISES ({sentRequests.length})</span>
             </button>
           </div>
 
@@ -523,7 +649,7 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
             ) : (
               <>
                 <Plus className="w-4 h-4" />
-                <span>NOUVELLE DEMANDE D'INFORMATION</span>
+                <span>NOUVELLE NAVETTE D'ÉCHANGE</span>
               </>
             )}
           </button>
@@ -531,7 +657,7 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
       </div>
 
       {/* ========================================================= */}
-      {/* 1. FORMULAIRE "NOUVELLE DEMANDE" (RÉDACTION) */}
+      {/* 1. FORMULAIRE "NOUVELLE NAVETTE" (OUVERTURE D'UN NOUVEAU FIL) */}
       {/* ========================================================= */}
       {activeView === 'COMPOSE' && (
         <div className="bg-slate-900 border border-amber-500/40 rounded-3xl p-6 sm:p-8 shadow-2xl space-y-6 animate-fadeIn">
@@ -541,10 +667,9 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
                 <Send className="w-5 h-5" />
               </div>
               <div>
-                <h3 className="text-base sm:text-lg font-black text-white">Émettre une Demande d'Information</h3>
+                <h3 className="text-base sm:text-lg font-black text-white">Ouvrir une Navette d'Échange</h3>
                 <p className="text-xs text-slate-400">
-                  La requête sera notifiée instantanément au département destinataire avec accusé de lecture et champ de
-                  réponse formelle.
+                  Votre message initial ouvrira un fil de discussion bilatéral continu avec la commission destinataire.
                 </p>
               </div>
             </div>
@@ -563,7 +688,7 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
               <div>
                 <label className="block text-xs font-bold text-slate-300 uppercase tracking-wider mb-2 flex items-center gap-1.5">
                   <Shield className="w-3.5 h-3.5 text-amber-400" />
-                  <span>Département Destinataire *</span>
+                  <span>Commission Destinataire *</span>
                 </label>
                 <select
                   value={targetDeptKey}
@@ -601,9 +726,9 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
               <div className="flex items-center justify-between mb-2">
                 <label className="text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
                   <FileQuestion className="w-3.5 h-3.5 text-amber-400" />
-                  <span>Objet de la demande *</span>
+                  <span>Objet de la navette d'échange *</span>
                 </label>
-                <span className="text-[10px] text-slate-500">Soyez précis pour faciliter le traitement</span>
+                <span className="text-[10px] text-slate-500">Précisez le contexte du dossier</span>
               </div>
               <input
                 type="text"
@@ -632,15 +757,15 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
               </div>
             </div>
 
-            {/* Corps du message */}
+            {/* Corps du message initial */}
             <div>
               <label className="block text-xs font-bold text-slate-300 uppercase tracking-wider mb-2 flex items-center gap-1.5">
                 <MessageSquare className="w-3.5 h-3.5 text-amber-400" />
-                <span>Message & Détail des Précisions Demandées *</span>
+                <span>Message Initial & Détails de la Requête *</span>
               </label>
               <textarea
                 rows={5}
-                placeholder="Indiquez ici les détails de votre requête, les pièces demandées, le contexte du PV ou de la dépense concernée..."
+                placeholder="Rédigez votre demande d'éclaircissement, les questions précises, les montants à certifier..."
                 value={message}
                 onChange={e => setMessage(e.target.value)}
                 className="w-full bg-slate-950 border border-slate-800 rounded-2xl p-4 text-xs sm:text-sm font-medium text-white focus:outline-none focus:border-amber-500 resize-y leading-relaxed"
@@ -663,12 +788,12 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
                 {isSubmitting ? (
                   <>
                     <RefreshCw className="w-4 h-4 animate-spin" />
-                    <span>Transmission en cours...</span>
+                    <span>Création du fil...</span>
                   </>
                 ) : (
                   <>
                     <Send className="w-4 h-4" />
-                    <span>ENVOYER LA DEMANDE D'INFORMATION</span>
+                    <span>OUVRIR LA NAVETTE D'ÉCHANGE</span>
                   </>
                 )}
               </button>
@@ -678,7 +803,7 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
       )}
 
       {/* ========================================================= */}
-      {/* 2. LISTE DES DEMANDES (BOÎTE DE RÉCEPTION OU ENVOYÉES) */}
+      {/* 2. LISTE DES FILS D'ÉCHANGE (RÉCEPTION OU ENVOYÉES) */}
       {/* ========================================================= */}
       {activeView !== 'COMPOSE' && (
         <div className="space-y-4">
@@ -689,7 +814,7 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
                 <Search className="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
                 <input
                   type="text"
-                  placeholder="Rechercher par objet, message, émetteur..."
+                  placeholder="Rechercher par objet, message, auteur..."
                   value={searchQuery}
                   onChange={e => setSearchQuery(e.target.value)}
                   className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-9 pr-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500"
@@ -721,7 +846,7 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
                     : 'text-slate-400 hover:text-white hover:bg-slate-800'
                 }`}
               >
-                Toutes ({activeView === 'RECEIVED' ? receivedRequests.length : sentRequests.length})
+                Toutes ({currentViewList.length})
               </button>
 
               <button
@@ -745,7 +870,7 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
                     : 'text-amber-400 hover:bg-amber-500/10'
                 }`}
               >
-                🟡 En attente
+                🟡 En attente de réponse
               </button>
 
               <button
@@ -757,7 +882,19 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
                     : 'text-emerald-400 hover:bg-emerald-500/10'
                 }`}
               >
-                🟢 Répondues
+                🟢 En cours d'échange
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setStatusFilter('CLOSED')}
+                className={`px-3 py-1.5 rounded-xl text-[11px] font-bold transition-all shrink-0 ${
+                  statusFilter === 'CLOSED'
+                    ? 'bg-slate-600 text-white font-black'
+                    : 'text-slate-400 hover:bg-slate-800'
+                }`}
+              >
+                ⚪ Clôturées
               </button>
             </div>
           </div>
@@ -770,13 +907,13 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
               </div>
               <h4 className="text-sm font-bold text-white">
                 {activeView === 'RECEIVED'
-                  ? 'Aucune demande reçue dans cette catégorie'
-                  : 'Aucune demande émise trouvée'}
+                  ? 'Aucune navette d’échange reçue dans cette catégorie'
+                  : 'Aucune navette émise trouvée'}
               </h4>
               <p className="text-xs text-slate-400 max-w-md mx-auto">
                 {activeView === 'RECEIVED'
-                  ? "Vous n'avez pas de demande d'information en attente provenant d'autres départements."
-                  : "Vous n'avez pas encore envoyé de demande d'information. Cliquez sur 'Nouvelle Demande' pour solliciter un département."}
+                  ? "Vous n'avez aucun fil d'échange actif adressé à votre commission pour ces critères."
+                  : "Vous n'avez pas encore initié de fil d'échange. Cliquez sur 'Nouvelle Navette d'Échange' pour démarrer une conversation avec une commission."}
               </p>
               {activeView === 'RECEIVED' && (
                 <button
@@ -785,29 +922,30 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
                   className="inline-flex items-center gap-1.5 bg-amber-500 text-slate-950 font-black px-4 py-2 rounded-xl text-xs mt-2"
                 >
                   <Plus className="w-3.5 h-3.5" />
-                  <span>Rédiger une demande maintenant</span>
+                  <span>Initier une navette d'échange</span>
                 </button>
               )}
             </div>
           ) : (
-            <div className="space-y-3.5">
+            <div className="space-y-4">
               {displayedRequests.map(req => {
                 const isReceived = activeView === 'RECEIVED';
                 const otherDeptKey = isReceived ? req.senderRole : req.recipientRole;
                 const otherDeptConfig = getEligibleDeptConfig(otherDeptKey);
                 const isExpanded = expandedRequestId === req.id;
-                const timeAgoStr = req.createdAt
-                  ? new Date(req.createdAt).toLocaleDateString('fr-FR', {
-                      day: '2-digit',
-                      month: 'short',
-                      year: 'numeric',
-                      hour: '2-digit',
-                      minute: '2-digit',
-                    })
-                  : '';
+                const threadMessages = getThreadMessages(req);
+                const statusInfo = getDynamicStatus(req);
+                const isClosed = req.isClosed || req.status === 'Clôturé';
 
-                const replyTimeStr = req.repliedAt
-                  ? new Date(req.repliedAt).toLocaleDateString('fr-FR', {
+                // Contact WhatsApp pour la relance si nécessaire
+                const otherContact = getDepartmentContact(otherDeptKey, members);
+                const whatsappText = encodeURIComponent(
+                  `Bonjour ${otherContact.name}, concernant la navette d'échange "${req.subject}" (Réf: ${req.id}), nous attendons votre retour pour faire avancer le dossier. Merci d'avance !`
+                );
+                const whatsappUrl = `https://wa.me/${otherContact.cleanPhone}?text=${whatsappText}`;
+
+                const initialDateStr = req.createdAt
+                  ? new Date(req.createdAt).toLocaleDateString('fr-FR', {
                       day: '2-digit',
                       month: 'short',
                       year: 'numeric',
@@ -822,30 +960,34 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
                     className={`bg-slate-900 border rounded-3xl transition-all shadow-md overflow-hidden ${
                       !req.isRead && isReceived
                         ? 'border-indigo-500/70 bg-indigo-950/20'
-                        : req.status === 'Répondu'
-                        ? 'border-slate-800 hover:border-emerald-500/30'
-                        : 'border-slate-800 hover:border-slate-700'
+                        : isClosed
+                        ? 'border-slate-800/80 bg-slate-950/40 opacity-90'
+                        : statusInfo.key === 'REPLIED'
+                        ? 'border-slate-800 hover:border-emerald-500/40'
+                        : 'border-slate-800 hover:border-amber-500/30'
                     }`}
                   >
-                    {/* En-tête de la carte */}
+                    {/* EN-TÊTE DE LA CARTE DE NAVETTE */}
                     <div
                       onClick={() => handleToggleExpand(req)}
                       className="p-5 cursor-pointer flex flex-col sm:flex-row sm:items-center justify-between gap-3 select-none"
                     >
                       <div className="flex items-start gap-3">
-                        {/* Indicateur de lecture */}
+                        {/* Indicateur de lecture / statut */}
                         <div className="pt-0.5">
                           {!req.isRead && isReceived ? (
                             <span className="w-3 h-3 rounded-full bg-rose-500 inline-block shadow-sm animate-pulse" />
-                          ) : req.status === 'Répondu' ? (
-                            <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                          ) : isClosed ? (
+                            <CheckCheck className="w-4 h-4 text-slate-400" />
+                          ) : statusInfo.key === 'REPLIED' ? (
+                            <MessageCircle className="w-4 h-4 text-emerald-400" />
                           ) : (
                             <Clock className="w-4 h-4 text-amber-400" />
                           )}
                         </div>
 
                         <div className="space-y-1">
-                          {/* Badges départements */}
+                          {/* Badges départements & statut */}
                           <div className="flex flex-wrap items-center gap-2">
                             <span
                               className={`inline-flex items-center gap-1 text-[11px] font-black px-2.5 py-0.5 rounded-lg border ${
@@ -856,22 +998,25 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
                             >
                               <span>{otherDeptConfig?.icon || '🛡️'}</span>
                               <span>
-                                {isReceived ? `De : ${otherDeptConfig?.name || req.senderRole}` : `Pour : ${otherDeptConfig?.name || req.recipientRole}`}
+                                {isReceived
+                                  ? `De : ${otherDeptConfig?.name || req.senderRole}`
+                                  : `Pour : ${otherDeptConfig?.name || req.recipientRole}`}
                               </span>
                             </span>
 
-                            {/* Statut badge */}
-                            {req.status === 'Répondu' ? (
-                              <span className="bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 text-[10px] font-black px-2 py-0.5 rounded-md flex items-center gap-1">
-                                <CheckCircle2 className="w-3 h-3" />
-                                <span>🟢 Répondu</span>
-                              </span>
-                            ) : (
-                              <span className="bg-amber-500/10 text-amber-400 border border-amber-500/30 text-[10px] font-black px-2 py-0.5 rounded-md flex items-center gap-1">
-                                <Clock className="w-3 h-3" />
-                                <span>🟡 En attente de réponse</span>
-                              </span>
-                            )}
+                            {/* Statut dynamique */}
+                            <span
+                              className={`text-[10px] font-black px-2 py-0.5 rounded-md border flex items-center gap-1 ${statusInfo.badgeBg} ${statusInfo.badgeText} ${statusInfo.borderColor}`}
+                            >
+                              <span>{statusInfo.icon}</span>
+                              <span>{statusInfo.label}</span>
+                            </span>
+
+                            {/* Badge nombre de messages dans le fil */}
+                            <span className="bg-slate-800 text-slate-300 border border-slate-700 text-[10px] font-black px-2 py-0.5 rounded-md flex items-center gap-1">
+                              <MessageSquare className="w-3 h-3 text-indigo-400" />
+                              <span>{threadMessages.length} message{threadMessages.length > 1 ? 's' : ''}</span>
+                            </span>
 
                             {!req.isRead && isReceived && (
                               <span className="bg-rose-500/20 text-rose-300 border border-rose-500/40 text-[10px] font-black px-2 py-0.5 rounded-md">
@@ -880,16 +1025,20 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
                             )}
                           </div>
 
-                          {/* Objet de la demande */}
+                          {/* Objet de la navette */}
                           <h4 className="text-sm sm:text-base font-black text-white hover:text-indigo-300 transition-colors">
                             {req.subject}
                           </h4>
 
-                          {/* Auteur & Date */}
+                          {/* Auteur initial & Date d'ouverture */}
                           <div className="text-[11px] text-slate-400 flex items-center gap-3 flex-wrap">
-                            <span>Émis par : <strong className="text-slate-300">{req.senderName || req.senderRole}</strong></span>
+                            <span>
+                              Initié par : <strong className="text-slate-300">{req.senderName || req.senderRole}</strong>
+                            </span>
                             <span>•</span>
-                            <span className="font-mono text-slate-500">{timeAgoStr}</span>
+                            <span className="font-mono text-slate-500">{initialDateStr}</span>
+                            <span>•</span>
+                            <span className="font-mono text-[10px] text-slate-500">{req.id}</span>
                           </div>
                         </div>
                       </div>
@@ -899,89 +1048,213 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
                           type="button"
                           className="text-xs bg-slate-950 hover:bg-slate-800 text-slate-300 px-3 py-1.5 rounded-xl border border-slate-800 flex items-center gap-1"
                         >
-                          {isExpanded ? <span>Masquer</span> : <span>Consulter / Répondre</span>}
+                          {isExpanded ? <span>Masquer le fil</span> : <span>Consulter / Répondre</span>}
                         </button>
                       </div>
                     </div>
 
-                    {/* Contenu détaillé déplié */}
+                    {/* ========================================================= */}
+                    {/* CONTENU DU FIL DE DISCUSSION DÉPLIÉ (THREAD CHRONOLOGIQUE) */}
+                    {/* ========================================================= */}
                     {isExpanded && (
-                      <div className="px-5 pb-6 pt-2 border-t border-slate-800/80 space-y-5 animate-fadeIn">
-                        {/* Message original */}
-                        <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800/80 space-y-2">
-                          <div className="text-[10px] font-black uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
-                            <MessageCircle className="w-3.5 h-3.5 text-indigo-400" />
-                            <span>Contenu de la demande :</span>
+                      <div className="px-5 pb-6 pt-3 border-t border-slate-800/80 space-y-6 animate-fadeIn">
+                        {/* 1. FIL DES MESSAGES SUCCESSIFS CHRONOLOGIQUES */}
+                        <div className="space-y-4">
+                          <div className="flex items-center justify-between text-xs font-bold text-slate-400 border-b border-slate-800 pb-2">
+                            <span className="flex items-center gap-2 text-indigo-300">
+                              <MessageSquare className="w-4 h-4" />
+                              <span>Fil d'échange continu ({threadMessages.length} intervention{threadMessages.length > 1 ? 's' : ''})</span>
+                            </span>
+                            <span className="text-[11px] text-slate-500 font-mono">ID: {req.id}</span>
                           </div>
-                          <p className="text-xs sm:text-sm text-slate-200 whitespace-pre-wrap leading-relaxed font-sans">
-                            {req.message}
-                          </p>
+
+                          <div className="space-y-3.5 pt-1">
+                            {threadMessages.map((msg, idx) => {
+                              const isFromCurrentDept =
+                                normalizeToEligibleDeptKey(msg.senderRole) === normalizedCurrentDeptKey;
+                              const msgDeptConfig = getEligibleDeptConfig(msg.senderRole);
+                              const msgTimeStr = msg.createdAt
+                                ? new Date(msg.createdAt).toLocaleDateString('fr-FR', {
+                                    day: '2-digit',
+                                    month: 'short',
+                                    year: 'numeric',
+                                    hour: '2-digit',
+                                    minute: '2-digit',
+                                  })
+                                : '';
+
+                              return (
+                                <div
+                                  key={msg.id || idx}
+                                  className={`p-4 sm:p-5 rounded-2xl border transition-all ${
+                                    isFromCurrentDept
+                                      ? 'bg-slate-950 border-indigo-500/30'
+                                      : 'bg-slate-950/90 border-slate-800'
+                                  }`}
+                                >
+                                  {/* En-tête du message dans le fil */}
+                                  <div className="flex flex-wrap items-center justify-between gap-2 mb-2 pb-2 border-b border-slate-800/60">
+                                    <div className="flex items-center gap-2">
+                                      <span
+                                        className={`inline-flex items-center gap-1 text-[10px] font-black px-2 py-0.5 rounded-md border ${
+                                          msgDeptConfig?.badgeBg || 'bg-slate-800'
+                                        } ${msgDeptConfig?.badgeText || 'text-white'} ${
+                                          msgDeptConfig?.borderColor || 'border-slate-700'
+                                        }`}
+                                      >
+                                        <span>{msgDeptConfig?.icon || '🛡️'}</span>
+                                        <span>{msgDeptConfig?.name || msg.senderRoleLabel || msg.senderRole}</span>
+                                      </span>
+
+                                      <span className="text-xs font-bold text-white">
+                                        {msg.senderName}
+                                      </span>
+
+                                      {isFromCurrentDept && (
+                                        <span className="text-[9px] font-black uppercase bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 px-1.5 py-0.2 rounded">
+                                          Votre commission
+                                        </span>
+                                      )}
+
+                                      {idx === 0 && (
+                                        <span className="text-[9px] font-black uppercase bg-amber-500/10 text-amber-400 border border-amber-500/30 px-1.5 py-0.2 rounded">
+                                          Demande initiale
+                                        </span>
+                                      )}
+                                    </div>
+
+                                    <span className="text-[11px] font-mono text-slate-500 flex items-center gap-1">
+                                      <Clock className="w-3 h-3 text-slate-600" />
+                                      <span>{msgTimeStr}</span>
+                                    </span>
+                                  </div>
+
+                                  {/* Corps du message */}
+                                  <p className="text-xs sm:text-sm text-slate-200 whitespace-pre-wrap leading-relaxed font-sans">
+                                    {msg.message}
+                                  </p>
+                                </div>
+                              );
+                            })}
+                          </div>
                         </div>
 
-                        {/* Réponse déjà apportée */}
-                        {req.replyMessage && (
-                          <div className="bg-emerald-950/30 border border-emerald-500/40 rounded-2xl p-4 sm:p-5 space-y-2">
-                            <div className="flex items-center justify-between flex-wrap gap-2">
-                              <span className="text-xs font-black text-emerald-400 flex items-center gap-2">
-                                <CornerDownRight className="w-4 h-4" />
-                                <span>Réponse officielle transmise :</span>
-                              </span>
-                              <span className="text-[11px] font-mono text-emerald-500/80">
-                                {replyTimeStr} {req.repliedBy ? `• par ${req.repliedBy}` : ''}
-                              </span>
+                        {/* 2. ÉTAT CLÔTURÉ OU CHAMP DE RÉPONSE ACTIVE */}
+                        {isClosed ? (
+                          <div className="bg-slate-950 border border-slate-700 rounded-2xl p-4 sm:p-5 flex flex-col sm:flex-row items-center justify-between gap-3 shadow-inner">
+                            <div className="flex items-center gap-3">
+                              <div className="w-9 h-9 rounded-xl bg-slate-800 border border-slate-700 flex items-center justify-center text-slate-300">
+                                <Lock className="w-4 h-4" />
+                              </div>
+                              <div>
+                                <h5 className="text-xs font-black text-white flex items-center gap-2">
+                                  <span>Navette Clôturée / Solvabilisée</span>
+                                  <span className="text-[10px] text-emerald-400 font-normal">Dossier résolu</span>
+                                </h5>
+                                <p className="text-[11px] text-slate-400">
+                                  {req.closedBy ? `Clôturé par ${req.closedBy}` : 'Échange terminé'}
+                                  {req.closedAt
+                                    ? ` le ${new Date(req.closedAt).toLocaleDateString('fr-FR', {
+                                        day: '2-digit',
+                                        month: 'short',
+                                        year: 'numeric',
+                                        hour: '2-digit',
+                                        minute: '2-digit',
+                                      })}`
+                                    : ''}
+                                  . Ce fil ne reçoit plus de messages sauf en cas de réouverture explicite.
+                                </p>
+                              </div>
                             </div>
-                            <p className="text-xs sm:text-sm text-emerald-200 whitespace-pre-wrap leading-relaxed bg-slate-950/80 p-3.5 rounded-xl border border-emerald-500/20 font-sans">
-                              {req.replyMessage}
-                            </p>
-                          </div>
-                        )}
 
-                        {/* Zone de formulaire pour répondre (pour le département destinataire) */}
-                        {isReceived && (
-                          <div className="bg-slate-950 p-4 rounded-2xl border border-indigo-500/30 space-y-3">
-                            <div className="flex items-center justify-between">
+                            <button
+                              type="button"
+                              disabled={closingId === req.id}
+                              onClick={() => handleToggleClose(req)}
+                              className="inline-flex items-center gap-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white px-3.5 py-2 rounded-xl text-xs font-bold transition-all border border-slate-700 cursor-pointer disabled:opacity-50 shrink-0"
+                            >
+                              {closingId === req.id ? (
+                                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                              ) : (
+                                <Unlock className="w-3.5 h-3.5 text-amber-400" />
+                              )}
+                              <span>Réouvrir le fil d'échange</span>
+                            </button>
+                          </div>
+                        ) : (
+                          /* ZONE ACTIVE DE RÉPONSE CONTINUE : ACCESSIBLE AUX DEUX PARTIES */
+                          <div className="bg-slate-950 p-4 sm:p-5 rounded-2xl border border-indigo-500/30 space-y-3 shadow-lg">
+                            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                               <label className="text-xs font-black text-white flex items-center gap-2">
                                 <Send className="w-3.5 h-3.5 text-amber-400" />
-                                <span>
-                                  {req.replyMessage
-                                    ? 'Modifier / Compléter votre réponse :'
-                                    : 'Formuler la réponse de votre commission :'}
+                                <span>Répondre à la suite...</span>
+                                <span className="text-[11px] font-normal text-slate-400">
+                                  (au nom de {currentDeptConfig?.shortName})
                                 </span>
                               </label>
-                              <span className="text-[10px] text-slate-500">
-                                Transmis instantanément en temps réel via Firestore
-                              </span>
+
+                              {/* Bouton de relance WhatsApp si en attente */}
+                              {statusInfo.key === 'PENDING' && (
+                                <a
+                                  href={whatsappUrl}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="inline-flex items-center gap-1.5 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-3 py-1 rounded-xl text-[11px] font-bold transition-all"
+                                  title={`Envoyer un rappel WhatsApp à ${otherContact.name} (${otherDeptConfig?.shortName})`}
+                                >
+                                  <PhoneCall className="w-3 h-3 text-emerald-400" />
+                                  <span>Relancer {otherContact.name} sur WhatsApp</span>
+                                  <ExternalLink className="w-2.5 h-2.5 text-emerald-500/60" />
+                                </a>
+                              )}
                             </div>
 
                             <textarea
                               rows={3}
-                              placeholder="Rédigez la précision, le montant certifié, les motifs ou la référence PV..."
-                              value={replyInputs[req.id] !== undefined ? replyInputs[req.id] : req.replyMessage || ''}
+                              placeholder="Apportez une précision, confirmez un montant, répondez à la question ou fournissez les motifs..."
+                              value={replyInputs[req.id] || ''}
                               onChange={e =>
                                 setReplyInputs(prev => ({
                                   ...prev,
                                   [req.id]: e.target.value,
                                 }))
                               }
-                              className="w-full bg-slate-900 border border-slate-800 rounded-xl p-3 text-xs sm:text-sm text-white focus:outline-none focus:border-amber-500 resize-y"
+                              className="w-full bg-slate-900 border border-slate-800 rounded-xl p-3.5 text-xs sm:text-sm text-white focus:outline-none focus:border-amber-500 resize-y leading-relaxed"
                             />
 
-                            <div className="flex items-center justify-end gap-2">
+                            <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
+                              {/* Option de clôture définitive */}
                               <button
                                 type="button"
-                                disabled={isReplyingId === req.id}
+                                disabled={closingId === req.id}
+                                onClick={() => handleToggleClose(req)}
+                                className="inline-flex items-center gap-1.5 bg-slate-900 hover:bg-slate-800 text-slate-300 hover:text-white px-3 py-2 rounded-xl text-xs font-bold transition-all border border-slate-800 cursor-pointer disabled:opacity-50"
+                                title="Marquer cette navette comme terminée lorsque l'information recherchée a été entièrement fournie"
+                              >
+                                {closingId === req.id ? (
+                                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                                ) : (
+                                  <CheckCheck className="w-3.5 h-3.5 text-emerald-400" />
+                                )}
+                                <span>Marquer comme Clôturée / Solvabilisée</span>
+                              </button>
+
+                              {/* Bouton d'envoi de la réponse dans le fil */}
+                              <button
+                                type="button"
+                                disabled={isReplyingId === req.id || !replyInputs[req.id]?.trim()}
                                 onClick={() => handleSendReply(req.id)}
-                                className="flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-black px-4 py-2 rounded-xl text-xs transition-all shadow-md disabled:opacity-50 cursor-pointer"
+                                className="flex items-center gap-1.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-black px-5 py-2.5 rounded-xl text-xs transition-all shadow-md disabled:opacity-50 cursor-pointer"
                               >
                                 {isReplyingId === req.id ? (
                                   <>
                                     <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                                    <span>Enregistrement...</span>
+                                    <span>Transmission...</span>
                                   </>
                                 ) : (
                                   <>
-                                    <Check className="w-3.5 h-3.5" />
-                                    <span>{req.replyMessage ? 'Mettre à jour la réponse' : 'Transmettre la réponse'}</span>
+                                    <Send className="w-3.5 h-3.5" />
+                                    <span>Envoyer dans le fil d'échange</span>
                                   </>
                                 )}
                               </button>
@@ -989,9 +1262,9 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
                           </div>
                         )}
 
-                        {/* Actions secondaires */}
+                        {/* Actions secondaires et suppression */}
                         <div className="flex items-center justify-between text-xs text-slate-500 pt-2 border-t border-slate-800/60">
-                          <span className="font-mono text-[10px]">Identifiant : {req.id}</span>
+                          <span className="font-mono text-[10px]">Identifiant Unique : {req.id}</span>
                           {!isReceived && (
                             <button
                               type="button"
@@ -999,7 +1272,7 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
                               className="text-rose-400 hover:text-rose-300 flex items-center gap-1 p-1 hover:underline"
                             >
                               <Trash2 className="w-3 h-3" />
-                              <span>Supprimer cette demande</span>
+                              <span>Supprimer cette navette</span>
                             </button>
                           )}
                         </div>

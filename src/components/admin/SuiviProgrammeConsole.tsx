@@ -832,7 +832,7 @@ export const SuiviProgrammeConsole: React.FC<SuiviProgrammeConsoleProps> = () =>
           }`}
         >
           <Send className="w-4 h-4 text-indigo-300" />
-          <span>NAVETTE &amp; DEMANDES D'INFORMATION (OPÉRATIONNEL)</span>
+          <span>NAVETTE D'ÉCHANGE (OPÉRATIONNEL)</span>
         </button>
       </div>
 
@@ -1466,10 +1466,10 @@ export const SuiviProgrammeConsole: React.FC<SuiviProgrammeConsoleProps> = () =>
           <div className="bg-slate-900 border border-indigo-500/30 rounded-3xl p-5 sm:p-6 shadow-xl">
             <div className="flex items-center gap-2.5 text-indigo-400 font-black text-sm uppercase tracking-wider mb-2">
               <Send className="w-4 h-4" />
-              <span>Module Opérationnel de Rédaction &amp; Réponse de la Navette</span>
+              <span>Module Opérationnel de la Navette d'Échange</span>
             </div>
             <p className="text-xs text-slate-400">
-              Cet espace permet au Chargé du Suivi du Programme d'émettre des demandes d'information directes et de répondre aux sollicitations des autres départements avec notifications en temps réel.
+              Cet espace permet au Chargé du Suivi du Programme d'échanger en continu avec les autres départements, d'émettre des requêtes et d'apporter des précisions en temps réel.
             </p>
           </div>
 

@@ -3830,7 +3830,7 @@ export const AdminPortal: React.FC = () => {
               }`}
             >
               <MessageSquare className="w-4 h-4 text-indigo-400" />
-              <span>NAVETTE & DEMANDES D'INFORMATION</span>
+              <span>NAVETTE D'ÉCHANGE</span>
               {unreadInfoRequestsForActiveRole > 0 && (
                 <span className="bg-rose-500 text-white text-[10px] font-black px-2 py-0.5 rounded-full animate-pulse shadow-sm">
                   {unreadInfoRequestsForActiveRole} non lue{unreadInfoRequestsForActiveRole > 1 ? 's' : ''}
@@ -3841,7 +3841,7 @@ export const AdminPortal: React.FC = () => {
 
           <span className="text-[11px] text-slate-400 font-bold px-3 py-1 bg-slate-950 rounded-xl border border-slate-800">
             {adminActiveSubTab[activeRole] === 'NAVETTE'
-              ? '📨 Navette Administrative B2B • Temps Réel'
+              ? "📨 Navette d'Échange Continue • Temps Réel"
               : '💼 Espace Métier Opérationnel'}
           </span>
         </div>
@@ -7240,7 +7240,7 @@ export const AdminPortal: React.FC = () => {
               </div>
               <div>
                 <h4 className="text-sm sm:text-base font-black text-white flex items-center gap-2">
-                  <span>Navette Administrative & Demandes d'Information Inter-Admins</span>
+                  <span>Navette d'Échange Inter-Admins</span>
                   {unreadInfoRequestsForActiveRole > 0 && (
                     <span className="bg-rose-500 text-white text-[10px] font-black px-2 py-0.5 rounded-full animate-pulse shadow-sm">
                       {unreadInfoRequestsForActiveRole} non lue{unreadInfoRequestsForActiveRole > 1 ? 's' : ''}
@@ -7258,7 +7258,7 @@ export const AdminPortal: React.FC = () => {
               className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-black px-4 py-2.5 rounded-xl transition-all shadow-md shrink-0 cursor-pointer flex items-center gap-2 self-end sm:self-center"
             >
               <Send className="w-4 h-4" />
-              <span>Ouvrir la Navette d'Information</span>
+              <span>Ouvrir la Navette d'Échange</span>
             </button>
           </div>
 
