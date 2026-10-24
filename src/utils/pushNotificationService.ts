@@ -5,7 +5,6 @@ import {
   updateDoc,
   collection,
   addDoc,
-  onSnapshot,
   query,
   orderBy,
   limit,
@@ -928,131 +927,24 @@ export const listenForIncomingPushNotifications = (
     const notifsRef = collection(db, 'push_notifications');
     const q = query(notifsRef, orderBy('createdAt', 'desc'), limit(15));
 
-    // Drapeaux d'initialisation pour ne jamais réémettre les messages du passé
-    let isInitialSnapshot = true;
 
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      // 1. Snapshot initial : enregistrer tous les anciens messages comme déjà traités
-      // pour éviter de les rejouer lors d'un montage de composant, reconnexion ou suppression d'un item.
-      if (isInitialSnapshot) {
-        snapshot.docs.forEach((docSnap) => {
-          const docData = docSnap.data() as any;
-          const initialMsgId = docData.messageId || docData.id || docSnap.id;
-          const initialTag = docData.tag || `erouama-msg-${initialMsgId}`;
-          markNotificationAsHandled(initialMsgId);
-          markNotificationAsHandled(initialTag);
-          markNotificationAsHandled(docSnap.id);
-        });
-        isInitialSnapshot = false;
-        return;
-      }
-
-      // 2. Traitement strict des NOUVEAUX ajouts en temps réel uniquement
-      snapshot.docChanges().forEach((change) => {
-        if (change.type === 'added') {
-          const data = change.doc.data() as any;
-
-          // RÈGLE 3 : Ignorer explicitement les messages marqués comme supprimés
-          if (data.deleted === true || data.status === 'deleted') {
-            console.log('[pushNotificationService] Notification supprimée ignorée:', change.doc.id);
-            return;
-          }
-
-          // RÈGLE 1 & 2 ANTI-DOUBLON : Vérification du messageId et du tag
-          const uniqueMsgId = data.messageId || data.id || change.doc.id;
-          const uniqueTag = data.tag || `erouama-msg-${uniqueMsgId}`;
-
-          if (hasNotificationBeenHandled(uniqueMsgId) || hasNotificationBeenHandled(uniqueTag) || hasNotificationBeenHandled(change.doc.id)) {
-            console.log('[pushNotificationService] Notification déjà traitée (anti-doublon):', uniqueMsgId);
-            return;
-          }
-          markNotificationAsHandled(uniqueMsgId);
-          markNotificationAsHandled(uniqueTag);
-          markNotificationAsHandled(change.doc.id);
-
-          // Vérifier si cette notification s'adresse à ce rôle, cet utilisateur ou l'un de ses départements
-          const targetRole = (data.targetRole || '').toUpperCase().trim();
-          const targetDepartment = normalizeDepartmentKey(data.targetDepartment || data.targetRole || '');
-          const targetUserId = (data.targetUserId || '').trim();
-          const senderRole = (data.senderRole || '').toUpperCase().trim();
-          const isBroadcast = targetRole === 'ALL' || targetRole === 'TOUS' || targetDepartment === 'all';
-
-          // RÈGLE STRICTE AUTO-NOTIFICATION :
-          // Ne filtrer/exclure l'expéditeur QUE pour les messages directs de test unitaire ou chats 1-à-1.
-          // POUR TOUTES LES NOTIFICATIONS DE BROADCAST / COMMUNAUTAIRES (ex: Validation d'un Gbrairai pour tous les membres,
-          // Publication de Projet, Activités Org/Spir, Annonces générales) :
-          // Le ciblage inclut TOUS les membres sans exception, Y COMPRIS celui de l'administrateur/Cerveau (Wilfried)
-          // qui a exécuté l'action, garantissant que chaque membre reçoive l'actualité sur son profil membre.
-          if (!isBroadcast) {
-            // Ne pas notifier l'utilisateur de sa propre action si c'est lui qui l'a émise (sauf s'il est spécifiquement ciblé par targetUserId)
-            if (!targetUserId && senderRole && cleanRole && senderRole === cleanRole) {
-              return;
-            }
-
-            // Ne pas notifier un utilisateur explicitement exclu dans les métadonnées pour un envoi direct
-            if (data.metadata?.excludedUserId && cleanUserId && String(data.metadata.excludedUserId).trim() === cleanUserId) {
-              return;
-            }
-          }
-
-          const roleMatches =
-            targetRole === 'ALL' ||
-            targetRole === 'TOUS' ||
-            targetRole === cleanRole ||
-            (targetRole === 'CERVEAU' && (cleanRole.includes('CERVEAU') || userDeptsNormalized.includes('cerveau'))) ||
-            (targetRole === 'TRESORIER' && (cleanRole.includes('TRESO') || userDeptsNormalized.includes('tresorerie'))) ||
-            (targetRole === 'SECRETARIAT' && (cleanRole.includes('SECRETA') || cleanRole === 'SECRETARIAT' || userDeptsNormalized.includes('secretariat'))) ||
-            (targetRole === 'ORGANISATION' && (cleanRole.includes('ORGANI') || cleanRole === 'ORGANISATION' || userDeptsNormalized.includes('organisation'))) ||
-            (targetRole === 'PROJET' && (cleanRole.includes('PROJET') || cleanRole === 'PROJET' || userDeptsNormalized.includes('projet'))) ||
-            (targetRole === 'PAYOR' && (cleanRole.includes('PAYOR') || cleanRole === 'PAYOR' || userDeptsNormalized.includes('payor'))) ||
-            (targetRole === 'COM' && (cleanRole.includes('COM') || cleanRole === 'COM' || userDeptsNormalized.includes('communication'))) ||
-            (targetRole === 'SPIRITUALITE' && (cleanRole.includes('SPIRIT') || cleanRole === 'SPIRITUALITE' || userDeptsNormalized.includes('spiritualite'))) ||
-            (targetRole === 'SDP' && (cleanRole.includes('SDP') || cleanRole.includes('PROGRAMME') || userDeptsNormalized.includes('suivi_programme')));
-
-          // Vérification si le département cible correspond à un des départements de l'utilisateur
-          const deptMatches = targetDepartment && userDeptsNormalized.includes(targetDepartment);
-
-          // Si un targetUserId précis ou une liste de membres ciblés est spécifié(e)
-          const targetUserIds = Array.isArray(data.targetUserIds) ? data.targetUserIds.map((x: any) => String(x).trim()) : [];
-          const isDirectTargetUser =
-            Boolean(targetUserId && cleanUserId && targetUserId === cleanUserId) ||
-            Boolean(targetUserIds.length > 0 && cleanUserId && targetUserIds.includes(cleanUserId));
-
-          // Si targetRole ou département est ciblé (et aucun targetUserId n'est requis ou targetUserId correspond)
-          const isRoleOrDeptTarget = !targetUserId && targetUserIds.length === 0 && (roleMatches || deptMatches);
-
-          if (isDirectTargetUser || isRoleOrDeptTarget) {
-            // 1. Toujours forcer l'affichage de la BANNIÈRE NATIVE ANDROID dans le volet supérieur
-            triggerDirectNotification({
-              title: data.title,
-              body: data.body,
-              icon: data.icon || '/icon-192.png',
-              tag: uniqueTag,
-              url: data.url || '/',
-              data: {
-                messageId: uniqueMsgId,
-                id: uniqueMsgId,
-                tag: uniqueTag,
-                ...data,
-              },
-            });
-
-            // 2. Afficher également le toast interactif in-app
-            if (onReceived) {
-              onReceived({
-                ...data,
-                id: uniqueMsgId,
-                messageId: uniqueMsgId,
-                tag: uniqueTag,
-                isForeground: typeof document !== 'undefined' && document.visibilityState === 'visible',
-              });
-            }
-          }
-        }
+    // FREIN DE SECOURS FIRESTORE : Remplacement de l'écouteur en continu onSnapshot
+    // par une lecture ponctuelle unique getDocs au montage pour préserver les quotas gratuits.
+    getDocs(q).then((snapshot) => {
+      // Marquer l'historique initial sans déclencher de carillons ni de boucles
+      snapshot.docs.forEach((docSnap) => {
+        const docData = docSnap.data() as any;
+        const initialMsgId = docData.messageId || docData.id || docSnap.id;
+        const initialTag = docData.tag || `erouama-msg-${initialMsgId}`;
+        markNotificationAsHandled(initialMsgId);
+        markNotificationAsHandled(initialTag);
+        markNotificationAsHandled(docSnap.id);
       });
+    }).catch(err => {
+      console.warn('Initialisation push ponctuelle Firestore:', err);
     });
 
-    return unsubscribe;
+    return () => {};
   } catch (err) {
     console.warn('Erreur écouteur push notifications Firestore:', err);
     return () => {};

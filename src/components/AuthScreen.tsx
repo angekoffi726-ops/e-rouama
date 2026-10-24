@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { collection, onSnapshot, doc, updateDoc, setDoc, addDoc } from 'firebase/firestore';
+import { collection, getDocs, doc, updateDoc, setDoc, addDoc } from 'firebase/firestore';
 import { db } from '../firebase';
 import { useApp } from '../context/AppContext';
 import { ADMIN_USERS, INITIAL_ROUAMA_MEMBERS, getRegisteredMembersCount, isMemberActive } from '../data/membersData';
@@ -19,49 +19,45 @@ const normalizeName = (str: string): string => {
 export const AuthScreen: React.FC = () => {
   const { registerMember, loginMember, loginAdmin, members, adminUsers, setCurrentUser } = useApp();
 
-  // Écoute directe en temps réel de tous les documents des collections 'users' et 'members' dans Firestore
+  // Chargement direct ponctuel des utilisateurs et membres depuis Firestore/cache
   const [firestoreUsers, setFirestoreUsers] = useState<any[]>([]);
 
   useEffect(() => {
     // Reconstitution et rafraîchissement automatique du token FCM dès l'ouverture de l'écran de Login
     refreshFcmTokenOnStartup();
 
+    let isMounted = true;
     const usersMap = new Map<string, any>();
 
     const updateCombined = () => {
-      setFirestoreUsers(Array.from(usersMap.values()));
+      if (isMounted) {
+        setFirestoreUsers(Array.from(usersMap.values()));
+      }
     };
 
-    const unsubUsers = onSnapshot(
-      collection(db, 'users'),
-      (snapshot) => {
-        snapshot.docs.forEach((d) => {
+    Promise.allSettled([
+      getDocs(collection(db, 'users')),
+      getDocs(collection(db, 'members')),
+    ]).then(([usersSnap, membersSnap]) => {
+      if (!isMounted) return;
+      if (usersSnap.status === 'fulfilled') {
+        usersSnap.value.docs.forEach((d) => {
           usersMap.set(d.id, { _docId: d.id, id: d.id, ...d.data() });
         });
-        updateCombined();
-      },
-      (error) => {
-        console.warn('Erreur écoute collection users dans AuthScreen:', error);
       }
-    );
-
-    const unsubMembers = onSnapshot(
-      collection(db, 'members'),
-      (snapshot) => {
-        snapshot.docs.forEach((d) => {
+      if (membersSnap.status === 'fulfilled') {
+        membersSnap.value.docs.forEach((d) => {
           const prev = usersMap.get(d.id) || {};
           usersMap.set(d.id, { ...prev, _docId: d.id, id: d.id, ...d.data() });
         });
-        updateCombined();
-      },
-      (error) => {
-        console.warn('Erreur écoute collection members dans AuthScreen:', error);
       }
-    );
+      updateCombined();
+    }).catch((err) => {
+      console.warn('Lecture unique users/members (cache actif):', err);
+    });
 
     return () => {
-      unsubUsers();
-      unsubMembers();
+      isMounted = false;
     };
   }, []);
 

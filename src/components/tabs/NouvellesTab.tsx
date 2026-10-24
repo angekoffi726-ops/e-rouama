@@ -48,6 +48,15 @@ export const NouvellesTab: React.FC<NouvellesTabProps> = ({ onNavigateTab }) => 
 
   const sourceMessages = gbairaiMessages || newsItems || [];
 
+  const hasMarkedRef = React.useRef(false);
+  // MARQUAGE AUTOMATIQUE DES MESSAGES GBAÏRAÏ COMME LUS À L'OUVERTURE DU MODULE (Une seule fois au montage)
+  React.useEffect(() => {
+    if (currentMemberId && !hasMarkedRef.current) {
+      hasMarkedRef.current = true;
+      markAllGbairaiAsRead(currentMemberId);
+    }
+  }, [currentMemberId, markAllGbairaiAsRead]);
+
   // 2. FILTRAGE DU DESTINATAIRE DE L'ALERTE (GBAÏRAÏ) :
   // Masque le message si l'utilisateur connecté est l'auteur du paiement pour une alerte générale
   // Filtre strictement par targetMemberIds pour les alertes ciblées
@@ -203,16 +212,10 @@ export const NouvellesTab: React.FC<NouvellesTabProps> = ({ onNavigateTab }) => 
 
           {/* Header Action Badges */}
           <div className="flex items-center gap-2 flex-wrap">
-            {unreadGbairaiCount > 0 && (
-              <button
-                type="button"
-                onClick={() => markAllGbairaiAsRead()}
-                className="inline-flex items-center gap-1.5 bg-[#355E3B] hover:bg-[#2A4B2F] text-white px-3.5 py-1.5 rounded-2xl text-xs font-black shadow transition-all active:scale-95 cursor-pointer"
-              >
-                <Eye className="w-3.5 h-3.5" />
-                <span>Tout marquer comme lu ({unreadGbairaiCount})</span>
-              </button>
-            )}
+            <div className="inline-flex items-center gap-1.5 bg-emerald-50 px-3.5 py-1.5 rounded-2xl border border-emerald-200 text-xs font-bold text-emerald-800 shadow-sm">
+              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+              <span>Marquage automatique à l'ouverture</span>
+            </div>
             <div className="inline-flex items-center gap-1.5 bg-orange-50 px-3.5 py-1.5 rounded-2xl border border-orange-200 text-xs font-black text-[#D35400] shadow-sm">
               <span>Fil de nouvelles personnalisé</span>
             </div>
@@ -283,25 +286,9 @@ export const NouvellesTab: React.FC<NouvellesTabProps> = ({ onNavigateTab }) => 
                       )}
                     </div>
 
-                    {/* Action buttons: Date, Mark as Read, Supprimer */}
+                    {/* Action buttons: Date & Supprimer */}
                     <div className="flex items-center gap-2 flex-wrap text-xs text-slate-500 font-medium">
                       <span className="text-[11px] text-slate-400 font-semibold">{item.date}</span>
-
-                      {/* Action: Marquer comme lu */}
-                      {isMember && !isRead && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            markNewsAsRead(item.id);
-                            setToastFeedback(`Le message « ${item.title} » est marqué comme lu !`);
-                            setTimeout(() => setToastFeedback(null), 3000);
-                          }}
-                          className="bg-[#355E3B] hover:bg-[#2A4B2F] text-white font-extrabold px-3 py-1 rounded-full text-[11px] flex items-center gap-1 shadow transition-all active:scale-95 cursor-pointer"
-                        >
-                          <Eye className="w-3 h-3" />
-                          <span>Marquer comme lu</span>
-                        </button>
-                      )}
 
                       {/* Action: Supprimer du fil personnel */}
                       <button

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { doc, deleteDoc, updateDoc, setDoc, collection, onSnapshot } from 'firebase/firestore';
+import { doc, deleteDoc, updateDoc, setDoc, collection, getDocs } from 'firebase/firestore';
 import { db } from '../../firebase';
 import { useApp } from '../../context/AppContext';
 import { FundType, FUND_LABELS } from '../../types';
@@ -27,6 +27,7 @@ import {
   Sprout,
   Info,
   Trash2,
+  RefreshCw,
 } from 'lucide-react';
 import { compressReceiptImage } from '../../utils/imageCompressor';
 
@@ -46,6 +47,8 @@ export const FinancesTab: React.FC = () => {
     getMemberDuesDetail,
     getMemberDuesStatus,
     getMemberRubricProgress,
+    refreshTreasury,
+    isRefreshingData,
   } = useApp();
 
   // Identify logged in member
@@ -407,40 +410,16 @@ export const FinancesTab: React.FC = () => {
     setPayments(declarations.filter(p => !p.isHidden && p.status !== 'hidden' && p.status !== 'deleted'));
   }, [declarations]);
 
-  // ÉCOUTE EN TEMPS RÉEL (onSnapshot) DES COTISATIONS ET DEMANDES DU MEMBRE
+  // CHARGEMENT SIMPLE SANS BOUCLE NI SURCONSOMMATION DE QUOTA
   useEffect(() => {
     if (!currentMemberId) return;
     const cleanId = String(currentMemberId).trim();
-    const unsubs: (() => void)[] = [];
+    let isMounted = true;
 
-    // 1. Écouteur sur la collection receipts pour le membre
-    const unsubReceipts = onSnapshot(
-      collection(db, 'receipts'),
-      (snapshot) => {
-        const loaded: any[] = [];
-        snapshot.forEach((docSnap) => {
-          const data = docSnap.data();
-          if (String(data.memberId).trim() === cleanId && !data.isHidden && data.status !== 'hidden' && data.status !== 'deleted') {
-            loaded.push({ id: docSnap.id, ...data });
-          }
-        });
-        if (loaded.length > 0) {
-          setPayments((prev) => {
-            const map = new Map<string, any>();
-            prev.forEach((p) => map.set(p.id, p));
-            loaded.forEach((p) => map.set(p.id, { ...(map.get(p.id) || {}), ...p }));
-            return Array.from(map.values()).sort((a, b) => ((b.createdAt || 0) - (a.createdAt || 0)));
-          });
-        }
-      },
-      (err) => console.warn('Erreur écouteur receipts membre FinancesTab:', err)
-    );
-    unsubs.push(unsubReceipts);
-
-    // 2. Écouteur sur la sous-collection cotisations du membre
-    const unsubCotisations = onSnapshot(
-      collection(db, 'users', cleanId, 'cotisations'),
-      (snapshot) => {
+    // Récupération ponctuelle unique des cotisations de la sous-collection membre
+    getDocs(collection(db, 'users', cleanId, 'cotisations'))
+      .then((snapshot) => {
+        if (!isMounted || snapshot.empty) return;
         const loaded: any[] = [];
         snapshot.forEach((docSnap) => {
           if (docSnap.id === 'summary') return;
@@ -449,7 +428,7 @@ export const FinancesTab: React.FC = () => {
             loaded.push({ id: docSnap.id, ...data });
           }
         });
-        if (loaded.length > 0) {
+        if (loaded.length > 0 && isMounted) {
           setPayments((prev) => {
             const map = new Map<string, any>();
             prev.forEach((p) => map.set(p.id, p));
@@ -457,13 +436,11 @@ export const FinancesTab: React.FC = () => {
             return Array.from(map.values()).sort((a, b) => ((b.createdAt || 0) - (a.createdAt || 0)));
           });
         }
-      },
-      (err) => console.warn('Erreur écouteur cotisations membre FinancesTab:', err)
-    );
-    unsubs.push(unsubCotisations);
+      })
+      .catch((err) => console.warn('Lecture unique cotisations membre:', err));
 
     return () => {
-      unsubs.forEach((u) => u());
+      isMounted = false;
     };
   }, [currentMemberId]);
 
@@ -627,14 +604,27 @@ export const FinancesTab: React.FC = () => {
         <div className="absolute top-0 right-0 w-80 h-80 bg-emerald-500/10 rounded-full blur-3xl pointer-events-none" />
 
         <div className="relative z-10 space-y-3">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="inline-flex items-center gap-1.5 bg-[#E67E22] text-white px-3.5 py-1 rounded-full text-xs font-black tracking-wide shadow">
-              <Coins className="w-4 h-4" />
-              <span>ESPACE FINANCES MEMBRE</span>
-            </span>
-            <span className="bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 px-3 py-1 rounded-full text-xs font-bold">
-              {members?.length || 12} Membres E-ROUAMA
-            </span>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="inline-flex items-center gap-1.5 bg-[#E67E22] text-white px-3.5 py-1 rounded-full text-xs font-black tracking-wide shadow">
+                <Coins className="w-4 h-4" />
+                <span>ESPACE FINANCES MEMBRE</span>
+              </span>
+              <span className="bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 px-3 py-1 rounded-full text-xs font-bold">
+                {members?.length || 12} Membres E-ROUAMA
+              </span>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => refreshTreasury()}
+              disabled={isRefreshingData}
+              className="inline-flex items-center gap-1.5 bg-slate-800/90 hover:bg-slate-700 text-emerald-400 border border-emerald-500/40 hover:border-emerald-300 px-3.5 py-1.5 rounded-full text-xs font-bold transition-all active:scale-95 cursor-pointer disabled:opacity-50"
+              title="Actualiser ponctuellement mes cotisations et reçus"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 text-emerald-400 ${isRefreshingData ? 'animate-spin' : ''}`} />
+              <span>{isRefreshingData ? 'Actualisation...' : '🔄 Actualiser les données'}</span>
+            </button>
           </div>
 
           <h1 className="text-2xl sm:text-4xl font-black text-white tracking-tight">

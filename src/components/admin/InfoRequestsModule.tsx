@@ -222,6 +222,8 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
     closeInfoRequest,
     markInfoRequestRead,
     deleteInfoRequest,
+    refreshNavette,
+    isRefreshingData,
   } = useApp();
 
   // 1. VÉRIFICATION RBAC STRICTE
@@ -632,27 +634,40 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
             </button>
           </div>
 
-          <button
-            type="button"
-            onClick={() => setActiveView(activeView === 'COMPOSE' ? 'RECEIVED' : 'COMPOSE')}
-            className={`flex items-center gap-2 px-4 py-2.5 rounded-2xl text-xs font-black transition-all cursor-pointer shadow-lg ${
-              activeView === 'COMPOSE'
-                ? 'bg-rose-600 text-white hover:bg-rose-500'
-                : 'bg-amber-500 hover:bg-amber-400 text-slate-950 font-black'
-            }`}
-          >
-            {activeView === 'COMPOSE' ? (
-              <>
-                <X className="w-4 h-4" />
-                <span>FERMER LE FORMULAIRE</span>
-              </>
-            ) : (
-              <>
-                <Plus className="w-4 h-4" />
-                <span>NOUVELLE NAVETTE D'ÉCHANGE</span>
-              </>
-            )}
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => refreshNavette()}
+              disabled={isRefreshingData}
+              className="flex items-center gap-2 px-3.5 py-2.5 rounded-2xl text-xs font-bold bg-slate-900 hover:bg-slate-800 text-indigo-300 border border-indigo-500/30 hover:border-indigo-400 transition-all cursor-pointer disabled:opacity-50"
+              title="Actualiser ponctuellement les navettes d'échange sans boucle temps réel"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 text-indigo-400 ${isRefreshingData ? 'animate-spin' : ''}`} />
+              <span>{isRefreshingData ? 'Actualisation...' : '🔄 Actualiser les données'}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveView(activeView === 'COMPOSE' ? 'RECEIVED' : 'COMPOSE')}
+              className={`flex items-center gap-2 px-4 py-2.5 rounded-2xl text-xs font-black transition-all cursor-pointer shadow-lg ${
+                activeView === 'COMPOSE'
+                  ? 'bg-rose-600 text-white hover:bg-rose-500'
+                  : 'bg-amber-500 hover:bg-amber-400 text-slate-950 font-black'
+              }`}
+            >
+              {activeView === 'COMPOSE' ? (
+                <>
+                  <X className="w-4 h-4" />
+                  <span>FERMER LE FORMULAIRE</span>
+                </>
+              ) : (
+                <>
+                  <Plus className="w-4 h-4" />
+                  <span>NOUVELLE NAVETTE D'ÉCHANGE</span>
+                </>
+              )}
+            </button>
+          </div>
         </div>
       </div>
 

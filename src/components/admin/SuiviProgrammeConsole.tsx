@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { collection, onSnapshot, addDoc } from 'firebase/firestore';
+import { collection, getDocs, addDoc } from 'firebase/firestore';
 import { db } from '../../firebase';
 import { useApp } from '../../context/AppContext';
 import {
@@ -417,21 +417,26 @@ export const SuiviProgrammeConsole: React.FC<SuiviProgrammeConsoleProps> = () =>
   const [realtimeAdminLogs, setRealtimeAdminLogs] = useState<AdminLoginLog[]>([]);
 
   useEffect(() => {
-    const unsub = onSnapshot(
-      collection(db, 'admin_logs'),
-      (snapshot) => {
+    let isMounted = true;
+    getDocs(collection(db, 'admin_logs'))
+      .then((snapshot) => {
+        if (!isMounted) return;
         const loaded: AdminLoginLog[] = [];
         snapshot.forEach((d) => {
           loaded.push({ id: d.id, ...(d.data() as any) });
         });
         loaded.sort((a, b) => (b.loginTimestamp || '').localeCompare(a.loginTimestamp || ''));
-        setRealtimeAdminLogs(loaded);
-      },
-      (err) => {
-        console.warn('Erreur écoute collection admin_logs:', err);
-      }
-    );
-    return () => unsub();
+        if (isMounted) {
+          setRealtimeAdminLogs(loaded);
+        }
+      })
+      .catch((err) => {
+        console.warn('Lecture unique admin_logs (cache actif):', err);
+      });
+
+    return () => {
+      isMounted = false;
+    };
   }, []);
 
   const effectiveAdminLogs = useMemo(() => {
@@ -1473,7 +1478,7 @@ export const SuiviProgrammeConsole: React.FC<SuiviProgrammeConsoleProps> = () =>
               <div>
                 <div className="inline-flex items-center gap-2 bg-emerald-500/20 text-emerald-300 px-3 py-1 rounded-full text-xs font-black uppercase tracking-wider mb-2 border border-emerald-500/30">
                   <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping inline-block" />
-                  <span>Audit des Connexions Administrateurs • En Direct (onSnapshot)</span>
+                  <span>Audit des Connexions Administrateurs • Console Sécurisée</span>
                 </div>
                 <h3 className="text-lg sm:text-xl font-black text-white flex flex-wrap items-center gap-2">
                   <span>Contrôle d'Assiduité des Départements Admins</span>

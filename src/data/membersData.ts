@@ -93,6 +93,8 @@ export const INITIAL_ROUAMA_MEMBERS: RouamaMember[] = [
     statut: 'Activé',
     pin: '0000',
     pinCode: '0000',
+    totalPaid: 500,
+    solde: 500,
   },
   {
     id: '8',

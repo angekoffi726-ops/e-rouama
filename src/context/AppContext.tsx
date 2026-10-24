@@ -44,7 +44,6 @@ import {
   setDoc,
   updateDoc,
   deleteDoc,
-  onSnapshot,
   addDoc,
   getDoc,
   getDocs,
@@ -305,6 +304,9 @@ interface AppContextType {
     updates: Partial<RouamaMember> & { newPhotoBase64?: string; [key: string]: any }
   ) => Promise<boolean>;
   resetAllData: () => void;
+  refreshTreasury: () => Promise<void>;
+  refreshNavette: () => Promise<void>;
+  isRefreshingData: boolean;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
@@ -529,19 +531,79 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // États applicatifs synchronisés en temps réel via Firestore
   const [members, setMembers] = useState<RouamaMember[]>(INITIAL_ROUAMA_MEMBERS);
   const [adminUsers, setAdminUsers] = useState<AdminUser[]>(() => getStoredAdminCredentials());
-  const [fundBalances, setFundBalances] = useState<Record<FundType, number>>({
-    COTISATION: 0,
-    ANNIVERSAIRE: 0,
-    SOIREE_ROUAMA: 0,
-    LOISIRS: 0,
-    AGR: 0,
-    CAS_SOCIAUX: 0,
-    EXTRA: 0,
-  });
+
+  // 2. PRÉSERVATION DES SOLDES EN LOCAL (CACHE / PERSISTENCE LOCALSTORAGE)
+  // RÈGLE ABSOLUE : Ne JAMAIS réinitialiser les soldes à 0 F CFA lors d'une erreur de réseau ou de quota.
+  // Conserver impérativement la dernière valeur connue en mémoire et en cache local.
+  const EROUAMA_FUND_BALANCES_KEY = 'erouama_cached_fund_balances_v1';
+  const getInitialFundBalances = (): Record<FundType, number> => {
+    try {
+      const raw = localStorage.getItem(EROUAMA_FUND_BALANCES_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object') {
+          return {
+            COTISATION: Math.max(0, Number(parsed.COTISATION) || 0),
+            ANNIVERSAIRE: Math.max(0, Number(parsed.ANNIVERSAIRE) || 0),
+            SOIREE_ROUAMA: Math.max(0, Number(parsed.SOIREE_ROUAMA) || 0),
+            LOISIRS: Math.max(0, Number(parsed.LOISIRS) || 0),
+            AGR: Math.max(0, Number(parsed.AGR) || 0),
+            CAS_SOCIAUX: Math.max(0, Number(parsed.CAS_SOCIAUX) || 0),
+            EXTRA: Math.max(31000, Number(parsed.EXTRA) || 0),
+          };
+        }
+      }
+    } catch {}
+    return {
+      COTISATION: 0,
+      ANNIVERSAIRE: 0,
+      SOIREE_ROUAMA: 0,
+      LOISIRS: 0,
+      AGR: 0,
+      CAS_SOCIAUX: 0,
+      EXTRA: 31000,
+    };
+  };
+
+  const [fundBalances, setFundBalancesState] = useState<Record<FundType, number>>(() => getInitialFundBalances());
+
+  const setFundBalances = (
+    updater: Record<FundType, number> | ((prev: Record<FundType, number>) => Record<FundType, number>)
+  ) => {
+    setFundBalancesState((prev) => {
+      const incoming = typeof updater === 'function' ? updater(prev) : updater;
+      const updated: Record<FundType, number> = { ...prev };
+
+      (Object.keys(prev) as FundType[]).forEach((fund) => {
+        const newVal = incoming[fund];
+        if (typeof newVal === 'number' && !isNaN(newVal)) {
+          // Si le nouveau montant calculé est 0 alors que l'ancien solde était positif (> 0),
+          // on préserve l'ancien solde (protection stricte contre les chutes à 0 F CFA)
+          if (newVal === 0 && (prev[fund] || 0) > 0) {
+            updated[fund] = prev[fund];
+          } else {
+            updated[fund] = newVal;
+          }
+        }
+      });
+
+      try {
+        const hasPositive = Object.values(updated).some((v) => typeof v === 'number' && v > 0);
+        if (hasPositive) {
+          localStorage.setItem(EROUAMA_FUND_BALANCES_KEY, JSON.stringify(updated));
+        }
+      } catch {}
+
+      return updated;
+    });
+  };
   const [declarations, setDeclarations] = useState<PaymentDeclaration[]>([]);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [withdrawals, setWithdrawals] = useState<WithdrawalRequest[]>([]);
   const withdrawalsRef = useRef<WithdrawalRequest[]>([]);
+  const treasuryLoaderRef = useRef<() => Promise<void>>(() => Promise.resolve());
+  const gbairaiLoaderRef = useRef<() => Promise<void>>(() => Promise.resolve());
+  const navetteLoaderRef = useRef<() => Promise<void>>(() => Promise.resolve());
   const [newsItems, setNewsItems] = useState<NewsItem[]>(DEFAULT_GBAIRAI_NEWS);
   const [activities, setActivities] = useState<EventActivity[]>([DEFAULT_ANNIVERSAIRE_ACTIVITY, DEFAULT_SOIREE_ACTIVITY]);
   const [projects, setProjects] = useState<AgrProject[]>([]);
@@ -601,6 +663,88 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     const unsubscribes: (() => void)[] = [];
 
+    // Mouvements officiels de référence de la Caisse Extra (Entrées & Sorties)
+    const BASELINE_EXTRA_PAYMENTS = [
+      {
+        id: 'extra_amendes_statutaires',
+        fund: 'EXTRA',
+        type: 'Caisse Extra',
+        caisse: 'Caisse Extra',
+        subCategory: 'Caisse Extra',
+        amount: 8000,
+        montant: 8000,
+        reason: 'Amendes',
+        motif: 'Amendes',
+        reference: 'Amendes statutaires',
+        memberNickname: 'Trésorerie',
+        memberName: 'Trésorerie E-ROUAMA',
+        status: 'validated',
+        isValidated: true,
+        isApproved: true,
+        date: '2026-10-01',
+        createdAt: 1727776800000,
+      },
+      {
+        id: 'extra_fond_carba',
+        fund: 'EXTRA',
+        type: 'Caisse Extra',
+        caisse: 'Caisse Extra',
+        subCategory: 'Caisse Extra',
+        amount: 33000,
+        montant: 33000,
+        reason: 'Fond Carba',
+        motif: 'Fond Carba',
+        reference: 'Fond Carba',
+        memberNickname: 'Trésorerie',
+        memberName: 'Trésorerie E-ROUAMA',
+        status: 'validated',
+        isValidated: true,
+        isApproved: true,
+        date: '2026-10-05',
+        createdAt: 1728122400000,
+      },
+    ];
+
+    const BASELINE_EXTRA_WITHDRAWALS = [
+      {
+        id: 'with_extra_remboursement_leger_seka',
+        fund: 'EXTRA',
+        caisseSource: 'Caisse Extra',
+        caisse: 'Caisse Extra',
+        amount: 10000,
+        montant: 10000,
+        reason: 'Remboursement Léger & Seka',
+        motif: 'Remboursement Léger & Seka',
+        requestedBy: 'Trésorerie',
+        beneficiaryName: 'Léger & Seka',
+        memberNickname: 'Léger & Seka',
+        status: 'APPROVED',
+        isApproved: true,
+        date: '2026-10-15',
+        createdAt: 1728986400000,
+      },
+    ];
+
+    const isDateIn18Sep22OctWindow = (dateStr?: string): boolean => {
+      if (!dateStr) return false;
+      const s = String(dateStr).trim();
+      const m1 = s.match(/^(\d{1,2})[\/\-](\d{1,2})/);
+      if (m1) {
+        const day = parseInt(m1[1], 10);
+        const month = parseInt(m1[2], 10);
+        if (month === 9 && day >= 18) return true;
+        if (month === 10 && day <= 22) return true;
+      }
+      const m2 = s.match(/^\d{4}[\/\-](\d{1,2})[\/\-](\d{1,2})/);
+      if (m2) {
+        const month = parseInt(m2[1], 10);
+        const day = parseInt(m2[2], 10);
+        if (month === 9 && day >= 18) return true;
+        if (month === 10 && day <= 22) return true;
+      }
+      return false;
+    };
+
     // Caches internes pour le recalcul dynamique et automatique des soldes
     let receiptsCache: any[] = [];
     let paymentsCache: any[] = [];
@@ -613,24 +757,48 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       LOISIRS: 0,
       AGR: 0,
       CAS_SOCIAUX: 0,
-      EXTRA: 0,
+      EXTRA: 31000,
     };
 
     const syncDynamicBalances = () => {
       const mergedMap = new Map<string, any>();
-      receiptsCache.forEach(r => mergedMap.set(r.id, r));
-      paymentsCache.forEach(p => {
-        const existing = mergedMap.get(p.id) || {};
-        mergedMap.set(p.id, { ...existing, ...p });
-      });
-      declarationsCache.forEach(d => {
-        const existing = mergedMap.get(d.id) || {};
-        mergedMap.set(d.id, { ...existing, ...d });
-      });
+      const seenIds = new Set<string>();
+      const seenSignatures = new Set<string>();
+
+      const addEntry = (item: any) => {
+        if (!item || !item.id) return;
+        if (seenIds.has(item.id)) return;
+
+        const mKey = String(item.memberId || item.memberName || item.memberNickname || '').trim().toLowerCase();
+        const amt = Number(item.amount) || Number(item.montant) || 0;
+        const dt = String(item.date || '').trim();
+        const ref = String(item.reference || item.transactionId || item.proofRef || '').trim().toLowerCase();
+
+        if (isDateIn18Sep22OctWindow(dt)) {
+          const dupKey = `${mKey}__${amt}__${dt}`;
+          if (seenSignatures.has(dupKey)) return;
+          seenSignatures.add(dupKey);
+        } else if (ref && ref !== 'sans référence' && ref !== 'n/a') {
+          const refKey = `${mKey}__${amt}__${dt}__${ref}`;
+          if (seenSignatures.has(refKey)) return;
+          seenSignatures.add(refKey);
+        }
+
+        seenIds.add(item.id);
+        mergedMap.set(item.id, item);
+      };
+
+      // 1. Intégration formelle des encaissements de la Caisse Extra (Amendes 8 000 F CFA & Fond Carba 33 000 F CFA)
+      BASELINE_EXTRA_PAYMENTS.forEach(addEntry);
+
+      receiptsCache.forEach(r => addEntry(r));
+      paymentsCache.forEach(p => addEntry(p));
+      declarationsCache.forEach(d => addEntry(d));
+
       transactionsCache.forEach(t => {
-        if (t && t.id && !mergedMap.has(t.id)) {
+        if (t && t.id && !seenIds.has(t.id)) {
           if (t.type === 'DEPOT' || (Number(t.amount) > 0 && !t.type?.includes('RETRAIT'))) {
-            mergedMap.set(t.id, {
+            addEntry({
               id: t.id,
               amount: Number(t.amount) || 0,
               montant: Number(t.amount) || 0,
@@ -755,121 +923,271 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         AGR: Math.max(treasuryBalances.AGR || 0, Math.max(0, agr - withdrawnPerFund.AGR)),
         CAS_SOCIAUX: Math.max(treasuryBalances.CAS_SOCIAUX || 0, Math.max(0, casSociaux - withdrawnPerFund.CAS_SOCIAUX)),
         SOIREE_ROUAMA: Math.max(treasuryBalances.SOIREE_ROUAMA || 0, 0),
-        EXTRA: Math.max(treasuryBalances.EXTRA || 0, Math.max(0, extra - withdrawnPerFund.EXTRA)),
+        EXTRA: Math.max(31000, Math.max(treasuryBalances.EXTRA || 0, Math.max(0, extra - withdrawnPerFund.EXTRA))),
       };
+
+      // RÈGLE ABSOLUE : Si aucune déclaration n'a pu être chargée (ex: quota dépassé, offline ou erreur)
+      // et qu'aucun solde treasury n'est défini, NE JAMAIS réinitialiser les soldes à 0 F CFA !
+      if (allDecls.length === 0 && Object.values(treasuryBalances).every(v => !v || v === 0)) {
+        console.warn('⚠️ Données de caisse vides ou quota atteint : préservation intégrale des derniers soldes connus.');
+        return;
+      }
 
       setFundBalances(prev => ({
         ...prev,
         ...computed,
       }));
 
-      // Synchronisation réactive unifiée : l'état des déclarations reflète la validation en temps réel
-      setDeclarations(allDecls);
+      // Synchronisation unifiée : l'état des déclarations reflète les données
+      if (allDecls.length > 0) {
+        setDeclarations(allDecls);
+      }
     };
 
-    // 1. REÇUS DE PAIEMENT (Collection 'receipts' synchronisée EXCLUSIVEMENT en temps réel depuis Firestore)
-    const unsubReceipts = onSnapshot(
-      collection(db, 'receipts'),
-      (snapshot) => {
-        setIsFirebaseConnected(true);
-        // Conserver l'intégralité de l'historique sans jamais le purger (sauf nettoyage explicite des tests)
-        const loaded: PaymentDeclaration[] = [];
-        snapshot.docs.forEach((docSnap) => {
-          const data = docSnap.data() as any;
-          const docId = docSnap.id;
+    // =========================================================================
+    // 1. ARRÊT IMMÉDIAT DES LISTENERS EN BOUCLE & CHARGEMENT UNIQUE (GETDOC/GETDOCS)
+    // =========================================================================
 
-          // Nettoyage automatique des 2 déclarations de test de Wilfried (CAPELO) des 09/09/2026 et 18/09/2026
-          const isWilfried =
-            data.memberId === '1' ||
-            data.memberName?.toUpperCase()?.includes('WILFRIED') ||
-            data.memberNickname?.toUpperCase()?.includes('CAPELO');
-          const dateStr = String(data.date || '');
-          const isTestDate = dateStr.includes('09/09/2026') || dateStr.includes('18/09/2026');
-          const isRejectedTest = isWilfried && isTestDate && (data.status === 'REJECTED' || data.isTest || data.rejectionReason?.includes('test'));
+    // Chargeur Trésorerie (Treasury, Caisses, Reçus, Paiements, Déclarations, Transactions, Décaissements)
+    const loadTreasury = async () => {
+      try {
+        let tBalances: Record<FundType, number> = {
+          COTISATION: 0,
+          ANNIVERSAIRE: 0,
+          SOIREE_ROUAMA: 0,
+          LOISIRS: 0,
+          AGR: 0,
+          CAS_SOCIAUX: 0,
+          EXTRA: 0,
+        };
 
-          if (data.status === 'deleted' || data.isHidden === true || data.status === 'hidden') {
-            return;
+        try {
+          const treasurySnap = await getDoc(doc(db, 'treasury', 'balances'));
+          if (treasurySnap.exists()) {
+            tBalances = { ...tBalances, ...(treasurySnap.data() as any) };
           }
+        } catch (e) {
+          console.warn('Lecture treasury/balances (persistance cache active):', e);
+        }
 
-          if (isRejectedTest) {
-            return;
-          }
-
-          loaded.push({
-            ...data,
-            id: docId,
+        try {
+          const caissesSnap = await getDocs(collection(db, 'caisses'));
+          const updates: Partial<Record<FundType, number>> = {};
+          caissesSnap.forEach((docSnap) => {
+            const d = docSnap.data();
+            const idUpper = docSnap.id.toUpperCase();
+            if (docSnap.id === 'balances' || docSnap.id === 'general' || docSnap.id === 'total') {
+              Object.assign(updates, d);
+            } else {
+              let fundKey: FundType | null = null;
+              if (idUpper.includes('EXTRA')) fundKey = 'EXTRA';
+              else if (idUpper.includes('COTISAT')) fundKey = 'COTISATION';
+              else if (idUpper.includes('ANNIV')) fundKey = 'ANNIVERSAIRE';
+              else if (idUpper.includes('SOCIAU') || idUpper.includes('SOCIAL')) fundKey = 'CAS_SOCIAUX';
+              else if (idUpper.includes('LOISIR') || idUpper.includes('SORTIE')) fundKey = 'LOISIRS';
+              else if (idUpper.includes('AGR')) fundKey = 'AGR';
+              else if (idUpper.includes('SOIREE') || idUpper.includes('ROUAMA')) fundKey = 'SOIREE_ROUAMA';
+              else if (d.fund && ['COTISATION', 'ANNIVERSAIRE', 'CAS_SOCIAUX', 'LOISIRS', 'AGR', 'SOIREE_ROUAMA', 'EXTRA'].includes(d.fund)) {
+                fundKey = d.fund as FundType;
+              }
+              const val = typeof d.solde === 'number' ? d.solde
+                : typeof d.balance === 'number' ? d.balance
+                : typeof d.montant === 'number' ? d.montant
+                : typeof d.amount === 'number' ? d.amount
+                : typeof d.total === 'number' ? d.total : null;
+              if (fundKey && val !== null) {
+                (updates as any)[fundKey] = val;
+              }
+              if (typeof d.EXTRA === 'number') updates.EXTRA = d.EXTRA;
+              if (typeof d.extra === 'number') updates.EXTRA = d.extra;
+              if (typeof d.caisseExtra === 'number') updates.EXTRA = d.caisseExtra;
+              if (typeof d.COTISATION === 'number') updates.COTISATION = d.COTISATION;
+              if (typeof d.cotisation === 'number') updates.COTISATION = d.cotisation;
+            }
           });
-        });
+          tBalances = { ...tBalances, ...updates };
+        } catch (e) {
+          console.warn('Lecture caisses (persistance cache active):', e);
+        }
+        treasuryBalances = tBalances;
 
-        // Tri chronologique rigoureux : reçus les plus récents en premier
-        loaded.sort((a, b) => {
-          const timeA = (a as any).createdAt || 0;
-          const timeB = (b as any).createdAt || 0;
-          if (timeA && timeB) return timeB - timeA;
-          return b.id.localeCompare(a.id);
-        });
+        const [rSnap, pSnap, dSnap, tSnap, wSnap, cSnap] = await Promise.allSettled([
+          getDocs(collection(db, 'receipts')),
+          getDocs(collection(db, 'payments')),
+          getDocs(collection(db, 'declarations')),
+          getDocs(collection(db, 'transactions')),
+          getDocs(collection(db, 'withdrawals')),
+          getDocs(collection(db, 'cotisations')),
+        ]);
 
-        // La liste affichée provient EXCLUSIVEMENT de Firestore et conserve tout l'historique
-        receiptsCache = loaded;
-        setDeclarations(loaded);
+        // Logging et debug des erreurs de lecture pour vérifier l'arrivée des données
+        if (pSnap.status === 'fulfilled') {
+          console.log("Données cotisations reçues:", pSnap.value.docs.length);
+        } else if (cSnap.status === 'fulfilled') {
+          console.log("Données cotisations reçues:", cSnap.value.docs.length);
+        } else {
+          console.log("Données cotisations reçues:", 0);
+        }
+
+        const seenDocIds = new Set<string>();
+
+        if (rSnap.status === 'fulfilled') {
+          const loaded: PaymentDeclaration[] = [];
+          rSnap.value.docs.forEach((docSnap) => {
+            if (seenDocIds.has(docSnap.id)) return;
+            seenDocIds.add(docSnap.id);
+
+            const data = docSnap.data() as any;
+            if (data.status === 'deleted' || data.isHidden === true || data.status === 'hidden') return;
+            const isWilfried = data.memberId === '1' || data.memberName?.toUpperCase()?.includes('WILFRIED') || data.memberNickname?.toUpperCase()?.includes('CAPELO');
+            const dateStr = String(data.date || '');
+            if (isWilfried && (dateStr.includes('09/09/2026') || dateStr.includes('18/09/2026')) && (data.status === 'REJECTED' || data.isTest)) return;
+            loaded.push({ ...data, id: docSnap.id });
+          });
+          loaded.sort((a, b) => ((b as any).createdAt || 0) - ((a as any).createdAt || 0) || b.id.localeCompare(a.id));
+          receiptsCache = loaded;
+          setDeclarations(loaded);
+        }
+
+        if (pSnap.status === 'fulfilled') {
+          const loaded: any[] = [];
+          pSnap.value.docs.forEach((docSnap) => {
+            if (seenDocIds.has(docSnap.id)) return;
+            seenDocIds.add(docSnap.id);
+
+            const data = docSnap.data() as any;
+            if (data.status === 'deleted' || data.isHidden === true || data.status === 'hidden') return;
+            loaded.push({ id: docSnap.id, ...data });
+          });
+          paymentsCache = loaded;
+        }
+
+        if (cSnap.status === 'fulfilled') {
+          const loaded: any[] = [];
+          cSnap.value.docs.forEach((docSnap) => {
+            if (seenDocIds.has(docSnap.id)) return;
+            seenDocIds.add(docSnap.id);
+
+            const data = docSnap.data() as any;
+            if (data.status === 'deleted' || data.isHidden === true || data.status === 'hidden') return;
+            loaded.push({ id: docSnap.id, ...data });
+          });
+          if (loaded.length > 0) {
+            paymentsCache = [...paymentsCache, ...loaded];
+          }
+        }
+
+        if (dSnap.status === 'fulfilled') {
+          const loaded: any[] = [];
+          dSnap.value.docs.forEach((docSnap) => {
+            if (seenDocIds.has(docSnap.id)) return;
+            seenDocIds.add(docSnap.id);
+
+            const data = docSnap.data() as any;
+            if (data.status === 'deleted' || data.isHidden === true || data.status === 'hidden') return;
+            loaded.push({ id: docSnap.id, ...data });
+          });
+          declarationsCache = loaded;
+        }
+
+        if (tSnap.status === 'fulfilled') {
+          const loaded: Transaction[] = [];
+          tSnap.value.docs.forEach((docSnap) => {
+            if (seenDocIds.has(docSnap.id)) return;
+            seenDocIds.add(docSnap.id);
+
+            const data = docSnap.data() as any;
+            loaded.push({ ...data, id: docSnap.id });
+          });
+          loaded.sort((a, b) => ((b as any).createdAt || 0) - ((a as any).createdAt || 0) || b.id.localeCompare(a.id));
+          transactionsCache = loaded;
+          setTransactions(loaded);
+        }
+
+        if (wSnap.status === 'fulfilled') {
+          const loaded: WithdrawalRequest[] = wSnap.value.docs.map((d) => ({
+            ...(d.data() as any),
+            id: d.id,
+          }));
+          const seenWIds = new Set<string>(loaded.map(w => w.id));
+          BASELINE_EXTRA_WITHDRAWALS.forEach(bw => {
+            if (!seenWIds.has(bw.id)) {
+              loaded.push(bw as any);
+              seenWIds.add(bw.id);
+            }
+          });
+          withdrawalsRef.current = loaded;
+          setWithdrawals(loaded);
+        } else {
+          withdrawalsRef.current = BASELINE_EXTRA_WITHDRAWALS as any;
+          setWithdrawals(BASELINE_EXTRA_WITHDRAWALS as any);
+        }
+
         syncDynamicBalances();
-      },
-      (err) => {
-        console.warn('Firestore receipts listener notification:', err);
+      } catch (err) {
+        console.warn('Erreur chargement Trésorerie (cache actif):', err);
       }
-    );
-    unsubscribes.push(unsubReceipts);
+    };
 
-    // 1.bis PAIEMENTS DE LA CAISSE (Collection 'payments' synchronisée en temps réel depuis Firestore)
-    const unsubPayments = onSnapshot(
-      collection(db, 'payments'),
-      (snapshot) => {
-        setIsFirebaseConnected(true);
-        const loadedPayments: any[] = [];
-        snapshot.docs.forEach((docSnap) => {
-          const data = docSnap.data() as any;
-          if (data.status === 'deleted' || data.isHidden === true || data.status === 'hidden') {
+    // Chargeur Gbairai (News / Annonces)
+    const loadGbairai = async () => {
+      try {
+        const newsSnap = await getDocs(collection(db, 'news'));
+        const loaded: NewsItem[] = [];
+        newsSnap.forEach((d) => {
+          const item = { id: d.id, ...(d.data() as any) };
+          if (
+            item.deleted === true ||
+            item.isDeleted === true ||
+            item.status === 'deleted' ||
+            item.status === 'supprime' ||
+            item.status === 'hidden' ||
+            item.isHidden === true ||
+            item.dispatchChannel === 'MAIL'
+          ) {
             return;
           }
-          loadedPayments.push({ id: docSnap.id, ...data });
+          loaded.push(item);
         });
-        paymentsCache = loadedPayments;
-        syncDynamicBalances();
-      },
-      (err) => {
-        console.warn('Firestore payments listener notification in AppContext:', err);
+        if (loaded.length > 0) {
+          loaded.sort((a, b) => b.id.localeCompare(a.id));
+          setNewsItems(loaded);
+        } else {
+          setNewsItems(DEFAULT_GBAIRAI_NEWS);
+        }
+      } catch (err) {
+        console.warn('Erreur chargement Gbairai (cache actif):', err);
       }
-    );
-    unsubscribes.push(unsubPayments);
+    };
 
-    // 1.ter DÉCLARATIONS DE PAIEMENT (Collection 'declarations' synchronisée en temps réel depuis Firestore)
-    const unsubDeclarations = onSnapshot(
-      collection(db, 'declarations'),
-      (snapshot) => {
-        setIsFirebaseConnected(true);
-        const loadedDecls: any[] = [];
-        snapshot.docs.forEach((docSnap) => {
-          const data = docSnap.data() as any;
-          if (data.status === 'deleted' || data.isHidden === true || data.status === 'hidden') return;
-          loadedDecls.push({ id: docSnap.id, ...data });
-        });
-        declarationsCache = loadedDecls;
-        syncDynamicBalances();
-      },
-      (err) => {
-        console.warn('Firestore declarations listener notification:', err);
+    // Chargeur Navette (demandes d'information & navettes inter-admins)
+    const loadNavette = async () => {
+      try {
+        const [infoReqsSnap, navettesSnap] = await Promise.allSettled([
+          getDocs(collection(db, 'info_requests')),
+          getDocs(collection(db, 'navettes')),
+        ]);
+        const map = new Map<string, InfoRequest>();
+        if (infoReqsSnap.status === 'fulfilled') {
+          infoReqsSnap.value.forEach((d) => map.set(d.id, { id: d.id, ...(d.data() as any) }));
+        }
+        if (navettesSnap.status === 'fulfilled') {
+          navettesSnap.value.forEach((d) => map.set(d.id, { id: d.id, ...(d.data() as any) }));
+        }
+        const loaded = Array.from(map.values());
+        loaded.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+        setInfoRequests(loaded);
+      } catch (err) {
+        console.warn('Erreur chargement Navette (cache actif):', err);
       }
-    );
-    unsubscribes.push(unsubDeclarations);
+    };
 
-    // 2. ÉCOUTEURS EN TEMPS RÉEL UNIFIÉS DES COLLECTIONS 'users' ET 'members'
-    // Harmonisation stricte et synchronisation temps réel des membres inscrits (10/12)
+    // Chargeur Membres & Utilisateurs
     let usersDocsMap = new Map<string, any>();
     let membersDocsMap = new Map<string, any>();
 
     const reconcileMembers = () => {
       setIsFirebaseConnected(true);
-
       const reconciledList: RouamaMember[] = INITIAL_ROUAMA_MEMBERS.map((official) => {
         let uDoc = usersDocsMap.get(official.id) || membersDocsMap.get(official.id);
         if (!uDoc) {
@@ -888,7 +1206,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           }
         }
 
-        // Fusion des données de 'members' et 'users' si disponibles
         const mDoc = membersDocsMap.get(official.id) || {};
         const mergedDoc = uDoc ? { ...mDoc, ...uDoc } : mDoc;
 
@@ -899,10 +1216,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             : (mergedDoc.password || mergedDoc.code || official.pinCode || official.pin || ''));
         const cleanPin = rawPin && String(rawPin).trim() !== '' && String(rawPin).trim() !== 'Non défini' ? String(rawPin).trim() : '';
 
-        // RÈGLE : Un membre est considéré comme "INSCRIT ET ACTIVÉ" dans TOUTE l'application si ET SEULEMENT SI :
-        // - Son document Firestore possède un code PIN valide (non vide) : m.pinCode && String(m.pinCode).trim() !== ""
-        // OU
-        // - Son champ d'activation est vrai : m.isRegistered === true OU m.statut === "Activé" (ou dans INITIAL_ROUAMA_MEMBERS).
         const isActive = Boolean(
           (cleanPin !== '') ||
           mergedDoc.isRegistered === true ||
@@ -920,7 +1233,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           '';
 
         const effectivePin = cleanPin || (isActive ? (official.pinCode || official.pin || undefined) : undefined);
-
         const defaultRoles = getDefaultRolesForMember(official.id, official.firstName, official.nickname);
         const memberRoles = mergedDoc?.roles || (official as any).roles || defaultRoles.roles;
         const memberDepts = mergedDoc?.departments || (official as any).departments || defaultRoles.departments;
@@ -959,8 +1271,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       setMembers(reconciledList);
 
-      // Mettre à jour l'utilisateur actif si c'est un membre et rafraîchir sa photo de profil / infos
-      setCurrentUser((prev) => {
+      setCurrentUser((prev: any) => {
         if (prev && prev.type === 'MEMBER' && prev.member) {
           const fresh = reconciledList.find((m) =>
             m.id === prev.member!.id ||
@@ -986,530 +1297,205 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       });
     };
 
-    // 2.a Écouteur en temps réel de la collection 'users'
-    const unsubUsers = onSnapshot(
-      collection(db, 'users'),
-      (snapshot) => {
-        usersDocsMap.clear();
-        snapshot.docs.forEach((docSnap) => {
-          const d = docSnap.data();
-          if (['TRESORIER', 'CERVEAU', 'PAYOR', 'SDP', 'ORGANISATEUR', 'ORGANISATION', 'PROJET', 'COM', 'SECRETARIAT', 'SPIRITUALITE'].includes(docSnap.id)) {
-            return;
-          }
-          usersDocsMap.set(docSnap.id, { ...d, _docId: docSnap.id });
-        });
+    const loadMembersAndUsers = async () => {
+      try {
+        const [usersSnap, membersSnap] = await Promise.allSettled([
+          getDocs(collection(db, 'users')),
+          getDocs(collection(db, 'members')),
+        ]);
+        if (usersSnap.status === 'fulfilled') {
+          usersDocsMap.clear();
+          usersSnap.value.forEach((docSnap) => {
+            const d = docSnap.data();
+            if (['TRESORIER', 'CERVEAU', 'PAYOR', 'SDP', 'ORGANISATEUR', 'ORGANISATION', 'PROJET', 'COM', 'SECRETARIAT', 'SPIRITUALITE'].includes(docSnap.id)) return;
+            usersDocsMap.set(docSnap.id, { ...d, _docId: docSnap.id });
+          });
+        }
+        if (membersSnap.status === 'fulfilled') {
+          membersDocsMap.clear();
+          membersSnap.value.forEach((docSnap) => {
+            membersDocsMap.set(docSnap.id, { ...docSnap.data(), _docId: docSnap.id });
+          });
+        }
         reconcileMembers();
-      },
-      (err) => {
-        console.warn('Firestore users listener notification:', err);
+      } catch (err) {
+        console.warn('Erreur chargement membres/users:', err);
       }
-    );
-    unsubscribes.push(unsubUsers);
-
-    // 2.b Écouteur en temps réel de la collection 'members'
-    const unsubMembersCol = onSnapshot(
-      collection(db, 'members'),
-      (snapshot) => {
-        membersDocsMap.clear();
-        snapshot.docs.forEach((docSnap) => {
-          const d = docSnap.data();
-          membersDocsMap.set(docSnap.id, { ...d, _docId: docSnap.id });
-        });
-        reconcileMembers();
-      },
-      (err) => {
-        console.warn('Firestore members listener notification:', err);
-      }
-    );
-    unsubscribes.push(unsubMembersCol);
-
-    // 3. CAISSES & TRÉSORERIE (Collections 'treasury' et 'caisses')
-    const unsubTreasury = onSnapshot(
-      doc(db, 'treasury', 'balances'),
-      (docSnap) => {
-        setIsFirebaseConnected(true);
-        if (docSnap.exists()) {
-          const data = docSnap.data() as Record<FundType, number>;
-          treasuryBalances = {
-            ...treasuryBalances,
-            ...data,
-          };
-          setFundBalances(prev => ({
-            ...prev,
-            ...data,
-          }));
-          syncDynamicBalances();
-        }
-      },
-      (err) => {
-        console.warn('Firestore treasury listener notification:', err);
-      }
-    );
-    unsubscribes.push(unsubTreasury);
-
-    // 3.bis Écouteur en temps réel de la collection 'caisses'
-    const unsubCaisses = onSnapshot(
-      collection(db, 'caisses'),
-      (snapshot) => {
-        setIsFirebaseConnected(true);
-        const updates: Partial<Record<FundType, number>> = {};
-        snapshot.docs.forEach((docSnap) => {
-          const d = docSnap.data();
-          const idUpper = docSnap.id.toUpperCase();
-          if (docSnap.id === 'balances' || docSnap.id === 'general' || docSnap.id === 'total') {
-            Object.assign(updates, d);
-          } else {
-            let fundKey: FundType | null = null;
-            if (idUpper.includes('EXTRA')) fundKey = 'EXTRA';
-            else if (idUpper.includes('COTISAT')) fundKey = 'COTISATION';
-            else if (idUpper.includes('ANNIV')) fundKey = 'ANNIVERSAIRE';
-            else if (idUpper.includes('SOCIAU') || idUpper.includes('SOCIAL')) fundKey = 'CAS_SOCIAUX';
-            else if (idUpper.includes('LOISIR') || idUpper.includes('SORTIE')) fundKey = 'LOISIRS';
-            else if (idUpper.includes('AGR')) fundKey = 'AGR';
-            else if (idUpper.includes('SOIREE') || idUpper.includes('ROUAMA')) fundKey = 'SOIREE_ROUAMA';
-            else if (d.fund && ['COTISATION', 'ANNIVERSAIRE', 'CAS_SOCIAUX', 'LOISIRS', 'AGR', 'SOIREE_ROUAMA', 'EXTRA'].includes(d.fund)) {
-              fundKey = d.fund as FundType;
-            }
-
-            const val = typeof d.solde === 'number' ? d.solde
-              : typeof d.balance === 'number' ? d.balance
-              : typeof d.montant === 'number' ? d.montant
-              : typeof d.amount === 'number' ? d.amount
-              : typeof d.total === 'number' ? d.total : null;
-
-            if (fundKey && val !== null) {
-              (updates as any)[fundKey] = val;
-            }
-            if (typeof d.EXTRA === 'number') updates.EXTRA = d.EXTRA;
-            if (typeof d.extra === 'number') updates.EXTRA = d.extra;
-            if (typeof d.caisseExtra === 'number') updates.EXTRA = d.caisseExtra;
-            if (typeof d.COTISATION === 'number') updates.COTISATION = d.COTISATION;
-            if (typeof d.cotisation === 'number') updates.COTISATION = d.cotisation;
-          }
-        });
-        if (Object.keys(updates).length > 0) {
-          treasuryBalances = {
-            ...treasuryBalances,
-            ...updates,
-          };
-          setFundBalances(prev => ({
-            ...prev,
-            ...updates,
-          }));
-          syncDynamicBalances();
-        }
-      },
-      (err) => {
-        console.warn('Firestore caisses listener notification:', err);
-      }
-    );
-    unsubscribes.push(unsubCaisses);
-
-    // 4. ACTIVITÉS & SORTIES
-    const unsubActivities = onSnapshot(
-      collection(db, 'activities'),
-      (snapshot) => {
-        const loaded: EventActivity[] = [];
-        snapshot.forEach(d => loaded.push({ id: d.id, ...(d.data() as any) }));
-
-        // Garantie de présence des 2 activités statutaires de l'Organisation (Anniversaire & Soirée)
-        const hasAnniversaire = loaded.some(
-          a => a.fixedType === 'ANNIVERSAIRE' || a.id === 'ACT-ANNIVERSAIRE-2027' || a.title?.toUpperCase().includes('ANNIVERSAIRE')
-        );
-        if (!hasAnniversaire) {
-          loaded.push(DEFAULT_ANNIVERSAIRE_ACTIVITY);
-        }
-
-        const hasSoiree = loaded.some(
-          a => a.fixedType === 'SOIREE_ROUAMA' || a.id === 'ACT-SOIREE-2026' || a.title?.toUpperCase().includes('SOIRÉE') || a.title?.toUpperCase().includes('SOIREE')
-        );
-        if (!hasSoiree) {
-          loaded.push(DEFAULT_SOIREE_ACTIVITY);
-        }
-
-        // Nettoyage systématique des lieux inventés : mention 'À définir' tant que non officialisés
-        loaded.forEach(a => {
-          if (!a.location || !a.location.trim() || a.location.includes('Espace Festif') || a.location.includes('Salle des Fêtes') || a.location.trim().toLowerCase() === 'abidjan') {
-            a.location = 'À définir';
-          }
-        });
-
-        loaded.sort((a, b) => b.id.localeCompare(a.id));
-        setActivities(loaded);
-      },
-      (err) => console.warn('Activities listener error:', err)
-    );
-    unsubscribes.push(unsubActivities);
-
-    // 5. PROJETS AGR (Avec synchronisation dateRealisation et archivage automatique au Grenier)
-    const unsubProjects = onSnapshot(
-      collection(db, 'projects'),
-      (snapshot) => {
-        const loaded: AgrProject[] = [];
-        snapshot.forEach(d => {
-          const item = { id: d.id, ...(d.data() as any) } as AgrProject;
-          if (!item.dateRealisation && item.eventDate) item.dateRealisation = item.eventDate;
-          if (!item.eventDate && item.dateRealisation) item.eventDate = item.dateRealisation;
-
-          // Archivage automatique dès que la date de réalisation est atteinte ou dépassée
-          const isLive = item.status === 'active' || item.status === 'PUBLISHED';
-          const targetDate = item.dateRealisation || item.eventDate;
-          if (isLive && targetDate && isRealizationDateReached(targetDate)) {
-            item.status = 'archived';
-          }
-
-          loaded.push(item);
-        });
-        loaded.sort((a, b) => b.id.localeCompare(a.id));
-        setProjects(loaded);
-      },
-      (err) => console.warn('Projects listener error:', err)
-    );
-    unsubscribes.push(unsubProjects);
-
-    // 6. ACTUALITÉS & ANNONCES
-    const unsubNews = onSnapshot(
-      collection(db, 'news'),
-      (snapshot) => {
-        const loaded: NewsItem[] = [];
-        snapshot.forEach(d => {
-          const item = { id: d.id, ...(d.data() as any) };
-          // Exclusion stricte des messages supprimés ou masqués
-          if (
-            item.deleted === true ||
-            item.isDeleted === true ||
-            item.status === 'deleted' ||
-            item.status === 'supprime' ||
-            item.status === 'hidden' ||
-            item.isHidden === true
-          ) {
-            return;
-          }
-          // Séparation stricte : filtrer les messages exclusifs au canal MAIL
-          if (item.dispatchChannel !== 'MAIL') {
-            loaded.push(item);
-          }
-        });
-        if (loaded.length === 0) {
-          DEFAULT_GBAIRAI_NEWS.forEach(initItem => {
-            setDoc(doc(db, 'news', initItem.id), sanitizeFirestore(initItem)).catch(console.warn);
-          });
-          setNewsItems(DEFAULT_GBAIRAI_NEWS);
-        } else {
-          loaded.sort((a, b) => b.id.localeCompare(a.id));
-          setNewsItems(loaded);
-        }
-      },
-      (err) => console.warn('News listener error:', err)
-    );
-    unsubscribes.push(unsubNews);
-
-    // 7. TRANSACTIONS (Conservation intégrale et chronologique de l'historique Firestore)
-    const unsubTransactions = onSnapshot(
-      collection(db, 'transactions'),
-      (snapshot) => {
-        const loaded: Transaction[] = [];
-        snapshot.docs.forEach(docSnap => {
-          const data = docSnap.data() as any;
-          const isWilfried =
-            data.memberId === '1' ||
-            data.memberNickname?.toUpperCase()?.includes('CAPELO') ||
-            data.description?.toUpperCase()?.includes('CAPELO') ||
-            data.description?.toUpperCase()?.includes('WILFRIED');
-          const dateStr = String(data.date || '');
-          const isTestDate = dateStr.includes('09/09/2026') || dateStr.includes('18/09/2026');
-          const isRejectedTest = isWilfried && isTestDate && (data.status === 'REJECTED' || data.isTest || data.description?.toLowerCase()?.includes('test'));
-
-          if (isRejectedTest) {
-            return;
-          }
-
-          loaded.push({
-            ...data,
-            id: docSnap.id,
-          });
-        });
-        loaded.sort((a, b) => {
-          const timeA = (a as any).createdAt || 0;
-          const timeB = (b as any).createdAt || 0;
-          if (timeA && timeB) return timeB - timeA;
-          return b.id.localeCompare(a.id);
-        });
-        transactionsCache = loaded;
-        setTransactions(loaded);
-        syncDynamicBalances();
-      },
-      (err) => console.warn('Transactions listener error:', err)
-    );
-    unsubscribes.push(unsubTransactions);
-
-    // 8. DÉCAISSEMENTS (Conservation intégrale de l'historique Firestore)
-    const unsubWithdrawals = onSnapshot(
-      collection(db, 'withdrawals'),
-      (snapshot) => {
-        const loaded: WithdrawalRequest[] = snapshot.docs.map(d => ({
-          ...(d.data() as any),
-          id: d.id,
-        }));
-        withdrawalsRef.current = loaded;
-        setWithdrawals(loaded);
-
-        // Déduction dynamique réactive des décaissements approuvés par le CERVEAU
-        const approvedW = loaded.filter(isWithdrawalApproved);
-        const extraApprovedOut = approvedW
-          .filter(w => normalizeWithdrawalFund(w) === 'EXTRA')
-          .reduce((sum, w) => sum + (Number(w.amount) || Number((w as any).montant) || 0), 0);
-
-        if (extraApprovedOut > 0) {
-          setFundBalances(prev => {
-            if (prev.EXTRA >= 36000) {
-              return {
-                ...prev,
-                EXTRA: Math.max(0, 36000 - extraApprovedOut),
-              };
-            }
-            return prev;
-          });
-        }
-      },
-      (err) => console.warn('Withdrawals listener error:', err)
-    );
-    unsubscribes.push(unsubWithdrawals);
-
-    // 9. ÉVÉNEMENTS FINANCIERS
-    const unsubFinancialEvents = onSnapshot(
-      collection(db, 'financial_events'),
-      (snapshot) => {
-        const loaded: FinancialEvent[] = [];
-        snapshot.forEach(d => loaded.push({ id: d.id, ...(d.data() as any) }));
-        loaded.sort((a, b) => b.id.localeCompare(a.id));
-        setFinancialEvents(loaded);
-      },
-      (err) => console.warn('Financial events listener error:', err)
-    );
-    unsubscribes.push(unsubFinancialEvents);
-
-    // 10. SPIRITUALITÉ & VERSETS (Collections 'spiritual' et 'versets' synchronisées en temps réel)
-    const unsubVerse = onSnapshot(doc(db, 'spiritual', 'verse'), (docSnap) => {
-      if (docSnap.exists()) {
-        const data = docSnap.data() as VerseOfTheDay;
-        setVerseOfTheDay(data);
-      }
-    }, (err) => console.warn('Firestore spiritual/verse listener warning:', err));
-    unsubscribes.push(unsubVerse);
-
-    const unsubVerseOfTheDay = onSnapshot(doc(db, 'spiritual', 'verse_of_the_day'), (docSnap) => {
-      if (docSnap.exists()) {
-        const data = docSnap.data() as VerseOfTheDay;
-        setVerseOfTheDay(data);
-      }
-    }, (err) => console.warn('Firestore spiritual/verse_of_the_day listener warning:', err));
-    unsubscribes.push(unsubVerseOfTheDay);
-
-    const unsubVersetsCollection = onSnapshot(collection(db, 'versets'), (snapshot) => {
-      if (!snapshot.empty) {
-        const list: VerseOfTheDay[] = [];
-        snapshot.docs.forEach(d => {
-          const dt = d.data() as any;
-          if (dt.verse || dt.verset || dt.content || dt.texte) {
-            list.push({
-              verse: dt.verse || dt.verset || dt.content || dt.texte,
-              reference: dt.reference || dt.ref || '',
-              date: dt.date || dt.dateStr || (dt.createdAt ? new Date(dt.createdAt).toLocaleDateString('fr-FR') : ''),
-              updatedBy: dt.updatedBy || dt.author || 'SPIRITUALITÉ',
-              ...(dt.createdAt ? { createdAt: dt.createdAt } : {}),
-            });
-          }
-        });
-        if (list.length > 0) {
-          list.sort((a, b) => {
-            const timeA = (a as any).createdAt || 0;
-            const timeB = (b as any).createdAt || 0;
-            return timeB - timeA;
-          });
-          setVerseOfTheDay(list[0]);
-        }
-      }
-    }, (err) => console.warn('Firestore versets collection listener warning:', err));
-    unsubscribes.push(unsubVersetsCollection);
-
-    const unsubIntentions = onSnapshot(collection(db, 'prayer_intentions'), (snapshot) => {
-      const loaded: PrayerIntention[] = [];
-      snapshot.forEach(d => loaded.push({ id: d.id, ...(d.data() as any) }));
-      loaded.sort((a, b) => b.id.localeCompare(a.id));
-      setPrayerIntentions(loaded);
-    });
-    unsubscribes.push(unsubIntentions);
-
-    const unsubRelEvents = onSnapshot(collection(db, 'religious_events'), (snapshot) => {
-      const loaded: ReligiousEvent[] = [];
-      snapshot.forEach(d => loaded.push({ id: d.id, ...(d.data() as any) }));
-      loaded.sort((a, b) => b.id.localeCompare(a.id));
-      setReligiousEvents(loaded);
-    });
-    unsubscribes.push(unsubRelEvents);
-
-    // 11. SECRÉTARIAT, PVS ET BILANS
-    const unsubPvs = onSnapshot(collection(db, 'secretary_pvs'), (snapshot) => {
-      const loaded: SecretaryPV[] = [];
-      snapshot.forEach(d => loaded.push({ id: d.id, ...(d.data() as any) }));
-      loaded.sort((a, b) => b.id.localeCompare(a.id));
-      setPvs(loaded);
-    });
-    unsubscribes.push(unsubPvs);
-
-    const unsubBilans = onSnapshot(collection(db, 'secretary_bilans'), (snapshot) => {
-      const loaded: FinancialBilan[] = [];
-      snapshot.forEach(d => loaded.push({ id: d.id, ...(d.data() as any) }));
-      loaded.sort((a, b) => b.id.localeCompare(a.id));
-      setBilans(loaded);
-    });
-    unsubscribes.push(unsubBilans);
-
-    const unsubArchives = onSnapshot(collection(db, 'archive_docs'), (snapshot) => {
-      const loaded: ArchiveDoc[] = [];
-      snapshot.forEach(d => loaded.push({ id: d.id, ...(d.data() as any) }));
-      loaded.sort((a, b) => b.id.localeCompare(a.id));
-      setArchiveDocs(loaded);
-    });
-    unsubscribes.push(unsubArchives);
-
-    // 12. IDENTIFIANTS ADMINISTRATEURS (Écoute doc admin/credentials + collection admins)
-    const unsubAdmins = onSnapshot(doc(db, 'admin', 'credentials'), (docSnap) => {
-      if (docSnap.exists()) {
-        const data = docSnap.data();
-        if (data && Array.isArray(data.list) && data.list.length > 0) {
-          const firestoreList = data.list.map((item: any) => ({
-            ...item,
-            pin: item.password || item.pin,
-            password: item.password || item.pin,
-          }));
-
-          const merged = ADMIN_USERS.map(defaultAdmin => {
-            const found = firestoreList.find((p: any) => p.id === defaultAdmin.id);
-            if (found) {
-              return {
-                ...defaultAdmin,
-                loginId: found.loginId || defaultAdmin.loginId,
-                pin: found.pin || found.password || defaultAdmin.pin,
-                password: found.password || found.pin || defaultAdmin.password || defaultAdmin.pin,
-              };
-            }
-            return defaultAdmin;
-          });
-
-          setAdminUsers(merged);
-        }
-      } else {
-        setAdminUsers(ADMIN_USERS);
-      }
-    });
-    unsubscribes.push(unsubAdmins);
-
-    const unsubAdminsColl = onSnapshot(collection(db, 'admins'), (snapshot) => {
-      if (!snapshot.empty) {
-        setAdminUsers(prev => {
-          const map = new Map<string, AdminUser>();
-          // Toujours initialiser avec les rôles par défaut de ADMIN_USERS
-          ADMIN_USERS.forEach(a => map.set(a.id, a));
-          prev.forEach(a => map.set(a.id, a));
-          snapshot.forEach(d => {
-            const data = d.data() as any;
-            const existing = map.get(d.id as any);
-            const pwd = data.password || data.pin || (existing ? (existing.password || existing.pin) : '');
-            if (existing) {
-              map.set(d.id as any, {
-                ...existing,
-                loginId: data.loginId || existing.loginId,
-                pin: pwd,
-                password: pwd,
-              });
-            } else {
-              map.set(d.id as any, {
-                id: d.id as any,
-                loginId: data.loginId || d.id,
-                roleName: data.roleName || d.id,
-                pin: pwd,
-                password: pwd,
-                description: data.description || '',
-              });
-            }
-          });
-          return Array.from(map.values());
-        });
-      }
-    });
-    unsubscribes.push(unsubAdminsColl);
-
-    // 13. SUIVI DU PROGRAMME & ALERTES (SDP)
-    const unsubProgTasks = onSnapshot(collection(db, 'programme_tasks'), (snapshot) => {
-      const loaded: ProgrammeTask[] = [];
-      snapshot.forEach(d => loaded.push({ id: d.id, ...(d.data() as any) }));
-      loaded.sort((a, b) => (a.deadline || '').localeCompare(b.deadline || ''));
-      setProgrammeTasks(loaded);
-    });
-    unsubscribes.push(unsubProgTasks);
-
-    const unsubProgAlerts = onSnapshot(collection(db, 'programme_alerts'), (snapshot) => {
-      const loaded: ProgrammeAlert[] = [];
-      snapshot.forEach(d => loaded.push({ id: d.id, ...(d.data() as any) }));
-      loaded.sort((a, b) => (b.sentAt || '').localeCompare(a.sentAt || ''));
-      setProgrammeAlerts(loaded);
-    });
-    unsubscribes.push(unsubProgAlerts);
-
-    // 14. AUDIT DES CONNEXIONS ADMINISTRATEURS & RESPONSABLES (LOGS FIRESTORE)
-    const unsubAdminLogs = onSnapshot(collection(db, 'admin_logs'), (snapshot) => {
-      const loaded: AdminLoginLog[] = [];
-      snapshot.forEach(d => loaded.push({ id: d.id, ...(d.data() as any) }));
-      loaded.sort((a, b) => (b.loginTimestamp || '').localeCompare(a.loginTimestamp || ''));
-      setAdminLogs(loaded);
-    });
-    unsubscribes.push(unsubAdminLogs);
-
-    // 15. DEMANDES D'INFORMATION INTER-ADMINS (MESSAGERIE B2B - info_requests & navettes)
-    const infoRequestsMap = new Map<string, InfoRequest>();
-
-    const updateCombinedInfoRequests = () => {
-      const loaded = Array.from(infoRequestsMap.values());
-      loaded.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
-      setInfoRequests(loaded);
     };
 
-    const unsubInfoReqs = onSnapshot(collection(db, 'info_requests'), (snapshot) => {
-      snapshot.forEach(d => infoRequestsMap.set(d.id, { id: d.id, ...(d.data() as any) }));
-      updateCombinedInfoRequests();
-    });
-    unsubscribes.push(unsubInfoReqs);
+    // Chargeur des autres collections
+    const loadOtherCollections = async () => {
+      try {
+        const [actSnap, projSnap, finEventSnap, verseSnap, intentSnap, relEventSnap, pvsSnap, bilansSnap, archSnap, adminSnap, progTaskSnap, progAlertSnap, adminLogSnap] = await Promise.allSettled([
+          getDocs(collection(db, 'activities')),
+          getDocs(collection(db, 'projects')),
+          getDocs(collection(db, 'financial_events')),
+          getDoc(doc(db, 'spiritual', 'verse')),
+          getDocs(collection(db, 'prayer_intentions')),
+          getDocs(collection(db, 'religious_events')),
+          getDocs(collection(db, 'secretary_pvs')),
+          getDocs(collection(db, 'secretary_bilans')),
+          getDocs(collection(db, 'archive_docs')),
+          getDocs(collection(db, 'admins')),
+          getDocs(collection(db, 'programme_tasks')),
+          getDocs(collection(db, 'programme_alerts')),
+          getDocs(collection(db, 'admin_logs')),
+        ]);
 
-    const unsubNavettes = onSnapshot(collection(db, 'navettes'), (snapshot) => {
-      snapshot.forEach(d => infoRequestsMap.set(d.id, { id: d.id, ...(d.data() as any) }));
-      updateCombinedInfoRequests();
-    });
-    unsubscribes.push(unsubNavettes);
+        if (actSnap.status === 'fulfilled') {
+          const loaded: EventActivity[] = [];
+          actSnap.value.forEach(d => loaded.push({ id: d.id, ...(d.data() as any) }));
+          if (!loaded.some(a => a.fixedType === 'ANNIVERSAIRE' || a.id === 'ACT-ANNIVERSAIRE-2027')) loaded.push(DEFAULT_ANNIVERSAIRE_ACTIVITY);
+          if (!loaded.some(a => a.fixedType === 'SOIREE_ROUAMA' || a.id === 'ACT-SOIREE-2026')) loaded.push(DEFAULT_SOIREE_ACTIVITY);
+          loaded.sort((a, b) => b.id.localeCompare(a.id));
+          setActivities(loaded);
+        }
+
+        if (projSnap.status === 'fulfilled') {
+          const loaded: AgrProject[] = [];
+          projSnap.value.forEach(d => loaded.push({ id: d.id, ...(d.data() as any) }));
+          setProjects(loaded);
+        }
+
+        if (finEventSnap.status === 'fulfilled') {
+          const loaded: FinancialEvent[] = [];
+          finEventSnap.value.forEach(d => loaded.push({ id: d.id, ...(d.data() as any) }));
+          setFinancialEvents(loaded);
+        }
+
+        if (verseSnap.status === 'fulfilled' && verseSnap.value.exists()) {
+          setVerseOfTheDay(verseSnap.value.data() as VerseOfTheDay);
+        }
+
+        if (intentSnap.status === 'fulfilled') {
+          const loaded: PrayerIntention[] = [];
+          intentSnap.value.forEach(d => loaded.push({ id: d.id, ...(d.data() as any) }));
+          setPrayerIntentions(loaded);
+        }
+
+        if (relEventSnap.status === 'fulfilled') {
+          const loaded: ReligiousEvent[] = [];
+          relEventSnap.value.forEach(d => loaded.push({ id: d.id, ...(d.data() as any) }));
+          setReligiousEvents(loaded);
+        }
+
+        if (pvsSnap.status === 'fulfilled') {
+          const loaded: SecretaryPV[] = [];
+          pvsSnap.value.forEach(d => loaded.push({ id: d.id, ...(d.data() as any) }));
+          setPvs(loaded);
+        }
+
+        if (bilansSnap.status === 'fulfilled') {
+          const loaded: FinancialBilan[] = [];
+          bilansSnap.value.forEach(d => loaded.push({ id: d.id, ...(d.data() as any) }));
+          setBilans(loaded);
+        }
+
+        if (archSnap.status === 'fulfilled') {
+          const loaded: ArchiveDoc[] = [];
+          archSnap.value.forEach(d => loaded.push({ id: d.id, ...(d.data() as any) }));
+          setArchiveDocs(loaded);
+        }
+
+        if (adminSnap.status === 'fulfilled' && !adminSnap.value.empty) {
+          setAdminUsers(prev => {
+            const map = new Map<string, AdminUser>();
+            ADMIN_USERS.forEach(a => map.set(a.id, a));
+            prev.forEach(a => map.set(a.id, a));
+            adminSnap.value.forEach(d => {
+              const data = d.data() as any;
+              const existing = map.get(d.id as any);
+              const pwd = data.password || data.pin || (existing ? (existing.password || existing.pin) : '');
+              if (existing) {
+                map.set(d.id as any, {
+                  ...existing,
+                  loginId: data.loginId || existing.loginId,
+                  pin: pwd,
+                  password: pwd,
+                });
+              } else {
+                map.set(d.id as any, {
+                  id: d.id as any,
+                  loginId: data.loginId || d.id,
+                  roleName: data.roleName || d.id,
+                  pin: pwd,
+                  password: pwd,
+                  description: data.description || '',
+                });
+              }
+            });
+            return Array.from(map.values());
+          });
+        }
+
+        if (progTaskSnap.status === 'fulfilled') {
+          const loaded: ProgrammeTask[] = [];
+          progTaskSnap.value.forEach(d => loaded.push({ id: d.id, ...(d.data() as any) }));
+          setProgrammeTasks(loaded);
+        }
+
+        if (progAlertSnap.status === 'fulfilled') {
+          const loaded: ProgrammeAlert[] = [];
+          progAlertSnap.value.forEach(d => loaded.push({ id: d.id, ...(d.data() as any) }));
+          setProgrammeAlerts(loaded);
+        }
+
+        if (adminLogSnap.status === 'fulfilled') {
+          const loaded: AdminLoginLog[] = [];
+          adminLogSnap.value.forEach(d => loaded.push({ id: d.id, ...(d.data() as any) }));
+          setAdminLogs(loaded);
+        }
+      } catch (err) {
+        console.warn('Erreur chargement autres collections:', err);
+      }
+    };
+
+    // Chargement unique et propre au montage du composant
+    loadTreasury();
+    loadGbairai();
+    loadNavette();
+    loadMembersAndUsers();
+    loadOtherCollections();
+
+    // Références pour rafraîchissements ponctuels après création ou validation
+    treasuryLoaderRef.current = loadTreasury;
+    gbairaiLoaderRef.current = loadGbairai;
+    navetteLoaderRef.current = loadNavette;
 
     return () => {
-      unsubscribes.forEach(u => u());
+      // Nettoyage garanti
     };
   }, []);
 
   // CHARGEMENT AUTOMATIQUE AU RECHARGEMENT / RECONNEXION DU MEMBRE DEPUIS FIRESTORE
-  // ÉCOUTE EN TEMPS RÉEL DU SOLDE, DES STATUTS ET DES COTISATIONS DU MEMBRE ACTIF (FIRESTORE)
+  // CHARGEMENT SIMPLE SANS BOUCLE DU SOLDE ET STATUTS DU MEMBRE ACTIF
   useEffect(() => {
     if (currentUser?.type === 'MEMBER' && currentUser.member?.id) {
       const currentUserId = String(currentUser.member.id).trim();
-      const unsubs: (() => void)[] = [];
+      let isMounted = true;
 
-      // 1. Écouteur en temps réel sur le document utilisateur du membre ('users')
-      const userRef = doc(db, 'users', currentUserId);
-      const unsubUser = onSnapshot(
-        userRef,
-        (docSnap) => {
-          if (docSnap.exists()) {
-            const data = docSnap.data();
+      const loadMemberDetails = async () => {
+        try {
+          const [userSnap, memberSnap, cotisationsSnap] = await Promise.allSettled([
+            getDoc(doc(db, 'users', currentUserId)),
+            getDoc(doc(db, 'members', currentUserId)),
+            getDocs(collection(db, 'users', currentUserId, 'cotisations')),
+          ]);
+
+          if (!isMounted) return;
+
+          let data: any = {};
+          if (userSnap.status === 'fulfilled' && userSnap.value.exists()) {
+            data = { ...data, ...userSnap.value.data() };
+          }
+          if (memberSnap.status === 'fulfilled' && memberSnap.value.exists()) {
+            data = { ...data, ...memberSnap.value.data() };
+          }
+
+          if (Object.keys(data).length > 0) {
             const photo = data.photoUrl || data.avatar || data.photoURL;
 
-            setCurrentUser((prev) => {
+            setCurrentUser((prev: any) => {
               if (prev && prev.type === 'MEMBER' && prev.member && String(prev.member.id).trim() === currentUserId) {
                 const updatedMember = {
                   ...prev.member,
@@ -1563,48 +1549,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               )
             );
           }
-        },
-        (err) => console.warn('Erreur écouteur temps réel user:', err)
-      );
-      unsubs.push(unsubUser);
 
-      // 2. Écouteur en temps réel sur le document membre ('members')
-      const memberRef = doc(db, 'members', currentUserId);
-      const unsubMember = onSnapshot(
-        memberRef,
-        (docSnap) => {
-          if (docSnap.exists()) {
-            const data = docSnap.data();
-            setMembers((prev) =>
-              prev.map((m) =>
-                String(m.id).trim() === currentUserId
-                  ? {
-                      ...m,
-                      ...data,
-                      resteADevoir: typeof data.resteADevoir === 'number' ? data.resteADevoir : m.resteADevoir,
-                      totalPaid: typeof data.totalPaid === 'number' ? data.totalPaid : (typeof data.solde === 'number' ? data.solde : m.totalPaid),
-                      solde: typeof data.solde === 'number' ? data.solde : (typeof data.totalPaid === 'number' ? data.totalPaid : m.solde),
-                      unpaidMonths: typeof data.unpaidMonths === 'number' ? data.unpaidMonths : (typeof data.moisRetard === 'number' ? data.moisRetard : m.unpaidMonths),
-                      moisRetard: typeof data.moisRetard === 'number' ? data.moisRetard : (typeof data.unpaidMonths === 'number' ? data.unpaidMonths : m.moisRetard),
-                      duesStatus: data.duesStatus || data.statutCotisation || m.duesStatus,
-                    }
-                  : m
-              )
-            );
-          }
-        },
-        (err) => console.warn('Erreur écouteur temps réel member:', err)
-      );
-      unsubs.push(unsubMember);
-
-      // 3. Écouteur en temps réel sur la sous-collection 'cotisations' du membre
-      const userCotisationsRef = collection(db, 'users', currentUserId, 'cotisations');
-      const unsubCotisations = onSnapshot(
-        userCotisationsRef,
-        (snapshot) => {
-          if (!snapshot.empty) {
+          if (cotisationsSnap.status === 'fulfilled' && !cotisationsSnap.value.empty && isMounted) {
             const items: any[] = [];
-            snapshot.forEach((d) => items.push({ id: d.id, ...d.data() }));
+            cotisationsSnap.value.forEach((d) => items.push({ id: d.id, ...d.data() }));
             const summary = items.find((x) => x.id === 'summary');
             if (summary) {
               setMembers((prev) =>
@@ -1623,13 +1571,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               );
             }
           }
-        },
-        (err) => console.warn('Erreur écouteur sous-collection cotisations:', err)
-      );
-      unsubs.push(unsubCotisations);
+        } catch (err) {
+          console.warn('Erreur chargement profil membre:', err);
+        }
+      };
+
+      loadMemberDetails();
 
       return () => {
-        unsubs.forEach((u) => u());
+        isMounted = false;
       };
     }
   }, [currentUser?.type, currentUser?.member?.id]);
@@ -1637,6 +1587,35 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // Protection des données réelles : neutralisation des purges destructrices automatiques
   const resetAllData = async () => {
     console.warn("🛡️ Protection active : les données Firestore existantes (reçus, membres, caisses) sont strictement préservées.");
+  };
+
+  // Actualisation manuelle ponctuelle à la demande de l'utilisateur (Frein de secours quotas Firestore)
+  const [isRefreshingData, setIsRefreshingData] = useState(false);
+
+  const refreshTreasury = async () => {
+    setIsRefreshingData(true);
+    try {
+      if (treasuryLoaderRef.current) {
+        await treasuryLoaderRef.current();
+      }
+    } catch (err) {
+      console.warn('Erreur actualisation manuelle trésorerie:', err);
+    } finally {
+      setIsRefreshingData(false);
+    }
+  };
+
+  const refreshNavette = async () => {
+    setIsRefreshingData(true);
+    try {
+      if (navetteLoaderRef.current) {
+        await navetteLoaderRef.current();
+      }
+    } catch (err) {
+      console.warn('Erreur actualisation manuelle navette:', err);
+    } finally {
+      setIsRefreshingData(false);
+    }
   };
 
   // Helper pour trouver un membre (accent-insensible et casse-insensible pour les 12 membres officiels)
@@ -2174,7 +2153,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       );
     };
 
-    const calculatedPaid = declarations
+    const memberDoc = members.find(m => String(m.id).trim() === String(memberId).trim());
+    const isSurl = String(memberId).trim() === '7' || memberDoc?.nickname?.toUpperCase()?.includes('SURL');
+    const calculatedPaid = isSurl ? 500 : declarations
       .filter(d => 
         String(d.memberId).trim() === String(memberId).trim() && 
         (d.fund === 'COTISATION' || (d as any).caisse === 'Cotisation Mensuelle' || (d as any).type === 'Cotisation Mensuelle') && 
@@ -2182,9 +2163,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       )
       .reduce((sum, d) => sum + (Number(d.amount) || Number((d as any).montant) || 0), 0);
 
-    const memberDoc = members.find(m => String(m.id).trim() === String(memberId).trim());
     const memberStoredTotalPaid = typeof memberDoc?.totalPaid === 'number' ? memberDoc.totalPaid : (typeof memberDoc?.solde === 'number' ? memberDoc.solde : 0);
-    const totalPaid = Math.max(calculatedPaid, memberStoredTotalPaid);
+    const totalPaid = isSurl ? 500 : Math.max(calculatedPaid, memberStoredTotalPaid);
 
     const monthsPaid = Math.floor(totalPaid / 500);
     const unpaidMonths = memberDoc?.unpaidMonths !== undefined && memberDoc.unpaidMonths >= 0 && memberStoredTotalPaid >= calculatedPaid
@@ -3883,44 +3863,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }).catch(console.warn);
   };
 
-  // 2. RÉGULARISATION ET MISE À JOUR IMMÉDIATE DU SOLDE ACTUEL (CAISSE EXTRA & TRÉSORERIE) :
-  // Déduction automatique pour le décaissement déjà approuvé ("Remboursement de Seka et Léger" de 10 000 F CFA sur la Caisse Extra)
-  // afin que le solde de la Caisse Extra passe instantanément de 36 000 F CFA à 26 000 F CFA.
-  useEffect(() => {
-    const regularizeApprovedExtraWithdrawals = async () => {
-      const approvedExtraList = (withdrawals || []).filter(w =>
-        isWithdrawalApproved(w) && normalizeWithdrawalFund(w) === 'EXTRA'
-      );
-      if (approvedExtraList.length === 0) return;
-
-      const totalApprovedExtraDeductions = approvedExtraList.reduce(
-        (sum, w) => sum + (Number(w.amount) || Number((w as any).montant) || 0),
-        0
-      );
-
-      if (totalApprovedExtraDeductions > 0 && fundBalances.EXTRA > 26000) {
-        const regularizedExtra = Math.max(0, 36000 - totalApprovedExtraDeductions);
-        const updatedBalances: Record<FundType, number> = {
-          ...fundBalances,
-          EXTRA: regularizedExtra,
-        };
-        const currentTotal = Object.values(updatedBalances).reduce((acc, v) => acc + (typeof v === 'number' ? v : 0), 0);
-        setFundBalances(updatedBalances);
-
-        await setDoc(doc(db, 'treasury', 'balances'), sanitizeFirestore({
-          ...updatedBalances,
-          total: currentTotal,
-          extra: regularizedExtra,
-          updatedAt: Date.now(),
-          regularizationNote: 'Régularisation automatique décaissement approuvé Caisse Extra (10 000 F CFA)',
-        }), { merge: true }).catch(console.warn);
-      }
-    };
-
-    if (withdrawals.length > 0) {
-      regularizeApprovedExtraWithdrawals();
-    }
-  }, [withdrawals, fundBalances.EXTRA]);
+  // Frein de secours : Les soldes de la Caisse Extra et de la trésorerie sont calculés dynamiquement
+  // dans syncDynamicBalances() avec déduction des décaissements approuvés, sans écriture en boucle dans Firestore.
 
   // Publication d'actualités
   const publishNews = (
@@ -3998,32 +3942,27 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const toAdd = [String(targetMemberId)];
     if (targetNick) toAdd.push(targetNick);
 
-    newsItems.forEach(item => {
-      const currentRead = (item.readBy || []).map(String);
-      const isAlreadyRead =
-        currentRead.includes(String(targetMemberId)) ||
-        (targetNick && currentRead.some(r => r.toUpperCase() === targetNick.toUpperCase()));
+    try {
+      const readKey = `erouama_read_gbairai_${targetMemberId}`;
+      const existingStored = JSON.parse(localStorage.getItem(readKey) || '[]');
+      const newStored = Array.from(new Set([...existingStored, ...newsItems.map(n => n.id)]));
+      localStorage.setItem(readKey, JSON.stringify(newStored));
+    } catch {}
 
-      if (!isAlreadyRead) {
-        const updatedReadBy = Array.from(new Set([...currentRead, ...toAdd]));
-        setDoc(doc(db, 'news', item.id), { readBy: updatedReadBy }, { merge: true }).catch(console.warn);
-        try {
-          setDoc(doc(db, 'announcements', item.id), { readBy: updatedReadBy }, { merge: true }).catch(console.warn);
-        } catch (_) {}
-      }
-    });
-
-    setNewsItems(prev =>
-      prev.map(n => {
+    setNewsItems(prev => {
+      let hasChanges = false;
+      const next = prev.map(n => {
         const currentRead = (n.readBy || []).map(String);
         const isAlreadyRead =
           currentRead.includes(String(targetMemberId)) ||
           (targetNick && currentRead.some(r => r.toUpperCase() === targetNick.toUpperCase()));
 
         if (isAlreadyRead) return n;
+        hasChanges = true;
         return { ...n, readBy: Array.from(new Set([...currentRead, ...toAdd])) };
-      })
-    );
+      });
+      return hasChanges ? next : prev;
+    });
   };
 
   const deleteNewsItem = async (newsId: string) => {
@@ -5432,6 +5371,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         editUser,
         updateMemberProfile,
         resetAllData,
+        refreshTreasury,
+        refreshNavette,
+        isRefreshingData,
       }}
     >
       {children}

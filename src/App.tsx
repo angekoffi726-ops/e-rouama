@@ -1,6 +1,5 @@
 import React, { Component, useState, useEffect } from 'react';
-import { collection, onSnapshot } from 'firebase/firestore';
-import { db } from './firebase';
+
 import { AppProvider, useApp } from './context/AppContext';
 import { AuthScreen } from './components/AuthScreen';
 import { DashboardTab } from './components/tabs/DashboardTab';
@@ -76,7 +75,7 @@ function MainLayout() {
       unsubPush();
       unsubFcm();
     };
-  }, [currentUser]);
+  }, [currentUser?.id, currentUser?.type, currentUser?.adminRole]);
 
   // RÈGLE D'OR : Total security at startup
   if (!currentUser) {
