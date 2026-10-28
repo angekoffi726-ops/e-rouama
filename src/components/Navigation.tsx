@@ -10,7 +10,7 @@ interface NavigationProps {
 }
 
 export const Navigation: React.FC<NavigationProps> = ({ activeTab, setActiveTab }) => {
-  const { currentUser, gbairaiMessages, newsItems, getMemberDuesStatus } = useApp();
+  const { currentUser, gbairaiMessages, newsItems, getMemberDuesStatus, markAllGbairaiAsRead } = useApp();
 
   if (!currentUser) return null;
 
@@ -161,7 +161,12 @@ export const Navigation: React.FC<NavigationProps> = ({ activeTab, setActiveTab 
             return (
               <button
                 key={item.id}
-                onClick={() => setActiveTab(item.id)}
+                onClick={() => {
+                  setActiveTab(item.id);
+                  if (item.id === 'NOUVELLES' && currentUserId) {
+                    markAllGbairaiAsRead(currentUserId);
+                  }
+                }}
                 translate="no"
                 className={`notranslate relative px-4 sm:px-5 py-2.5 rounded-2xl font-bold text-xs sm:text-sm flex items-center gap-2 transition-all active:scale-95 ${
                   isActive

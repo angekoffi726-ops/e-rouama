@@ -48,11 +48,9 @@ export const NouvellesTab: React.FC<NouvellesTabProps> = ({ onNavigateTab }) => 
 
   const sourceMessages = gbairaiMessages || newsItems || [];
 
-  const hasMarkedRef = React.useRef(false);
-  // MARQUAGE AUTOMATIQUE DES MESSAGES GBAÏRAÏ COMME LUS À L'OUVERTURE DU MODULE (Une seule fois au montage)
+  // MARQUAGE AUTOMATIQUE DES MESSAGES GBAÏRAÏ COMME LUS À L'OUVERTURE DU MODULE
   React.useEffect(() => {
-    if (currentMemberId && !hasMarkedRef.current) {
-      hasMarkedRef.current = true;
+    if (currentMemberId) {
       markAllGbairaiAsRead(currentMemberId);
     }
   }, [currentMemberId, markAllGbairaiAsRead]);

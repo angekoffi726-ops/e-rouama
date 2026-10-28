@@ -446,6 +446,7 @@ export const AdminPortal: React.FC = () => {
     createReligiousEvent,
     programmeAlerts,
     infoRequests = [],
+    recordAdminActivity,
   } = useApp();
 
   // Sous-onglet actif par console ('METIER' ou 'NAVETTE') pour les départements éligibles
@@ -548,6 +549,19 @@ export const AdminPortal: React.FC = () => {
   const activeRole: AdminRole = allowedConsoles.includes(selectedRole)
     ? selectedRole
     : (allowedConsoles[0] || 'TRESORIER');
+
+  // Enregistrement automatique de l'activité/présence admin lors de l'accès à l'Espace Admin
+  useEffect(() => {
+    if (activeRole) {
+      const memberName =
+        currentUser?.member?.nickname ||
+        currentUser?.member?.firstName ||
+        currentUser?.firstName ||
+        activeRole;
+      const userId = currentUser?.member?.id || currentUser?.id || activeRole;
+      recordAdminActivity(activeRole, memberName, userId);
+    }
+  }, [activeRole, currentUser, recordAdminActivity]);
 
   // Compteur temps réel des demandes d'information non lues pour la console active
   const unreadInfoRequestsForActiveRole = useMemo(() => {
@@ -2397,11 +2411,19 @@ export const AdminPortal: React.FC = () => {
   const [rejectModalDeclaration, setRejectModalDeclaration] = useState<any | null>(null);
   const [rejectReason, setRejectReason] = useState<string>('Reçu illisible ou non conforme aux informations déclarées');
 
+  // État de validation en cours pour désactivation immédiate et affichage spinner (anti-doublon)
+  const [validatingReceiptIds, setValidatingReceiptIds] = useState<Set<string>>(new Set());
+
   // Dedicated Validation Handler with feedback and state updates
   const handleValidateReceipt = async (decl: any) => {
     if (!decl || !decl.id) return;
+    const targetId = String(decl.id).trim();
+
+    // Protection anti-clics multiples immédiate
+    if (validatingReceiptIds.has(targetId)) return;
+    setValidatingReceiptIds(prev => new Set(prev).add(targetId));
+
     try {
-      const targetId = String(decl.id).trim();
 
       let normalizedType = decl.type;
       let normalizedCaisse = decl.caisse;
@@ -2506,6 +2528,12 @@ export const AdminPortal: React.FC = () => {
       console.error('Erreur lors de la validation du reçu:', err);
       setToastMessage("Une erreur est survenue lors de la validation du reçu sur Firestore.");
       setTimeout(() => setToastMessage(null), 4000);
+    } finally {
+      setValidatingReceiptIds(prev => {
+        const next = new Set(prev);
+        next.delete(targetId);
+        return next;
+      });
     }
   };
 
@@ -4517,11 +4545,21 @@ export const AdminPortal: React.FC = () => {
                                 <button
                                   type="button"
                                   onClick={() => handleValidateReceipt(payment)}
-                                  className="bg-emerald-600 hover:bg-emerald-500 text-white font-black px-3.5 py-2 rounded-xl text-xs shadow inline-flex items-center gap-1.5 active:scale-95 transition-all cursor-pointer"
+                                  disabled={validatingReceiptIds.has(payment.id)}
+                                  className="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-black px-3.5 py-2 rounded-xl text-xs shadow inline-flex items-center gap-1.5 active:scale-95 transition-all cursor-pointer"
                                   title="Valider le versement et créditer le compte du membre"
                                 >
-                                  <CheckCircle2 className="w-4 h-4" />
-                                  <span>Valider</span>
+                                  {validatingReceiptIds.has(payment.id) ? (
+                                    <>
+                                      <Loader2 className="w-4 h-4 animate-spin text-white" />
+                                      <span>Validation...</span>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <CheckCircle2 className="w-4 h-4" />
+                                      <span>Valider</span>
+                                    </>
+                                  )}
                                 </button>
                                 <button
                                   type="button"
@@ -11097,11 +11135,21 @@ export const AdminPortal: React.FC = () => {
                     <button
                       type="button"
                       onClick={() => handleValidateReceipt(previewDeclaration)}
-                      className="bg-emerald-600 hover:bg-emerald-500 text-white font-black px-5 py-2.5 rounded-xl text-xs flex items-center gap-1.5 shadow-lg shadow-emerald-950/50 transition-all active:scale-95 cursor-pointer"
+                      disabled={validatingReceiptIds.has(previewDeclaration.id)}
+                      className="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-black px-5 py-2.5 rounded-xl text-xs flex items-center gap-1.5 shadow-lg shadow-emerald-950/50 transition-all active:scale-95 cursor-pointer"
                       title="Valider et créditer immédiatement les cotisations du membre"
                     >
-                      <CheckCircle2 className="w-4 h-4" />
-                      <span>Valider Reçu</span>
+                      {validatingReceiptIds.has(previewDeclaration.id) ? (
+                        <>
+                          <Loader2 className="w-4 h-4 animate-spin text-white" />
+                          <span>Validation en cours...</span>
+                        </>
+                      ) : (
+                        <>
+                          <CheckCircle2 className="w-4 h-4" />
+                          <span>Valider Reçu</span>
+                        </>
+                      )}
                     </button>
                   )}
                 </div>

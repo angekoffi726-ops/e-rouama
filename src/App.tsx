@@ -22,7 +22,7 @@ import { UpdatePrompt } from './components/UpdatePrompt';
 import { InAppNotificationToast, ForegroundNotification } from './components/InAppNotificationToast';
 
 function MainLayout() {
-  const { currentUser, logout, members, newsItems, gbairaiMessages, getMemberDuesStatus } = useApp();
+  const { currentUser, logout, members, newsItems, gbairaiMessages, getMemberDuesStatus, markAllGbairaiAsRead } = useApp();
   const [activeTab, setActiveTab] = useState<TabType>('DASHBOARD');
   const [targetDocId, setTargetDocId] = useState<string | undefined>(undefined);
   const [isAdminChangePasswordOpen, setIsAdminChangePasswordOpen] = useState(false);
@@ -279,6 +279,13 @@ function MainLayout() {
     return true;
   });
 
+  // Auto-marquage des messages Gbairai comme lus à l'ouverture de l'onglet
+  useEffect(() => {
+    if (activeTab === 'NOUVELLES' && memberId) {
+      markAllGbairaiAsRead(memberId);
+    }
+  }, [activeTab, memberId, markAllGbairaiAsRead]);
+
   // Comptage dynamique basé strictement sur les messages actifs non lus provenant de Firestore
   const unreadGbairaiCount = memberId
     ? activeGbairaiMessages.filter(msg => !(msg.readBy || []).includes(memberId) && !(currentUser?.id && (msg.readBy || []).includes(currentUser.id))).length
@@ -396,7 +403,12 @@ function MainLayout() {
             return (
               <button
                 key={item.id}
-                onClick={() => setActiveTab(item.id)}
+                onClick={() => {
+                  setActiveTab(item.id);
+                  if (item.id === 'NOUVELLES' && memberId) {
+                    markAllGbairaiAsRead(memberId);
+                  }
+                }}
                 translate="no"
                 className={`notranslate flex items-center gap-2 px-5 py-3 rounded-full font-black text-xs sm:text-sm transition-all whitespace-nowrap active:scale-95 shadow-sm ${
                   isActive

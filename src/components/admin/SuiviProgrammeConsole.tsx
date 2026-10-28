@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { collection, getDocs, addDoc } from 'firebase/firestore';
+import { collection, getDocs, addDoc, onSnapshot, doc, setDoc } from 'firebase/firestore';
 import { db } from '../../firebase';
 import { useApp } from '../../context/AppContext';
 import {
@@ -56,6 +56,7 @@ interface AdminDepartmentConfig {
   borderColor: string;
   description: string;
   aliases: string[];
+  managerMemberIds?: string[];
 }
 
 export const ADMIN_DEPARTMENTS_CONFIG: AdminDepartmentConfig[] = [
@@ -412,30 +413,51 @@ export const SuiviProgrammeConsole: React.FC<SuiviProgrammeConsoleProps> = () =>
   const [infoSearchQuery, setInfoSearchQuery] = useState<string>('');
 
   // =========================================================
-  // ÉCOUTE FIRESTORE EN TEMPS RÉEL DES CONNEXIONS ADMINS
+  // ÉCOUTE FIRESTORE EN TEMPS RÉEL DES CONNEXIONS ET ACTIVITÉS ADMINS
   // =========================================================
   const [realtimeAdminLogs, setRealtimeAdminLogs] = useState<AdminLoginLog[]>([]);
+  const [realtimeAdminDocs, setRealtimeAdminDocs] = useState<Record<string, any>>({});
 
   useEffect(() => {
     let isMounted = true;
-    getDocs(collection(db, 'admin_logs'))
-      .then((snapshot) => {
+
+    // 1. Écoute en temps réel des logs d'administration (admin_logs)
+    const unsubLogs = onSnapshot(
+      collection(db, 'admin_logs'),
+      (snapshot) => {
         if (!isMounted) return;
         const loaded: AdminLoginLog[] = [];
         snapshot.forEach((d) => {
           loaded.push({ id: d.id, ...(d.data() as any) });
         });
         loaded.sort((a, b) => (b.loginTimestamp || '').localeCompare(a.loginTimestamp || ''));
-        if (isMounted) {
-          setRealtimeAdminLogs(loaded);
-        }
-      })
-      .catch((err) => {
-        console.warn('Lecture unique admin_logs (cache actif):', err);
-      });
+        setRealtimeAdminLogs(loaded);
+      },
+      (err) => {
+        console.warn('Erreur écouteur temps réel admin_logs:', err);
+      }
+    );
+
+    // 2. Écoute en temps réel des profils administrateurs (admins) pour détecter les sessions persistantes
+    const unsubAdmins = onSnapshot(
+      collection(db, 'admins'),
+      (snapshot) => {
+        if (!isMounted) return;
+        const docsMap: Record<string, any> = {};
+        snapshot.forEach((d) => {
+          docsMap[d.id.toUpperCase().trim()] = d.data();
+        });
+        setRealtimeAdminDocs(docsMap);
+      },
+      (err) => {
+        console.warn('Erreur écouteur temps réel admins:', err);
+      }
+    );
 
     return () => {
       isMounted = false;
+      unsubLogs();
+      unsubAdmins();
     };
   }, []);
 
@@ -453,6 +475,24 @@ export const SuiviProgrammeConsole: React.FC<SuiviProgrammeConsoleProps> = () =>
     const localDay = String(now.getDate()).padStart(2, '0');
     return [isoDate, `${localYear}-${localMonth}-${localDay}`];
   }, []);
+
+  const isDateToday = (dateVal?: string): boolean => {
+    if (!dateVal) return false;
+    const cleanStr = String(dateVal).trim();
+    if (todayDateStrings.includes(cleanStr)) return true;
+    const isoPrefix = cleanStr.split('T')[0];
+    if (todayDateStrings.includes(isoPrefix)) return true;
+    const d = new Date(cleanStr);
+    if (!isNaN(d.getTime())) {
+      const now = new Date();
+      return (
+        d.getFullYear() === now.getFullYear() &&
+        d.getMonth() === now.getMonth() &&
+        d.getDate() === now.getDate()
+      );
+    }
+    return false;
+  };
 
   const todayDisplayDate = useMemo(() => {
     return new Date().toLocaleDateString('fr-FR', {
@@ -498,15 +538,61 @@ export const SuiviProgrammeConsole: React.FC<SuiviProgrammeConsoleProps> = () =>
 
   const departmentAttendance = useMemo(() => {
     return ADMIN_DEPARTMENTS_CONFIG.map((dept) => {
+      // 1. Logs explicites du jour pour ce département
       const logsForDept = todayLogs.filter((log) => deptAttendanceMatch(dept, log.role));
-      const count = logsForDept.length;
-      const isConnectedToday = count > 0;
       const sortedLogs = [...logsForDept].sort((a, b) =>
         (b.loginTimestamp || '').localeCompare(a.loginTimestamp || '')
       );
       const latestLog = sortedLogs[0];
-      const lastLoginTime = latestLog?.loginTimestamp
-        ? new Date(latestLog.loginTimestamp).toLocaleTimeString('fr-FR', {
+
+      // 2. Vérification des documents admins en temps réel (pour sessions persistantes)
+      const matchingAdminEntries = Object.entries(realtimeAdminDocs).filter(([docKey]) => {
+        return deptAttendanceMatch(dept, docKey);
+      });
+      const activeAdminEntry = matchingAdminEntries.find(([, docData]) => {
+        return (
+          isDateToday(docData?.lastLoginDate) ||
+          isDateToday(docData?.lastAdminAccess) ||
+          isDateToday(docData?.lastActiveAt)
+        );
+      });
+
+      // 3. Vérification des membres responsables rattachés à ce département
+      const officialDept = OFFICIAL_DEPARTMENTS.find((d) => {
+        const dRole = (d.adminRole || '').toUpperCase();
+        return deptAttendanceMatch(dept, dRole);
+      });
+      const deptMembers = (members || []).filter((m) => {
+        const roleStr = `${m.assignedRole || ''} ${(m.departments || []).join(' ')} ${(m.roles || []).join(' ')}`;
+        return (
+          dept.managerMemberIds?.includes(String(m.id)) ||
+          officialDept?.managerMemberIds?.includes(String(m.id)) ||
+          deptAttendanceMatch(dept, m.assignedRole) ||
+          deptAttendanceMatch(dept, roleStr)
+        );
+      });
+      const activeMember = deptMembers.find((m) => {
+        return isDateToday((m as any).lastAdminAccess) || isDateToday(m.lastLogin);
+      });
+
+      // Présent si au moins 1 log du jour OU session persistante active du jour dans Firestore
+      const isConnectedToday = logsForDept.length > 0 || !!activeAdminEntry || !!activeMember;
+      const count = logsForDept.length > 0 ? logsForDept.length : (isConnectedToday ? 1 : 0);
+
+      // Calcul de l'heure la plus récente de connexion ou d'activité
+      const candidateTimestamps: string[] = [
+        latestLog?.loginTimestamp,
+        activeAdminEntry?.[1]?.lastAdminAccess,
+        activeAdminEntry?.[1]?.lastActiveAt,
+        (activeMember as any)?.lastAdminAccess,
+        activeMember?.lastLogin,
+      ].filter((t): t is string => Boolean(t && typeof t === 'string'));
+
+      candidateTimestamps.sort().reverse();
+      const latestTimestamp = candidateTimestamps[0];
+
+      const lastLoginTime = latestTimestamp
+        ? new Date(latestTimestamp).toLocaleTimeString('fr-FR', {
             hour: '2-digit',
             minute: '2-digit',
           })
@@ -520,7 +606,7 @@ export const SuiviProgrammeConsole: React.FC<SuiviProgrammeConsoleProps> = () =>
         lastLoginTime,
       };
     });
-  }, [todayLogs]);
+  }, [todayLogs, realtimeAdminDocs, members, todayDateStrings]);
 
   const connectedDepts = useMemo(() => departmentAttendance.filter((d) => d.isConnectedToday), [departmentAttendance]);
   const absentDepts = useMemo(() => departmentAttendance.filter((d) => !d.isConnectedToday), [departmentAttendance]);
@@ -532,13 +618,29 @@ export const SuiviProgrammeConsole: React.FC<SuiviProgrammeConsoleProps> = () =>
     try {
       const targetDept = ADMIN_DEPARTMENTS_CONFIG.find((d) => d.key === deptKey);
       const now = new Date();
+      const nowIso = now.toISOString();
+      const todayStr = nowIso.split('T')[0];
+
       await addDoc(collection(db, 'admin_logs'), {
         userId: deptKey,
         memberName: targetDept?.name || deptKey,
         role: deptKey,
-        loginTimestamp: now.toISOString(),
-        dateString: now.toISOString().split('T')[0],
+        loginTimestamp: nowIso,
+        dateString: todayStr,
       });
+
+      await setDoc(
+        doc(db, 'admins', deptKey),
+        {
+          id: deptKey,
+          role: deptKey,
+          lastAdminAccess: nowIso,
+          lastLoginDate: todayStr,
+          lastActiveAt: nowIso,
+          updatedAt: nowIso,
+        },
+        { merge: true }
+      );
     } catch (err) {
       console.warn('Erreur simulation admin_logs:', err);
     } finally {

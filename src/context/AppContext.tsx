@@ -47,6 +47,9 @@ import {
   addDoc,
   getDoc,
   getDocs,
+  onSnapshot,
+  runTransaction,
+  arrayUnion,
 } from 'firebase/firestore';
 import { db, testFirestoreConnection, sanitizeFirestore } from '../firebase';
 import { compressReceiptImage } from '../utils/imageCompressor';
@@ -75,6 +78,7 @@ interface AppContextType {
   programmeAlerts: ProgrammeAlert[];
   adminLogs: AdminLoginLog[];
   logAdminConnection: (role: string, memberName?: string, userId?: string) => Promise<void>;
+  recordAdminActivity: (role: string, memberName?: string, userId?: string) => Promise<void>;
   addProgrammeTask: (task: Omit<ProgrammeTask, 'id' | 'createdAt'>) => Promise<{ success: boolean; id: string }>;
   updateProgrammeTask: (taskId: string, updates: Partial<ProgrammeTask>) => Promise<{ success: boolean }>;
   deleteProgrammeTask: (taskId: string) => Promise<{ success: boolean }>;
@@ -624,7 +628,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [adminLogs, setAdminLogs] = useState<AdminLoginLog[]>([]);
   const [infoRequests, setInfoRequests] = useState<InfoRequest[]>([]);
 
-  // Sauvegarder la session active locale
+  // Sauvegarder la session active locale et enregistrer automatiquement l'assiduité du jour
   useEffect(() => {
     try {
       if (currentUser) {
@@ -633,6 +637,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           localStorage.setItem('rouama_user', JSON.stringify(currentUser.member));
         } else {
           localStorage.setItem('rouama_user', JSON.stringify(currentUser));
+        }
+
+        // Enregistrement automatique de présence admin pour les sessions persistantes de la veille
+        if (currentUser.type === 'ADMIN' && currentUser.adminRole) {
+          recordAdminActivity(currentUser.adminRole, currentUser.adminRole, currentUser.adminRole);
+        } else if (currentUser.type === 'MEMBER' && currentUser.member) {
+          const role = currentUser.member.assignedRole || currentUser.adminRole;
+          if (role) {
+            recordAdminActivity(
+              role,
+              `${currentUser.member.firstName} (${currentUser.member.nickname})`,
+              currentUser.member.id
+            );
+          }
         }
       } else {
         localStorage.removeItem(EROUAMA_ACTIVE_SESSION_KEY);
@@ -1457,13 +1475,69 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     loadMembersAndUsers();
     loadOtherCollections();
 
+    // ÉCOUTEURS TEMPS RÉEL POUR GBAIRAI ET NAVETTE D'ÉCHANGE
+    // Permet au Chargé au Suivi (SDP) de voir les lectures Gbairai en temps réel
+    // et garantit que les messages de la Navette ne sont jamais perdus
+    const unsubGbairai = onSnapshot(collection(db, 'news'), (snapshot) => {
+      const loaded: NewsItem[] = [];
+      snapshot.forEach((d) => {
+        const item = { id: d.id, ...(d.data() as any) };
+        if (
+          item.deleted === true ||
+          item.isDeleted === true ||
+          item.status === 'deleted' ||
+          item.status === 'supprime' ||
+          item.status === 'hidden' ||
+          item.isHidden === true ||
+          item.dispatchChannel === 'MAIL'
+        ) {
+          return;
+        }
+        loaded.push(item);
+      });
+      if (loaded.length > 0) {
+        loaded.sort((a, b) => b.id.localeCompare(a.id));
+        setNewsItems(loaded);
+      }
+    }, (err) => {
+      console.warn('Erreur écouteur temps réel Gbairai:', err);
+    });
+
+    const unsubNavette = onSnapshot(collection(db, 'info_requests'), (snapshot) => {
+      const map = new Map<string, InfoRequest>();
+      snapshot.forEach((d) => {
+        map.set(d.id, { id: d.id, ...(d.data() as any) });
+      });
+      const loaded = Array.from(map.values());
+      loaded.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+      if (loaded.length > 0) {
+        setInfoRequests(loaded);
+      }
+    }, (err) => {
+      console.warn('Erreur écouteur temps réel info_requests:', err);
+    });
+
+    // Écouteur temps réel pour les logs d'activité/connexions administratives
+    const unsubAdminLogs = onSnapshot(collection(db, 'admin_logs'), (snapshot) => {
+      const loaded: AdminLoginLog[] = [];
+      snapshot.forEach((d) => {
+        loaded.push({ id: d.id, ...(d.data() as any) });
+      });
+      loaded.sort((a, b) => (b.loginTimestamp || '').localeCompare(a.loginTimestamp || ''));
+      setAdminLogs(loaded);
+    }, (err) => {
+      console.warn('Erreur écouteur temps réel admin_logs:', err);
+    });
+
     // Références pour rafraîchissements ponctuels après création ou validation
     treasuryLoaderRef.current = loadTreasury;
     gbairaiLoaderRef.current = loadGbairai;
     navetteLoaderRef.current = loadNavette;
 
     return () => {
-      // Nettoyage garanti
+      if (unsubGbairai) unsubGbairai();
+      if (unsubNavette) unsubNavette();
+      if (unsubAdminLogs) unsubAdminLogs();
     };
   }, []);
 
@@ -1891,6 +1965,68 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return { success: true, message: `Bienvenue chez vous, ${connectedMember.nickname} !` };
   };
 
+  // Enregistrement de l'activité/présence en temps réel d'un administrateur (session persistante & connexions)
+  const recordAdminActivity = async (role: string, memberName?: string, userId?: string) => {
+    if (!role || !role.trim()) return;
+    const cleanRole = role.trim().toUpperCase().replace(/[\s-]/g, '_');
+    const now = new Date();
+    const nowIso = now.toISOString();
+    const todayStr = nowIso.split('T')[0];
+
+    try {
+      // 1. Mise à jour Firestore du document admins/${cleanRole}
+      await setDoc(
+        doc(db, 'admins', cleanRole),
+        sanitizeFirestore({
+          id: cleanRole,
+          role: cleanRole,
+          lastAdminAccess: nowIso,
+          lastLoginDate: todayStr,
+          lastActiveAt: nowIso,
+          updatedAt: nowIso,
+          ...(memberName ? { lastActiveMemberName: memberName } : {}),
+          ...(userId ? { lastActiveUserId: userId } : {}),
+        }),
+        { merge: true }
+      ).catch(e => console.warn('Mise à jour admins doc:', e));
+
+      // 2. Si userId ou memberId fourni, mise à jour dans users
+      const targetUserId = userId || (currentUser?.type === 'MEMBER' ? currentUser.member?.id : undefined);
+      if (targetUserId) {
+        setDoc(
+          doc(db, 'users', String(targetUserId)),
+          sanitizeFirestore({
+            lastAdminAccess: nowIso,
+            lastLoginDate: todayStr,
+            assignedRole: cleanRole,
+          }),
+          { merge: true }
+        ).catch(() => {});
+      }
+
+      // 3. Déduplication quotidienne pour admin_logs afin d'éviter le spamming à chaque clic
+      const sessionDedupKey = `erouama_admin_activity_${cleanRole}_${todayStr}`;
+      const alreadyLoggedToday = sessionStorage.getItem(sessionDedupKey);
+
+      if (!alreadyLoggedToday) {
+        sessionStorage.setItem(sessionDedupKey, nowIso);
+        await addDoc(
+          collection(db, 'admin_logs'),
+          sanitizeFirestore({
+            userId: targetUserId || cleanRole,
+            memberName: memberName || cleanRole,
+            role: cleanRole,
+            loginTimestamp: nowIso,
+            dateString: todayStr,
+            source: 'SESSION_ACTIVITY',
+          })
+        ).catch(e => console.warn('Erreur addDoc admin_logs:', e));
+      }
+    } catch (err) {
+      console.warn('Erreur recordAdminActivity:', err);
+    }
+  };
+
   // Enregistrement des connexions d'administrateurs dans Firestore (admin_logs)
   const logAdminConnection = async (role: string, memberName?: string, userId?: string) => {
     try {
@@ -1903,6 +2039,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         dateString: now.toISOString().split('T')[0],
       };
       await addDoc(collection(db, 'admin_logs'), sanitizeFirestore(payload));
+      await recordAdminActivity(role, memberName, userId);
     } catch (err) {
       console.warn('Erreur log connexion admin:', err);
     }
@@ -2647,18 +2784,74 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       ...validationPayload,
     };
 
-    // 1. Enregistrement direct et persistant dans 'payments', 'receipts', 'declarations' et sous-collections
+    // EXÉCUTION ATOMIQUE VIA runTransaction :
+    // 1. Vérification anti-doublon (si déjà validé, ne pas incrémenter 2 fois)
+    // 2. Validation du reçu et incrémentation atomique du solde de caisse en une seule opération
+    let finalBalances = { ...fundBalances };
     try {
+      await runTransaction(db, async (transaction) => {
+        const payDocRef = doc(db, 'payments', targetId);
+        const receiptDocRef = doc(db, 'receipts', targetId);
+        const balanceDocRef = doc(db, 'treasury', 'balances');
+
+        const [paySnap, balanceSnap] = await Promise.all([
+          transaction.get(payDocRef),
+          transaction.get(balanceDocRef),
+        ]);
+
+        // Protection anti-doublon stricte : si déjà validé, court-circuit
+        if (paySnap.exists()) {
+          const payData = paySnap.data() as any;
+          if (
+            payData.status === 'valide' ||
+            payData.status === 'validated' ||
+            payData.status === 'approved' ||
+            payData.isValidated === true ||
+            payData.isApproved === true
+          ) {
+            console.log(`Reçu [${targetId}] déjà validé atomiquement sur Firestore.`);
+            return;
+          }
+        }
+
+        const currentBalances = balanceSnap.exists()
+          ? (balanceSnap.data() as Record<string, number>)
+          : { ...fundBalances };
+
+        const targetFund = (targetDecl!.fund || 'COTISATION') as FundType;
+        const currentAmount = Number(currentBalances[targetFund]) || 0;
+        const newFundAmount = currentAmount + amountVal;
+
+        const updatedBalances = {
+          ...currentBalances,
+          [targetFund]: newFundAmount,
+        };
+        finalBalances = updatedBalances as Record<FundType, number>;
+
+        // Écritures atomiques de la transaction
+        transaction.set(payDocRef, sanitizeFirestore(fullDeclPayload), { merge: true });
+        transaction.set(receiptDocRef, sanitizeFirestore(fullDeclPayload), { merge: true });
+        transaction.set(doc(db, 'declarations', targetId), sanitizeFirestore(fullDeclPayload), { merge: true });
+        transaction.set(balanceDocRef, sanitizeFirestore(updatedBalances), { merge: true });
+
+        if (payerId) {
+          transaction.set(doc(db, 'users', payerId, 'cotisations', targetId), sanitizeFirestore(fullDeclPayload), { merge: true });
+          transaction.set(doc(db, 'members', payerId, 'cotisations', targetId), sanitizeFirestore(fullDeclPayload), { merge: true });
+        }
+        transaction.set(doc(db, 'cotisations', targetId), sanitizeFirestore(fullDeclPayload), { merge: true });
+      });
+    } catch (txnErr) {
+      console.warn('Erreur runTransaction dans approvePayment, repli sécurisé standard:', txnErr);
       await Promise.allSettled([
         setDoc(doc(db, 'payments', targetId), sanitizeFirestore(fullDeclPayload), { merge: true }),
         setDoc(doc(db, 'receipts', targetId), sanitizeFirestore(fullDeclPayload), { merge: true }),
         setDoc(doc(db, 'declarations', targetId), sanitizeFirestore(fullDeclPayload), { merge: true }),
-        setDoc(doc(db, 'users', payerId, 'cotisations', targetId), sanitizeFirestore(fullDeclPayload), { merge: true }),
-        setDoc(doc(db, 'members', payerId, 'cotisations', targetId), sanitizeFirestore(fullDeclPayload), { merge: true }),
-        setDoc(doc(db, 'cotisations', targetId), sanitizeFirestore(fullDeclPayload), { merge: true }),
       ]);
-    } catch (err) {
-      console.warn('Erreur setDoc synchronisation documents approvePayment:', err);
+      finalBalances = {
+        ...fundBalances,
+        [targetDecl.fund]: (fundBalances[targetDecl.fund] || 0) + amountVal,
+      };
+      await setDoc(doc(db, 'treasury', 'balances'), sanitizeFirestore(finalBalances), { merge: true }).catch(console.warn);
     }
 
     // Mise à jour immédiate du state React pour les déclarations côté interface
@@ -2670,13 +2863,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return [fullDeclPayload as any, ...prev];
     });
 
-    // 2. Créditer la caisse sur Firestore (CONSERVATION STRICTE DE LA LOGIQUE)
-    const updatedFundBalances = {
-      ...fundBalances,
-      [targetDecl.fund]: (fundBalances[targetDecl.fund] || 0) + amountVal,
-    };
-    await setDoc(doc(db, 'treasury', 'balances'), sanitizeFirestore(updatedFundBalances), { merge: true }).catch(console.warn);
-    setFundBalances(updatedFundBalances);
+    setFundBalances(finalBalances);
 
     // 3. Enregistrer la transaction sur Firestore via addDoc (ID unique généré par Firestore)
     const displayRef =
@@ -3949,6 +4136,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       localStorage.setItem(readKey, JSON.stringify(newStored));
     } catch {}
 
+    // 1. Mise à jour synchrone de l'état local pour remise immédiate du compteur à 0
+    const unreadDocsToSync: { id: string; readBy: string[] }[] = [];
+
     setNewsItems(prev => {
       let hasChanges = false;
       const next = prev.map(n => {
@@ -3959,10 +4149,24 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
         if (isAlreadyRead) return n;
         hasChanges = true;
-        return { ...n, readBy: Array.from(new Set([...currentRead, ...toAdd])) };
+        const updatedRead = Array.from(new Set([...currentRead, ...toAdd]));
+        unreadDocsToSync.push({ id: n.id, readBy: updatedRead });
+        return { ...n, readBy: updatedRead };
       });
       return hasChanges ? next : prev;
     });
+
+    // 2. Persistance Firestore en arrière-plan pour synchronisation immédiate du tableau SDP
+    if (unreadDocsToSync.length > 0) {
+      unreadDocsToSync.forEach(({ id, readBy }) => {
+        setDoc(doc(db, 'news', id), { readBy }, { merge: true }).catch(err => {
+          console.warn(`Erreur marquage Firestore lu Gbairai doc [${id}]:`, err);
+        });
+        try {
+          setDoc(doc(db, 'announcements', id), { readBy }, { merge: true }).catch(() => {});
+        } catch (_) {}
+      });
+    }
   };
 
   const deleteNewsItem = async (newsId: string) => {
@@ -5277,6 +5481,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         programmeAlerts,
         adminLogs,
         logAdminConnection,
+        recordAdminActivity,
         addProgrammeTask,
         updateProgrammeTask,
         deleteProgrammeTask,

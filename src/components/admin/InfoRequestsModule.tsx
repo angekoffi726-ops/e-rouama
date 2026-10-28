@@ -171,6 +171,40 @@ export const getEligibleDeptConfig = (roleKeyOrName?: string): EligibleDeptConfi
   );
 };
 
+// Harmonisation robuste pour vérifier si un rôle ou libellé correspond au département cible (ex: Projet, Com, etc.)
+export const isDeptMatch = (roleOrLabel: string | undefined, targetDeptKey: string): boolean => {
+  if (!roleOrLabel || !targetDeptKey) return false;
+  const normalizedTarget = normalizeToEligibleDeptKey(targetDeptKey);
+  const targetConfig = getEligibleDeptConfig(normalizedTarget);
+  const targetKeysAndAliases = [
+    normalizedTarget,
+    targetConfig?.key,
+    ...(targetConfig?.roleAliases || []),
+  ]
+    .filter(Boolean)
+    .map((s) => s!.toUpperCase().replace(/[\s-]/g, '_'));
+
+  const cleanInput = roleOrLabel.toUpperCase().trim().replace(/[\s-]/g, '_');
+
+  // Correspondance exacte avec la clé ou ses alias
+  if (targetKeysAndAliases.includes(cleanInput)) return true;
+  if (normalizeToEligibleDeptKey(roleOrLabel) === normalizedTarget) return true;
+
+  // Correspondance sémantique et libellés longs (ex: "Commission Projets (AGR)", "Projets AGR")
+  if (targetConfig?.name && cleanInput.includes(targetConfig.name.toUpperCase().replace(/[\s-]/g, '_'))) return true;
+  if (targetConfig?.shortName && cleanInput.includes(targetConfig.shortName.toUpperCase().replace(/[\s-]/g, '_'))) return true;
+  if (normalizedTarget === 'PROJET' && (cleanInput.includes('PROJET') || cleanInput.includes('AGR'))) return true;
+  if (normalizedTarget === 'COMMUNICATION' && (cleanInput.includes('COM') || cleanInput.includes('BIC'))) return true;
+  if (normalizedTarget === 'SECRETARIAT' && (cleanInput.includes('SECRETAR') || cleanInput.includes('SECRETAIRE'))) return true;
+  if (normalizedTarget === 'TRESORIER' && (cleanInput.includes('TRESOR') || cleanInput.includes('FINANCE'))) return true;
+  if (normalizedTarget === 'ORGANISATION' && cleanInput.includes('ORGANIS')) return true;
+  if (normalizedTarget === 'SPIRITUALITE' && (cleanInput.includes('SPIRIT') || cleanInput.includes('PRIERE'))) return true;
+  if (normalizedTarget === 'SDP' && (cleanInput.includes('SDP') || cleanInput.includes('SUIVI'))) return true;
+  if (normalizedTarget === 'PAYOR' && cleanInput.includes('PAYOR')) return true;
+
+  return false;
+};
+
 // Helper: Récupère la liste ordonnée des messages du fil d'échange avec rétro-compatibilité
 export function getThreadMessages(req: InfoRequest): InfoRequestMessage[] {
   if (req.messages && req.messages.length > 0) {
@@ -240,8 +274,23 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
     return currentDeptConfig?.name || String(currentRole);
   }, [senderNameOverride, currentUser, currentDeptConfig, currentRole]);
 
-  // États locaux du module
-  const [activeView, setActiveView] = useState<'RECEIVED' | 'SENT' | 'COMPOSE'>('RECEIVED');
+  // États locaux du module avec persistance du choix de vue par département
+  const [activeView, setActiveView] = useState<'ALL' | 'RECEIVED' | 'SENT' | 'COMPOSE'>(() => {
+    try {
+      const saved = localStorage.getItem(`erouama_navette_view_${normalizedCurrentDeptKey}`);
+      if (saved === 'ALL' || saved === 'RECEIVED' || saved === 'SENT' || saved === 'COMPOSE') {
+        return saved;
+      }
+    } catch {}
+    return 'ALL';
+  });
+
+  const handleSelectView = (view: 'ALL' | 'RECEIVED' | 'SENT' | 'COMPOSE') => {
+    setActiveView(view);
+    try {
+      localStorage.setItem(`erouama_navette_view_${normalizedCurrentDeptKey}`, view);
+    } catch {}
+  };
   const [statusFilter, setStatusFilter] = useState<'ALL' | 'UNREAD' | 'PENDING' | 'REPLIED' | 'CLOSED'>('ALL');
   const [searchQuery, setSearchQuery] = useState('');
   const [expandedRequestId, setExpandedRequestId] = useState<string | null>(null);
@@ -261,21 +310,38 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
   const [isReplyingId, setIsReplyingId] = useState<string | null>(null);
   const [closingId, setClosingId] = useState<string | null>(null);
 
-  // Filtrage des demandes pour ce département
-  // 1. Demandes Reçues (adressées à ce département)
+  // Filtrage harmonisé des demandes pour ce département (Émis ET Reçus sans perte)
+  // 1. Demandes Reçues (adressées à ce département ou ses alias)
   const receivedRequests = useMemo(() => {
     return (infoRequests || []).filter(req => {
-      const recipientKey = normalizeToEligibleDeptKey(req.recipientRole);
-      return recipientKey === normalizedCurrentDeptKey;
+      return isDeptMatch(req.recipientRole, normalizedCurrentDeptKey) ||
+             isDeptMatch(req.recipientRoleLabel, normalizedCurrentDeptKey);
     });
   }, [infoRequests, normalizedCurrentDeptKey]);
 
-  // 2. Demandes Émises (envoyées par ce département)
+  // 2. Demandes Émises (envoyées par ce département ou ses alias)
   const sentRequests = useMemo(() => {
     return (infoRequests || []).filter(req => {
-      const senderKey = normalizeToEligibleDeptKey(req.senderRole);
-      return senderKey === normalizedCurrentDeptKey;
+      return isDeptMatch(req.senderRole, normalizedCurrentDeptKey) ||
+             isDeptMatch(req.senderRoleLabel, normalizedCurrentDeptKey);
     });
+  }, [infoRequests, normalizedCurrentDeptKey]);
+
+  // 3. Tous les échanges du département (Émis ET Reçus consolidés sans perte lors du changement de section)
+  const allDeptRequests = useMemo(() => {
+    const map = new Map<string, InfoRequest>();
+    (infoRequests || []).forEach(req => {
+      const isRec = isDeptMatch(req.recipientRole, normalizedCurrentDeptKey) ||
+                    isDeptMatch(req.recipientRoleLabel, normalizedCurrentDeptKey);
+      const isSent = isDeptMatch(req.senderRole, normalizedCurrentDeptKey) ||
+                     isDeptMatch(req.senderRoleLabel, normalizedCurrentDeptKey);
+      if (isRec || isSent) {
+        map.set(req.id, req);
+      }
+    });
+    const list = Array.from(map.values());
+    list.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+    return list;
   }, [infoRequests, normalizedCurrentDeptKey]);
 
   // Helper pour obtenir le statut dynamique du fil d'échange
@@ -327,7 +393,11 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
   };
 
   // Compteurs dynamiques
-  const currentViewList = activeView === 'RECEIVED' ? receivedRequests : sentRequests;
+  const currentViewList = useMemo(() => {
+    if (activeView === 'RECEIVED') return receivedRequests;
+    if (activeView === 'SENT') return sentRequests;
+    return allDeptRequests;
+  }, [activeView, receivedRequests, sentRequests, allDeptRequests]);
 
   const unreadCount = useMemo(() => {
     return receivedRequests.filter(r => !r.isRead).length;
@@ -347,8 +417,7 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
 
   // Filtrage par texte et statut pour la vue active
   const displayedRequests = useMemo(() => {
-    const list = activeView === 'RECEIVED' ? receivedRequests : sentRequests;
-    return list.filter(req => {
+    return currentViewList.filter(req => {
       const statusInfo = getDynamicStatus(req);
 
       // Filtre statut
@@ -369,7 +438,7 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
       }
       return true;
     });
-  }, [activeView, receivedRequests, sentRequests, statusFilter, searchQuery]);
+  }, [currentViewList, statusFilter, searchQuery]);
 
   // Soumission d'une nouvelle demande (création du premier message du fil)
   const handleSendRequest = async (e: React.FormEvent) => {
@@ -409,7 +478,7 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
           type: 'success',
           message: `Fil d'échange ouvert avec succès vers : ${recipientConfig?.name || targetDeptKey}`,
         });
-        setActiveView('SENT');
+        handleSelectView('SENT');
       } else {
         setFeedbackToast({ type: 'error', message: res.message || "Échec de l'ouverture du fil d'échange." });
       }
@@ -601,10 +670,23 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
 
         {/* BARRE D'ONGLETS / VUES */}
         <div className="mt-6 pt-5 border-t border-slate-800/80 flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-2 bg-slate-950 p-1.5 rounded-2xl border border-slate-800">
+          <div className="flex items-center gap-2 bg-slate-950 p-1.5 rounded-2xl border border-slate-800 flex-wrap">
             <button
               type="button"
-              onClick={() => setActiveView('RECEIVED')}
+              onClick={() => handleSelectView('ALL')}
+              className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-black transition-all cursor-pointer ${
+                activeView === 'ALL'
+                  ? 'bg-indigo-600 text-white shadow-md'
+                  : 'text-slate-400 hover:text-white hover:bg-slate-900'
+              }`}
+            >
+              <MessageSquare className="w-4 h-4" />
+              <span>TOUS LES ÉCHANGES ({allDeptRequests.length})</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => handleSelectView('RECEIVED')}
               className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-black transition-all cursor-pointer ${
                 activeView === 'RECEIVED'
                   ? 'bg-indigo-600 text-white shadow-md'
@@ -622,7 +704,7 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
 
             <button
               type="button"
-              onClick={() => setActiveView('SENT')}
+              onClick={() => handleSelectView('SENT')}
               className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-black transition-all cursor-pointer ${
                 activeView === 'SENT'
                   ? 'bg-indigo-600 text-white shadow-md'
@@ -648,7 +730,7 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
 
             <button
               type="button"
-              onClick={() => setActiveView(activeView === 'COMPOSE' ? 'RECEIVED' : 'COMPOSE')}
+              onClick={() => handleSelectView(activeView === 'COMPOSE' ? 'ALL' : 'COMPOSE')}
               className={`flex items-center gap-2 px-4 py-2.5 rounded-2xl text-xs font-black transition-all cursor-pointer shadow-lg ${
                 activeView === 'COMPOSE'
                   ? 'bg-rose-600 text-white hover:bg-rose-500'
@@ -944,9 +1026,10 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
           ) : (
             <div className="space-y-4">
               {displayedRequests.map(req => {
-                const isReceived = activeView === 'RECEIVED';
+                const isReceived = isDeptMatch(req.recipientRole, normalizedCurrentDeptKey) ||
+                                   isDeptMatch(req.recipientRoleLabel, normalizedCurrentDeptKey);
                 const otherDeptKey = isReceived ? req.senderRole : req.recipientRole;
-                const otherDeptConfig = getEligibleDeptConfig(otherDeptKey);
+                const otherDeptConfig = getEligibleDeptConfig(normalizeToEligibleDeptKey(otherDeptKey));
                 const isExpanded = expandedRequestId === req.id;
                 const threadMessages = getThreadMessages(req);
                 const statusInfo = getDynamicStatus(req);
@@ -1014,9 +1097,20 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
                               <span>{otherDeptConfig?.icon || '🛡️'}</span>
                               <span>
                                 {isReceived
-                                  ? `De : ${otherDeptConfig?.name || req.senderRole}`
-                                  : `Pour : ${otherDeptConfig?.name || req.recipientRole}`}
+                                  ? `De : ${otherDeptConfig?.name || req.senderRoleLabel || req.senderRole}`
+                                  : `Pour : ${otherDeptConfig?.name || req.recipientRoleLabel || req.recipientRole}`}
                               </span>
+                            </span>
+
+                            {/* Indicateur de sens Reçue / Émise */}
+                            <span
+                              className={`text-[10px] font-black px-2 py-0.5 rounded-md border flex items-center gap-1 ${
+                                isReceived
+                                  ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30'
+                                  : 'bg-indigo-500/10 text-indigo-300 border-indigo-500/30'
+                              }`}
+                            >
+                              <span>{isReceived ? '📥 Reçue' : '📤 Émise'}</span>
                             </span>
 
                             {/* Statut dynamique */}
@@ -1086,8 +1180,9 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
                           <div className="space-y-3.5 pt-1">
                             {threadMessages.map((msg, idx) => {
                               const isFromCurrentDept =
-                                normalizeToEligibleDeptKey(msg.senderRole) === normalizedCurrentDeptKey;
-                              const msgDeptConfig = getEligibleDeptConfig(msg.senderRole);
+                                isDeptMatch(msg.senderRole, normalizedCurrentDeptKey) ||
+                                isDeptMatch(msg.senderRoleLabel, normalizedCurrentDeptKey);
+                              const msgDeptConfig = getEligibleDeptConfig(normalizeToEligibleDeptKey(msg.senderRole));
                               const msgTimeStr = msg.createdAt
                                 ? new Date(msg.createdAt).toLocaleDateString('fr-FR', {
                                     day: '2-digit',
