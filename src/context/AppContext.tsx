@@ -640,17 +640,21 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
 
         // Enregistrement automatique de présence admin pour les sessions persistantes de la veille
-        if (currentUser.type === 'ADMIN' && currentUser.adminRole) {
-          recordAdminActivity(currentUser.adminRole, currentUser.adminRole, currentUser.adminRole);
-        } else if (currentUser.type === 'MEMBER' && currentUser.member) {
-          const role = currentUser.member.assignedRole || currentUser.adminRole;
-          if (role) {
-            recordAdminActivity(
-              role,
-              `${currentUser.member.firstName} (${currentUser.member.nickname})`,
-              currentUser.member.id
-            );
+        try {
+          if (currentUser.type === 'ADMIN' && currentUser.adminRole) {
+            recordAdminActivity(currentUser.adminRole, currentUser.adminRole, currentUser.adminRole);
+          } else if (currentUser.type === 'MEMBER' && currentUser.member) {
+            const role = currentUser.member.assignedRole || currentUser.adminRole;
+            if (role) {
+              recordAdminActivity(
+                role,
+                `${currentUser.member.firstName || ''} (${currentUser.member.nickname || ''})`,
+                currentUser.member.id
+              );
+            }
           }
+        } catch (actErr) {
+          console.warn('Enregistrement automatique présence admin ignoré:', actErr);
         }
       } else {
         localStorage.removeItem(EROUAMA_ACTIVE_SESSION_KEY);

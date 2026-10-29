@@ -552,14 +552,18 @@ export const AdminPortal: React.FC = () => {
 
   // Enregistrement automatique de l'activité/présence admin lors de l'accès à l'Espace Admin
   useEffect(() => {
-    if (activeRole) {
-      const memberName =
-        currentUser?.member?.nickname ||
-        currentUser?.member?.firstName ||
-        currentUser?.firstName ||
-        activeRole;
-      const userId = currentUser?.member?.id || currentUser?.id || activeRole;
-      recordAdminActivity(activeRole, memberName, userId);
+    if (activeRole && typeof recordAdminActivity === 'function') {
+      try {
+        const memberName =
+          currentUser?.member?.nickname ||
+          currentUser?.member?.firstName ||
+          currentUser?.firstName ||
+          activeRole;
+        const userId = currentUser?.member?.id || currentUser?.id || activeRole;
+        recordAdminActivity(activeRole, memberName, userId).catch(() => {});
+      } catch (err) {
+        console.warn('recordAdminActivity non bloquant:', err);
+      }
     }
   }, [activeRole, currentUser, recordAdminActivity]);
 

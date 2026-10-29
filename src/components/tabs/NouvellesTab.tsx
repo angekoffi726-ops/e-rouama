@@ -99,7 +99,7 @@ export const NouvellesTab: React.FC<NouvellesTabProps> = ({ onNavigateTab }) => 
     }
 
     // B. Filtrage strict par excludedMemberIds (Auteur / payeur masqué pour lui-même)
-    if (msg.excludedMemberIds && msg.excludedMemberIds.length > 0) {
+    if (Array.isArray(msg.excludedMemberIds) && msg.excludedMemberIds.length > 0) {
       if (currentUser?.id && msg.excludedMemberIds.includes(currentUser.id)) return false;
       if (currentMemberId && msg.excludedMemberIds.includes(currentMemberId)) return false;
     }

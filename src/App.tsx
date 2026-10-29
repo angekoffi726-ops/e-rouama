@@ -240,7 +240,7 @@ function MainLayout() {
     }
 
     // Filtrage strict par excludedMemberIds (Auteur / payeur masqué pour lui-même)
-    if (msg.excludedMemberIds && msg.excludedMemberIds.length > 0) {
+    if (Array.isArray(msg.excludedMemberIds) && msg.excludedMemberIds.length > 0) {
       if (currentUser?.id && msg.excludedMemberIds.includes(currentUser.id)) return false;
       if (memberId && msg.excludedMemberIds.includes(memberId)) return false;
     }
@@ -270,7 +270,7 @@ function MainLayout() {
       }
     }
 
-    if (memberId && msg.dismissedBy && msg.dismissedBy.includes(memberId)) return false;
+    if (memberId && Array.isArray(msg.dismissedBy) && msg.dismissedBy.includes(memberId)) return false;
     if (currentUser?.type === 'MEMBER') {
       if (msg.targetAudience === 'TOUS') return true;
       if (msg.targetAudience === memberDuesStatus) return true;
@@ -288,7 +288,11 @@ function MainLayout() {
 
   // Comptage dynamique basé strictement sur les messages actifs non lus provenant de Firestore
   const unreadGbairaiCount = memberId
-    ? activeGbairaiMessages.filter(msg => !(msg.readBy || []).includes(memberId) && !(currentUser?.id && (msg.readBy || []).includes(currentUser.id))).length
+    ? activeGbairaiMessages.filter(msg => {
+        const readList = Array.isArray(msg?.readBy) ? msg.readBy : [];
+        const isRead = readList.includes(memberId) || (currentUser?.id && readList.includes(currentUser.id));
+        return !isRead;
+      }).length
     : 0;
 
   const navItems = [
@@ -502,32 +506,72 @@ class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoundarySta
 
   componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
     console.error("ErrorBoundary caught an error during render:", error, errorInfo);
+    // Nettoyage automatique des sessions locales corrompues pour éviter les boucles infinies de blocage
+    try {
+      localStorage.removeItem('erouama_active_session');
+      localStorage.removeItem('rouama_user');
+      localStorage.removeItem('EROUAMA_ACTIVE_SESSION');
+      localStorage.removeItem('erouama_app_state_v2');
+      localStorage.removeItem('EROUAMA_STATE_V1');
+      sessionStorage.clear();
+    } catch (e) {
+      console.warn('Erreur nettoyage automatique session corrompue:', e);
+    }
   }
+
+  handleFullResetAndReload = () => {
+    try {
+      localStorage.clear();
+      sessionStorage.clear();
+    } catch (e) {
+      console.warn('Erreur purge cache local:', e);
+    }
+    window.location.href = '/';
+  };
+
+  handleDirectUnlock = () => {
+    try {
+      localStorage.removeItem('erouama_active_session');
+      localStorage.removeItem('rouama_user');
+      localStorage.removeItem('EROUAMA_ACTIVE_SESSION');
+      localStorage.removeItem('erouama_app_state_v2');
+      sessionStorage.clear();
+    } catch (e) {}
+    this.setState({ hasError: false, error: undefined });
+  };
 
   render() {
     if (this.state.hasError) {
       return (
-        <div className="min-h-screen bg-[#F5EEDC] flex items-center justify-center p-6 text-center font-sans">
-          <div className="bg-white rounded-[2.5rem] p-8 max-w-md shadow-2xl border border-rose-200 space-y-4">
-            <div className="w-16 h-16 bg-rose-100 text-rose-600 rounded-2xl flex items-center justify-center mx-auto text-2xl font-black shadow-inner">
-              ⚠️
+        <div className="min-h-screen bg-[#F5EEDC] flex items-center justify-center p-4 sm:p-6 text-center font-sans">
+          <div className="bg-white rounded-[2.5rem] p-6 sm:p-8 max-w-md w-full shadow-2xl border border-rose-200 space-y-5">
+            <div className="w-16 h-16 bg-emerald-100 text-emerald-700 rounded-2xl flex items-center justify-center mx-auto text-2xl font-black shadow-inner">
+              🛡️
             </div>
-            <h2 className="text-xl font-black text-slate-900">Transition de Vue Protégée</h2>
-            <p className="text-xs text-slate-600 font-medium">
-              Une anomalie d'affichage est survenue. Cliquez sur le bouton ci-dessous pour réinitialiser la session en toute sécurité.
-            </p>
-            <button
-              onClick={() => {
-                localStorage.removeItem('EROUAMA_STATE_V1');
-                localStorage.removeItem('erouama_active_session');
-                localStorage.removeItem('rouama_user');
-                localStorage.removeItem('erouama_app_state_v2');
-                window.location.reload();
-              }}
-              className="w-full bg-[#E67E22] hover:bg-[#D35400] text-white font-black py-3.5 px-6 rounded-2xl shadow-lg transition-all text-sm active:scale-95"
-            >
-              Recharger l'Application E-ROUAMA
-            </button>
+            <div className="space-y-2">
+              <h2 className="text-xl font-black text-slate-900">Rétablissement de l'Accès Sécurisé</h2>
+              <p className="text-xs text-slate-600 font-medium">
+                Une interruption est survenue lors de l'affichage. Vos données sont sécurisées. Vous pouvez débloquer et accéder directement à la connexion, ou vider le cache local.
+              </p>
+            </div>
+
+            <div className="space-y-3 pt-2">
+              <button
+                type="button"
+                onClick={this.handleDirectUnlock}
+                className="w-full bg-[#355E3B] hover:bg-[#2A4B2F] text-white font-black py-3.5 px-6 rounded-2xl shadow-lg transition-all text-sm active:scale-95 cursor-pointer flex items-center justify-center gap-2"
+              >
+                <span>🔑 Accéder à l'Écran de Connexion</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={this.handleFullResetAndReload}
+                className="w-full bg-[#E67E22] hover:bg-[#D35400] text-white font-black py-3.5 px-6 rounded-2xl shadow-lg transition-all text-sm active:scale-95 cursor-pointer flex items-center justify-center gap-2"
+              >
+                <span>🔄 Recharger l'Application E-ROUAMA</span>
+              </button>
+            </div>
           </div>
         </div>
       );
@@ -541,7 +585,9 @@ export default function App() {
   return (
     <ErrorBoundary>
       <AppProvider>
-        <MainLayout />
+        <ErrorBoundary>
+          <MainLayout />
+        </ErrorBoundary>
       </AppProvider>
     </ErrorBoundary>
   );
