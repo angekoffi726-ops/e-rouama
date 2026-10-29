@@ -22,12 +22,19 @@ import { InstallPwaBanner } from './components/InstallPwaBanner';
 import { UpdatePrompt } from './components/UpdatePrompt';
 import { InAppNotificationToast, ForegroundNotification } from './components/InAppNotificationToast';
 
-function MainLayout() {
-  const { currentUser, logout, members, newsItems, gbairaiMessages, getMemberDuesStatus, markAllGbairaiAsRead } = useApp();
+interface AuthenticatedAppProps {
+  currentUser: any;
+  rawMember: RouamaMember;
+}
+
+function AuthenticatedApp({ currentUser, rawMember }: AuthenticatedAppProps) {
+  const { logout, members, newsItems, gbairaiMessages, getMemberDuesStatus, markAllGbairaiAsRead } = useApp();
   const [activeTab, setActiveTab] = useState<TabType>('DASHBOARD');
   const [targetDocId, setTargetDocId] = useState<string | undefined>(undefined);
   const [isAdminChangePasswordOpen, setIsAdminChangePasswordOpen] = useState(false);
   const [foregroundToast, setForegroundToast] = useState<ForegroundNotification | null>(null);
+
+  const memberId = rawMember.id;
 
   const handleNavigateTab = (tab: TabType, docId?: string) => {
     setActiveTab(tab);
@@ -78,63 +85,14 @@ function MainLayout() {
     };
   }, [currentUser?.id, currentUser?.type, currentUser?.adminRole]);
 
-  // RÈGLE D'OR : Total security at startup
-  if (!currentUser) {
-    return (
-      <>
-        <AuthScreen />
-        <UpdatePrompt />
-        <InAppNotificationToast
-          notification={foregroundToast}
-          onClose={() => setForegroundToast(null)}
-        />
-      </>
-    );
-  }
-
-  // SÉCURISATION CRITIQUE DES ROUTES / VUES PROTÉGÉES :
-  // L'accès direct aux vues protégées est STRICTEMENT réservé aux membres officiels authentifiés.
-  // Recherche robuste du membre authentifié par id, puis par prénom ou surnom.
-  const rawMember = useMemo(() => {
-    if (!currentUser) return undefined;
-    if (currentUser.member && currentUser.member.id) return currentUser.member;
-    const byId = currentUser.id ? members.find(m => String(m.id).trim() === String(currentUser.id).trim()) : undefined;
-    if (byId) return byId;
-    const searchName = currentUser.firstName || (currentUser.member as any)?.firstName;
-    if (searchName) {
-      const byName = members.find(m =>
-        normalizeRosterString(m.firstName) === normalizeRosterString(searchName) ||
-        normalizeRosterString(m.nickname) === normalizeRosterString(searchName)
-      );
-      if (byName) return byName;
-    }
-    if ((currentUser as any).id) return currentUser as unknown as RouamaMember;
-    return undefined;
-  }, [currentUser, members]);
-
-  // Si une session résiduelle corrompue existe sans membre valide, déconnexion propre asynchrone (pas pendant le rendu)
+  // Auto-marquage des messages Gbairai comme lus à l'ouverture de l'onglet
   useEffect(() => {
-    if (currentUser && (!rawMember || !rawMember.id)) {
-      console.warn("Session locale invalide au démarrage, réinitialisation...");
-      logout();
+    if (activeTab === 'NOUVELLES' && memberId) {
+      markAllGbairaiAsRead(memberId);
     }
-  }, [currentUser, rawMember, logout]);
-
-  if (!rawMember || !rawMember.id) {
-    return (
-      <>
-        <AuthScreen />
-        <UpdatePrompt />
-        <InAppNotificationToast
-          notification={foregroundToast}
-          onClose={() => setForegroundToast(null)}
-        />
-      </>
-    );
-  }
+  }, [activeTab, memberId, markAllGbairaiAsRead]);
 
   // Privilèges administratifs du membre authentifié
-  const memberId = rawMember.id;
   const defaultMeta = memberId
     ? getDefaultRolesForMember(memberId, rawMember.firstName, rawMember.nickname)
     : { roles: ['membre'], departments: [], adminRole: undefined };
@@ -340,13 +298,6 @@ function MainLayout() {
     return true;
   });
 
-  // Auto-marquage des messages Gbairai comme lus à l'ouverture de l'onglet
-  useEffect(() => {
-    if (activeTab === 'NOUVELLES' && memberId) {
-      markAllGbairaiAsRead(memberId);
-    }
-  }, [activeTab, memberId, markAllGbairaiAsRead]);
-
   // Comptage dynamique basé strictement sur les messages actifs non lus provenant de Firestore
   const unreadGbairaiCount = memberId
     ? activeGbairaiMessages.filter(msg => {
@@ -542,6 +493,47 @@ function MainLayout() {
       />
     </div>
   );
+}
+
+function MainLayout() {
+  const { currentUser, logout, members } = useApp();
+
+  // Recherche robuste du membre authentifié par identifiant, prénom ou surnom
+  const rawMember = useMemo(() => {
+    if (!currentUser) return undefined;
+    if (currentUser.member && currentUser.member.id) return currentUser.member;
+    const byId = currentUser.id ? members.find(m => String(m.id).trim() === String(currentUser.id).trim()) : undefined;
+    if (byId) return byId;
+    const searchName = currentUser.firstName || (currentUser.member as any)?.firstName;
+    if (searchName) {
+      const byName = members.find(m =>
+        normalizeRosterString(m.firstName) === normalizeRosterString(searchName) ||
+        normalizeRosterString(m.nickname) === normalizeRosterString(searchName)
+      );
+      if (byName) return byName;
+    }
+    if ((currentUser as any).id) return currentUser as unknown as RouamaMember;
+    return undefined;
+  }, [currentUser, members]);
+
+  // Si une session résiduelle corrompue existe sans membre valide, déconnexion propre asynchrone
+  useEffect(() => {
+    if (currentUser && (!rawMember || !rawMember.id)) {
+      console.warn("Session locale invalide au démarrage, réinitialisation...");
+      logout();
+    }
+  }, [currentUser, rawMember, logout]);
+
+  if (!currentUser || !rawMember || !rawMember.id) {
+    return (
+      <>
+        <AuthScreen />
+        <UpdatePrompt />
+      </>
+    );
+  }
+
+  return <AuthenticatedApp key={rawMember.id} currentUser={currentUser} rawMember={rawMember} />;
 }
 
 interface ErrorBoundaryProps {
