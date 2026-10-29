@@ -413,10 +413,11 @@ export const SuiviProgrammeConsole: React.FC<SuiviProgrammeConsoleProps> = () =>
   const [infoSearchQuery, setInfoSearchQuery] = useState<string>('');
 
   // =========================================================
-  // ÉCOUTE FIRESTORE EN TEMPS RÉEL DES CONNEXIONS ET ACTIVITÉS ADMINS
+  // ÉCOUTE FIRESTORE EN TEMPS RÉEL DES CONNEXIONS ET ACTIVITÉS ADMINS & GBAÏRAÏ
   // =========================================================
   const [realtimeAdminLogs, setRealtimeAdminLogs] = useState<AdminLoginLog[]>([]);
   const [realtimeAdminDocs, setRealtimeAdminDocs] = useState<Record<string, any>>({});
+  const [realtimeNewsItems, setRealtimeNewsItems] = useState<NewsItem[]>([]);
 
   useEffect(() => {
     let isMounted = true;
@@ -454,10 +455,42 @@ export const SuiviProgrammeConsole: React.FC<SuiviProgrammeConsoleProps> = () =>
       }
     );
 
+    // 3. Abonnement en temps réel sur la collection news pour actualisation automatique des lectures Gbairai
+    const unsubNews = onSnapshot(
+      collection(db, 'news'),
+      (snapshot) => {
+        if (!isMounted) return;
+        const loaded: NewsItem[] = [];
+        snapshot.forEach((d) => {
+          const item = { id: d.id, ...(d.data() as any) };
+          if (
+            item.deleted === true ||
+            item.isDeleted === true ||
+            item.status === 'deleted' ||
+            item.status === 'supprime' ||
+            item.status === 'hidden' ||
+            item.isHidden === true ||
+            item.dispatchChannel === 'MAIL'
+          ) {
+            return;
+          }
+          loaded.push(item);
+        });
+        if (loaded.length > 0) {
+          loaded.sort((a, b) => b.id.localeCompare(a.id));
+          setRealtimeNewsItems(loaded);
+        }
+      },
+      (err) => {
+        console.warn('Erreur abonnement temps réel news Gbairai:', err);
+      }
+    );
+
     return () => {
       isMounted = false;
       unsubLogs();
       unsubAdmins();
+      unsubNews();
     };
   }, []);
 
@@ -465,6 +498,11 @@ export const SuiviProgrammeConsole: React.FC<SuiviProgrammeConsoleProps> = () =>
     if (realtimeAdminLogs.length > 0) return realtimeAdminLogs;
     return adminLogs || [];
   }, [realtimeAdminLogs, adminLogs]);
+
+  const effectiveNewsItems = useMemo(() => {
+    if (realtimeNewsItems.length > 0) return realtimeNewsItems;
+    return newsItems || [];
+  }, [realtimeNewsItems, newsItems]);
 
   // Date du jour pour le contrôle d'assiduité
   const todayDateStrings = useMemo(() => {
@@ -662,7 +700,7 @@ export const SuiviProgrammeConsole: React.FC<SuiviProgrammeConsoleProps> = () =>
   }
 
   const memberGbairaiStatuses = useMemo<MemberGbairaiReadStatus[]>(() => {
-    const activeNews = (newsItems || []).filter((msg) => {
+    const activeNews = (effectiveNewsItems || []).filter((msg) => {
       if (!msg) return false;
       if (msg.dispatchChannel === 'MAIL') return false;
       if (
@@ -752,7 +790,7 @@ export const SuiviProgrammeConsole: React.FC<SuiviProgrammeConsoleProps> = () =>
         readPercentage,
       };
     });
-  }, [members, newsItems, getMemberDuesStatus]);
+  }, [members, effectiveNewsItems, getMemberDuesStatus]);
 
   // Compteurs dérivés pour le suivi Gbairai
   const membersWithUnreadCount = useMemo(

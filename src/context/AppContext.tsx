@@ -287,7 +287,7 @@ interface AppContextType {
   ) => void;
   deleteNewsItem: (newsId: string) => void;
   dismissNewsForMember: (newsId: string) => void;
-  markAllGbairaiAsRead: (specificMemberId?: string) => void;
+  markAllGbairaiAsRead: (specificMemberId?: string) => Promise<void> | void;
   assignMemberRole: (memberId: string, role?: AdminRole) => void;
   resetMemberPin: (memberId: string) => void;
   updateMemberAvatar: (memberId: string, avatarDataUrl: string) => Promise<boolean>;
@@ -4095,13 +4095,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
-  const markAllGbairaiAsRead = (specificMemberId?: string) => {
-    const targetMemberId = specificMemberId || currentUser?.member?.id || (currentUser as any)?.id;
+  const markAllGbairaiAsRead = async (specificMemberId?: string): Promise<void> => {
+    const targetMemberId = String(specificMemberId || currentUser?.member?.id || (currentUser as any)?.id || '').trim();
     if (!targetMemberId) return;
 
-    const targetMember = members.find(m => String(m.id) === String(targetMemberId));
+    const targetMember = members.find(m => String(m.id).trim() === targetMemberId);
     const targetNick = targetMember?.nickname || (currentUser?.member?.id === targetMemberId ? currentUser?.member?.nickname : undefined);
-    const toAdd = [String(targetMemberId)];
+    const toAdd = [targetMemberId];
     if (targetNick) toAdd.push(targetNick);
 
     try {
@@ -4111,36 +4111,76 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       localStorage.setItem(readKey, JSON.stringify(newStored));
     } catch {}
 
-    // 1. Mise à jour synchrone de l'état local pour remise immédiate du compteur à 0
-    const unreadDocsToSync: { id: string; readBy: string[] }[] = [];
+    // 1. Calcul synchrone immédiat des documents non lus à mettre à jour
+    const docsToUpdate: { id: string; readBy: string[] }[] = [];
+    (newsItems || []).forEach(n => {
+      const currentRead = (n.readBy || []).map(r => String(r).trim());
+      const isAlreadyRead =
+        currentRead.includes(targetMemberId) ||
+        (targetNick && currentRead.some(r => r.toUpperCase() === targetNick.toUpperCase()));
 
-    setNewsItems(prev => {
-      let hasChanges = false;
-      const next = prev.map(n => {
-        const currentRead = (n.readBy || []).map(String);
-        const isAlreadyRead =
-          currentRead.includes(String(targetMemberId)) ||
-          (targetNick && currentRead.some(r => r.toUpperCase() === targetNick.toUpperCase()));
-
-        if (isAlreadyRead) return n;
-        hasChanges = true;
+      if (!isAlreadyRead) {
         const updatedRead = Array.from(new Set([...currentRead, ...toAdd]));
-        unreadDocsToSync.push({ id: n.id, readBy: updatedRead });
-        return { ...n, readBy: updatedRead };
-      });
-      return hasChanges ? next : prev;
+        docsToUpdate.push({ id: n.id, readBy: updatedRead });
+      }
     });
 
-    // 2. Persistance Firestore en arrière-plan pour synchronisation immédiate du tableau SDP
-    if (unreadDocsToSync.length > 0) {
-      unreadDocsToSync.forEach(({ id, readBy }) => {
-        setDoc(doc(db, 'news', id), { readBy }, { merge: true }).catch(err => {
-          console.warn(`Erreur marquage Firestore lu Gbairai doc [${id}]:`, err);
-        });
-        try {
-          setDoc(doc(db, 'announcements', id), { readBy }, { merge: true }).catch(() => {});
-        } catch (_) {}
+    // 2. Mise à jour de l'état local pour remise instantanée du compteur visuel à 0
+    setNewsItems(prev => {
+      return prev.map(n => {
+        const found = docsToUpdate.find(u => u.id === n.id);
+        if (found) {
+          return { ...n, readBy: found.readBy };
+        }
+        const currentRead = (n.readBy || []).map(r => String(r).trim());
+        const isAlreadyRead =
+          currentRead.includes(targetMemberId) ||
+          (targetNick && currentRead.some(r => r.toUpperCase() === targetNick.toUpperCase()));
+        if (!isAlreadyRead) {
+          return { ...n, readBy: Array.from(new Set([...currentRead, ...toAdd])) };
+        }
+        return n;
       });
+    });
+
+    // 3. Écriture immédiate dans Firestore (collections news et announcements)
+    if (docsToUpdate.length > 0) {
+      await Promise.allSettled(
+        docsToUpdate.map(async ({ id, readBy }) => {
+          try {
+            await setDoc(doc(db, 'news', id), { readBy }, { merge: true });
+          } catch (e) {
+            console.warn(`Erreur setDoc news ${id}:`, e);
+          }
+          try {
+            await setDoc(doc(db, 'announcements', id), { readBy }, { merge: true });
+          } catch (_) {}
+        })
+      );
+    }
+
+    // 4. Balayage Firestore complet en arrière-plan pour garantir 100% d'exactitude
+    try {
+      const snap = await getDocs(collection(db, 'news'));
+      const writes: Promise<any>[] = [];
+      snap.forEach(d => {
+        const data = d.data();
+        if (data.deleted === true || data.isDeleted === true || data.status === 'deleted' || data.status === 'hidden' || data.isHidden === true) return;
+        const currentRead = (data.readBy || []).map((r: any) => String(r).trim());
+        const isRead =
+          currentRead.includes(targetMemberId) ||
+          (targetNick && currentRead.some((r: string) => r.toUpperCase() === targetNick.toUpperCase()));
+        if (!isRead) {
+          const updatedRead = Array.from(new Set([...currentRead, ...toAdd]));
+          writes.push(setDoc(doc(db, 'news', d.id), { readBy: updatedRead }, { merge: true }));
+          writes.push(setDoc(doc(db, 'announcements', d.id), { readBy: updatedRead }, { merge: true }).catch(() => {}));
+        }
+      });
+      if (writes.length > 0) {
+        await Promise.allSettled(writes);
+      }
+    } catch (err) {
+      console.warn('Erreur balayage Firestore news:', err);
     }
   };
 
