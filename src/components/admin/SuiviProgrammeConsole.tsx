@@ -871,7 +871,7 @@ export const SuiviProgrammeConsole: React.FC<SuiviProgrammeConsoleProps> = () =>
       a => a.fixedType === 'ANNIVERSAIRE' || a.id === 'ACT-ANNIVERSAIRE-2027' || a.title?.toUpperCase().includes('ANNIVERSAIRE')
     );
     const soireeAct = activities.find(
-      a => a.fixedType === 'SOIREE_ROUAMA' || a.id === 'ACT-SOIREE-2026' || a.title?.toUpperCase().includes('SOIRÉE') || a.title?.toUpperCase().includes('SOIREE')
+      a => a.fixedType === 'SOIREE_ROUAMA' || a.id === 'ACT-SOIREE-2027' || a.id === 'ACT-SOIREE-2026' || a.title?.toUpperCase().includes('SOIRÉE') || a.title?.toUpperCase().includes('SOIREE')
     );
 
     // Activité Réelle 1 : Anniversaire Rouama (21 Mars 2027)
@@ -894,12 +894,14 @@ export const SuiviProgrammeConsole: React.FC<SuiviProgrammeConsoleProps> = () =>
       description: annivAct?.description || 'Célébration officielle statutaire de l\'Anniversaire ROUAMA',
     });
 
-    // Activité Réelle 2 : Soirée Rouama (19 Décembre 2026)
-    const soireeTitle = soireeAct?.title || 'GRANDE SOIRÉE ROUAMA 2026 (GALA FRATERNEL)';
-    const soireeDate = soireeAct?.eventDate || '19 Décembre 2026';
+    // Activité Réelle 2 : Soirée Rouama (Août 2027)
+    const rawSoireeTitle = soireeAct?.title || 'SOIRÉE ROUAMA 2027';
+    const soireeTitle = rawSoireeTitle.replace(/2026/g, '2027');
+    const rawSoireeDate = soireeAct?.eventDate || 'Août 2027';
+    const soireeDate = rawSoireeDate.includes('2026') ? 'Août 2027' : rawSoireeDate;
     const soireeReminder = calculateReminderDate(soireeDate);
     list.push({
-      id: soireeAct?.id || 'ACT-SOIREE-2026',
+      id: soireeAct?.id || 'ACT-SOIREE-2027',
       departmentKey: 'ORGANISATION',
       departmentName: 'Commission Organisation',
       departmentIcon: '🎪',

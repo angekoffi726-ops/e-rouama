@@ -1369,10 +1369,71 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         ]);
 
         if (actSnap.status === 'fulfilled') {
+          const rawLoaded: EventActivity[] = [];
+          actSnap.value.forEach(d => {
+            const data = d.data() as any;
+            let actItem: EventActivity = { id: d.id, ...data };
+            // Harmonisation automatique si l'événement Soirée Rouama a conservé une date 2026 obsolète
+            if (
+              actItem.fixedType === 'SOIREE_ROUAMA' ||
+              actItem.id === 'ACT-SOIREE-2026' ||
+              actItem.id === 'ACT-SOIREE-2027' ||
+              actItem.title?.toUpperCase().includes('SOIRÉE') ||
+              actItem.title?.toUpperCase().includes('SOIREE')
+            ) {
+              if (actItem.eventDate === 'Août 2026' || actItem.eventYear === '2026' || !actItem.eventDate || actItem.eventDate.includes('2026')) {
+                actItem = {
+                  ...actItem,
+                  title: 'SOIRÉE ROUAMA 2027',
+                  eventDate: 'Août 2027',
+                  eventYear: '2027',
+                  eventMonth: '8',
+                  eventDay: '1',
+                  isDayPending: true,
+                };
+              }
+            }
+            rawLoaded.push(actItem);
+          });
+
+          // Déduplication stricte : ne conserver qu'un seul exemplaire de la Soirée Rouama et de l'Anniversaire
           const loaded: EventActivity[] = [];
-          actSnap.value.forEach(d => loaded.push({ id: d.id, ...(d.data() as any) }));
-          if (!loaded.some(a => a.fixedType === 'ANNIVERSAIRE' || a.id === 'ACT-ANNIVERSAIRE-2027')) loaded.push(DEFAULT_ANNIVERSAIRE_ACTIVITY);
-          if (!loaded.some(a => a.fixedType === 'SOIREE_ROUAMA' || a.id === 'ACT-SOIREE-2026')) loaded.push(DEFAULT_SOIREE_ACTIVITY);
+          let hasSoiree = false;
+          let hasAnniv = false;
+
+          for (const item of rawLoaded) {
+            const isSoiree =
+              item.fixedType === 'SOIREE_ROUAMA' ||
+              item.id === 'ACT-SOIREE-2027' ||
+              item.id === 'ACT-SOIREE-2026' ||
+              item.title?.toUpperCase().includes('SOIRÉE') ||
+              item.title?.toUpperCase().includes('SOIREE');
+            const isAnniv =
+              item.fixedType === 'ANNIVERSAIRE' ||
+              item.id === 'ACT-ANNIVERSAIRE-2027' ||
+              item.title?.toUpperCase().includes('ANNIVERSAIRE');
+
+            if (isSoiree) {
+              if (hasSoiree) continue;
+              hasSoiree = true;
+              loaded.push({ ...item, id: item.id === 'ACT-SOIREE-2026' ? 'ACT-SOIREE-2027' : item.id });
+              continue;
+            }
+
+            if (isAnniv) {
+              if (hasAnniv) continue;
+              hasAnniv = true;
+              loaded.push(item);
+              continue;
+            }
+
+            if (!loaded.some(a => a.id === item.id)) {
+              loaded.push(item);
+            }
+          }
+
+          if (!hasAnniv) loaded.push(DEFAULT_ANNIVERSAIRE_ACTIVITY);
+          if (!hasSoiree) loaded.push(DEFAULT_SOIREE_ACTIVITY);
           loaded.sort((a, b) => b.id.localeCompare(a.id));
           setActivities(loaded);
         }

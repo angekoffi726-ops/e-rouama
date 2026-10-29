@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useApp } from '../../context/AppContext';
 import { EventActivity, DEFAULT_ANNIVERSAIRE_ACTIVITY } from '../../types';
 import {
@@ -37,6 +37,30 @@ function getActivityTargetDate(act: EventActivity): { targetDate: Date | null; i
     return {
       targetDate: new Date(year, 2, 21, 0, 0, 0),
       isMonthYearOnly: false,
+      isIndeterminate: false,
+    };
+  }
+
+  // Case 0b: Specific Soirée Rouama event (Harmonisation 2027)
+  if (
+    act.fixedType === 'SOIREE_ROUAMA' ||
+    act.id === 'ACT-SOIREE-2027' ||
+    act.id === 'ACT-SOIREE-2026' ||
+    act.title?.toLowerCase().includes('soirée rouama') ||
+    act.title?.toLowerCase().includes('soiree rouama')
+  ) {
+    const yearMatch = act.eventDate ? act.eventDate.match(/\b(202\d|203\d)\b/) : null;
+    let year = act.eventYear && act.eventYear !== 'LATER'
+      ? parseInt(act.eventYear, 10)
+      : yearMatch
+      ? parseInt(yearMatch[1], 10)
+      : 2027;
+    if (year <= 2026) {
+      year = 2027;
+    }
+    return {
+      targetDate: new Date(year, 7, 1, 0, 0, 0), // 1er Août 2027 (0-indexed month 7)
+      isMonthYearOnly: true,
       isIndeterminate: false,
     };
   }
@@ -184,6 +208,23 @@ export const EventActivityCard: React.FC<EventActivityCardProps> = ({ activity: 
 
   const { targetDate, isMonthYearOnly, isIndeterminate } = getActivityTargetDate(act);
 
+  // Harmonisation robuste Soirée Rouama 2027 (Août 2027)
+  const isSoireeRouama =
+    act.fixedType === 'SOIREE_ROUAMA' ||
+    act.id === 'ACT-SOIREE-2027' ||
+    act.id === 'ACT-SOIREE-2026' ||
+    act.title?.toLowerCase().includes('soirée rouama') ||
+    act.title?.toLowerCase().includes('soiree rouama');
+
+  const displayTitle = isSoireeRouama
+    ? (act.title?.replace(/2026/g, '2027') || 'SOIRÉE ROUAMA 2027')
+    : act.title;
+
+  let displayEventDate = act.eventDate;
+  if (isSoireeRouama && (!displayEventDate || displayEventDate.includes('2026'))) {
+    displayEventDate = 'Août 2027';
+  }
+
   // Vérification de la nomination des membres du Comité Ad-Hoc
   const hasAdHocMembers = act.adHocRoles && Object.values(act.adHocRoles).some(val => {
     if (Array.isArray(val)) return val.length > 0;
@@ -236,7 +277,7 @@ export const EventActivityCard: React.FC<EventActivityCardProps> = ({ activity: 
             {/* Date de l'événement */}
             <span className="text-xs font-black text-slate-800 bg-slate-50 border border-slate-300 px-3.5 py-1.5 rounded-full inline-flex items-center gap-1.5 shadow-xs">
               <Calendar className="w-3.5 h-3.5 text-amber-600" />
-              <span>Date : {act.eventDate}</span>
+              <span>Date : {displayEventDate}</span>
             </span>
 
             {/* Lieu si disponible */}
@@ -258,7 +299,7 @@ export const EventActivityCard: React.FC<EventActivityCardProps> = ({ activity: 
 
           {/* Titre de l'événement */}
           <h3 className="text-2xl sm:text-3xl font-black text-slate-900 tracking-tight leading-tight">
-            {act.title}
+            {displayTitle}
           </h3>
         </div>
 
@@ -478,11 +519,39 @@ export const ActivitesTab: React.FC = () => {
     return Boolean(val && val !== 'Non désigné');
   });
 
-  // SUPPRESSION DU DOUBLON CÔTÉ SHOW :
-  // Seuls la Soirée Rouama et les autres événements (sorties, gala, etc.) figurent dans la section inférieure "Comités Ad-Hoc & Programmes d'Événements"
-  const otherPublishedActivities = activities.filter(
-    a => a.status === 'PUBLISHED' && a.fixedType !== 'ANNIVERSAIRE' && a.id !== 'ACT-ANNIVERSAIRE-2027' && !a.title?.toUpperCase().includes('ANNIVERSAIRE')
-  );
+  // SUPPRESSION STRICTE DU DOUBLON :
+  // Seule une unique carte pour la Soirée Rouama 2027 et les autres événements publiés figurent dans la section inférieure
+  const otherPublishedActivities = useMemo(() => {
+    const list = activities.filter(
+      a =>
+        a.status === 'PUBLISHED' &&
+        a.fixedType !== 'ANNIVERSAIRE' &&
+        a.id !== 'ACT-ANNIVERSAIRE-2027' &&
+        !a.title?.toUpperCase().includes('ANNIVERSAIRE')
+    );
+    const deduped: EventActivity[] = [];
+    let seenSoiree = false;
+
+    for (const act of list) {
+      const isSoiree =
+        act.fixedType === 'SOIREE_ROUAMA' ||
+        act.id === 'ACT-SOIREE-2027' ||
+        act.id === 'ACT-SOIREE-2026' ||
+        act.title?.toLowerCase().includes('soirée rouama') ||
+        act.title?.toLowerCase().includes('soiree rouama');
+
+      if (isSoiree) {
+        if (seenSoiree) continue;
+        seenSoiree = true;
+        deduped.push(act);
+      } else {
+        if (!deduped.some(existing => existing.id === act.id)) {
+          deduped.push(act);
+        }
+      }
+    }
+    return deduped;
+  }, [activities]);
 
   return (
     <div className="space-y-8 animate-fadeIn">

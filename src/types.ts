@@ -396,15 +396,15 @@ export const DEFAULT_ANNIVERSAIRE_ACTIVITY: EventActivity = {
 };
 
 export const DEFAULT_SOIREE_ACTIVITY: EventActivity = {
-  id: 'ACT-SOIREE-2026',
-  title: 'GRANDE SOIRÉE ROUAMA 2026 (GALA FRATERNEL)',
+  id: 'ACT-SOIREE-2027',
+  title: 'SOIRÉE ROUAMA 2027',
   eventType: 'FIXE',
   fixedType: 'SOIREE_ROUAMA',
-  eventDate: '19 Décembre 2026',
-  eventDay: '19',
-  eventMonth: '12',
-  eventYear: '2026',
-  isDayPending: false,
+  eventDate: 'Août 2027',
+  eventDay: '1',
+  eventMonth: '8',
+  eventYear: '2027',
+  isDayPending: true,
   status: 'PUBLISHED',
   budgetStatus: 'NONE',
   location: 'À définir',
