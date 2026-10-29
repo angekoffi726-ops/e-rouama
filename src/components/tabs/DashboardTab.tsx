@@ -116,7 +116,13 @@ export const DashboardTab: React.FC<DashboardTabProps> = ({ onNavigateTab }) => 
       if (!memberId) return;
       try {
         const stored = localStorage.getItem(`erouama_dismissed_news_${memberId}`);
-        setLocalDismissedNewsIds(stored ? JSON.parse(stored) : []);
+        const parsed: string[] = stored ? JSON.parse(stored) : [];
+        setLocalDismissedNewsIds(prev => {
+          if (prev.length === parsed.length && prev.every((v, i) => v === parsed[i])) {
+            return prev;
+          }
+          return parsed;
+        });
       } catch (_) {}
     };
     window.addEventListener('storage', handleStorageChange);

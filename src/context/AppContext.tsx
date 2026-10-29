@@ -437,10 +437,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (savedSession) {
         const parsed = JSON.parse(savedSession);
         if (parsed && !parsed.type && (parsed.firstName || parsed.nickname || parsed.id)) {
-          return { type: 'MEMBER', id: parsed.id, member: parsed };
+          return { type: 'MEMBER', activeView: 'MEMBER', id: parsed.id, member: parsed };
         }
         if (parsed && parsed.type === 'MEMBER' && parsed.member?.id && !parsed.id) {
           parsed.id = parsed.member.id;
+        }
+        // Sécurité stricte : refuser toute session sans membre authentifié
+        if (!parsed || (!parsed.member?.id && !parsed.id && !parsed.firstName)) {
+          return null;
         }
         return parsed;
       }
@@ -1896,7 +1900,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         };
 
         setMembers(prev => prev.map(m => m.id === memberId ? activatedMember : m));
-        setCurrentUser({ type: 'MEMBER', member: activatedMember });
+        setCurrentUser({ type: 'MEMBER', activeView: 'MEMBER', member: activatedMember, id: memberId });
         return { success: true, message: `Bienvenue chez vous, ${activatedMember.nickname} ! Votre compte a été activé.` };
       } catch (err) {
         console.error('Erreur activation première connexion:', err);
@@ -1955,7 +1959,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
 
     setMembers(prev => prev.map(m => m.id === memberId ? connectedMember : m));
-    setCurrentUser({ type: 'MEMBER', member: connectedMember });
+    setCurrentUser({ type: 'MEMBER', activeView: 'MEMBER', member: connectedMember, id: memberId });
 
     // Si le membre possède un rôle admin attribué, enregistrer dans admin_logs
     if (connectedMember.assignedRole) {
@@ -2049,58 +2053,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
-  // Connexion Admin
-  const loginAdmin = (inputRoleOrLogin: string, pin: string) => {
-    if (!inputRoleOrLogin || !inputRoleOrLogin.trim()) {
-      return { success: false, message: "Veuillez saisir le rôle ou l'identifiant administrateur." };
-    }
-
-    const storedAdmins = getStoredAdminCredentials();
-    const currentAdmins = adminUsers && adminUsers.length > 0 ? adminUsers : storedAdmins;
-
-    // Garantir que tous les rôles par défaut de ADMIN_USERS (dont SDP) sont toujours présents et reconnus
-    const effectiveAdmins = ADMIN_USERS.map(defaultAdmin => {
-      const live = (currentAdmins || []).find(a => a.id === defaultAdmin.id);
-      if (live) {
-        return {
-          ...defaultAdmin,
-          ...live,
-          loginId: live.loginId || defaultAdmin.loginId,
-          pin: live.pin || live.password || defaultAdmin.pin,
-          password: live.password || live.pin || defaultAdmin.password || defaultAdmin.pin,
-        };
-      }
-      return defaultAdmin;
-    });
-
-    const cleanInput = inputRoleOrLogin.trim().toUpperCase().replace(/[\s-]/g, '_');
-    const adminDef = effectiveAdmins.find(
-      a =>
-        a.id.toUpperCase() === cleanInput ||
-        (a.loginId && a.loginId.toUpperCase() === cleanInput) ||
-        a.roleName.toUpperCase() === cleanInput ||
-        a.roleName.toUpperCase().includes(cleanInput) ||
-        ((cleanInput === 'RESP_PROGRAMME' || cleanInput === 'SUIVI_PROGRAMME' || cleanInput.includes('PROGRAMME')) && a.id === 'SDP') ||
-        ((cleanInput === 'ORGANISATEUR' || cleanInput.includes('ORGANI')) && a.id === 'ORGANISATION') ||
-        ((cleanInput === 'RESP_PROJET' || cleanInput === 'RESPO_PROJET' || cleanInput.includes('PROJET')) && a.id === 'PROJET') ||
-        ((cleanInput === 'SUPER_ADMIN' || cleanInput === 'SUPERADMIN' || cleanInput === 'ADMIN_GENERAL') && a.id === 'SUPER_ADMIN')
-    );
-    if (!adminDef) {
-      return { success: false, message: 'Identifiant Administrateur invalide.' };
-    }
-
-    const expectedPassword = adminDef.password || adminDef.pin;
-    const cleanPin = (pin || '').trim();
-    if (!cleanPin || (expectedPassword !== cleanPin && adminDef.pin !== cleanPin && adminDef.password !== cleanPin)) {
-      return { success: false, message: 'Mot de passe Administrateur incorrect.' };
-    }
-
-    setCurrentUser({ type: 'ADMIN', adminRole: adminDef.id });
-
-    // 1. Enregistre un événement dans Firestore collection 'admin_logs'
-    logAdminConnection(adminDef.id, adminDef.roleName, adminDef.id);
-
-    return { success: true, message: `Connexion au rôle ${adminDef.roleName} réussie.` };
+  // Connexion Admin directe INTERDITE par la politique de sécurité stricte
+  // Seule la connexion Membre (Prénom + Code PIN) est autorisée pour accéder à la plateforme.
+  const loginAdmin = (_inputRoleOrLogin: string, _pin: string) => {
+    return {
+      success: false,
+      message: "Connexion directe par rôle administratif désactivée. Veuillez vous connecter obligatoirement avec votre prénom officiel de membre.",
+    };
   };
 
   const updateAdminCredentials = (roleId: AdminRole, newLoginId: string, newPin: string) => {
@@ -2268,6 +2227,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const totalRequiredMonths = Math.max(0, currentMonthNum - 1);
     const totalExpectedAmount = totalRequiredMonths * 500;
 
+    if (!memberId || !String(memberId).trim()) {
+      return {
+        status: 'RETARD',
+        unpaidMonths: 0,
+        totalPaid: 0,
+        totalExpected: totalExpectedAmount,
+      };
+    }
+
     const isPaymentValidated = (d: any) => {
       if (!d) return false;
       if (d.isHidden || d.status === 'hidden' || d.status === 'deleted' || d.status === 'REJECTED' || d.status === 'rejected') {
@@ -2294,10 +2262,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       );
     };
 
-    const memberDoc = members.find(m => String(m.id).trim() === String(memberId).trim());
-    const isSurl = String(memberId).trim() === '7' || memberDoc?.nickname?.toUpperCase()?.includes('SURL');
-    const calculatedPaid = isSurl ? 500 : declarations
+    const safeMembers = Array.isArray(members) ? members : [];
+    const memberDoc = safeMembers.find(m => m && String(m.id).trim() === String(memberId).trim());
+    const isSurl = String(memberId).trim() === '7' || Boolean(memberDoc?.nickname?.toUpperCase()?.includes('SURL'));
+    const safeDeclarations = Array.isArray(declarations) ? declarations : [];
+    const calculatedPaid = isSurl ? 500 : safeDeclarations
       .filter(d => 
+        d &&
         String(d.memberId).trim() === String(memberId).trim() && 
         (d.fund === 'COTISATION' || (d as any).caisse === 'Cotisation Mensuelle' || (d as any).type === 'Cotisation Mensuelle') && 
         isPaymentValidated(d)

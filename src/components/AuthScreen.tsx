@@ -294,13 +294,33 @@ export const AuthScreen: React.FC = () => {
 
     const inputName = memberLoginName.trim();
     if (!inputName) {
-      setErrorMsg('Veuillez saisir votre prénom ou identifiant.');
+      setErrorMsg('Veuillez saisir votre prénom officiel.');
       return;
     }
 
     const pinCodeSaisi = memberLoginPin.trim();
     if (!pinCodeSaisi || pinCodeSaisi.length < 4) {
-      setErrorMsg('Veuillez saisir votre code PIN (au moins 4 chiffres).');
+      setErrorMsg('Veuillez saisir votre code PIN à 4 chiffres.');
+      return;
+    }
+
+    // 0. VÉRIFICATION STRICTE DE SÉCURITÉ : Interdiction absolue de la connexion directe par rôle admin
+    const cleanUpper = inputName.toUpperCase().replace(/[\s-]/g, '_');
+    const FORBIDDEN_ADMIN_ROLES = [
+      'TRESORIER', 'TRESORERIE', 'TRESOR',
+      'PAYOR', 'RESP_PAYOR',
+      'CERVEAU', 'PRESIDENT', 'PRESIDENCE',
+      'SECRETARIAT', 'SECRETAIRE', 'SG',
+      'COM', 'COMMUNICATION', 'BIC',
+      'ORGANISATION', 'ORGANISATEUR', 'PCO',
+      'PROJET', 'AGR', 'RESPO_PROJET', 'RESP_PROJET',
+      'SPIRITUALITE', 'SPIRIT',
+      'SDP', 'PROGRAMME', 'SUIVI', 'RESP_PROGRAMME', 'SUIVI_PROGRAMME',
+      'SUPER_ADMIN', 'SUPERADMIN', 'ADMIN', 'ADMINISTRATEUR'
+    ];
+
+    if (FORBIDDEN_ADMIN_ROLES.includes(cleanUpper) || FORBIDDEN_ADMIN_ROLES.some(k => cleanUpper === k)) {
+      setErrorMsg("Connexion directe par rôle refusée. Le formulaire n'accepte strictement que le prénom officiel du membre.");
       return;
     }
 
@@ -315,18 +335,13 @@ export const AuthScreen: React.FC = () => {
         (m.fullRosterName || '').toLowerCase().includes(inputLower) ||
         normalizeName(m.firstName).toLowerCase() === inputLower ||
         normalizeName(m.nickname).toLowerCase() === inputLower ||
-        (m.id === '2' && (inputLower === 'ortiniel' || inputLower === 'esprit'))
+        (m.id === '2' && (inputLower === 'ortiniel' || inputLower === 'esprit')) ||
+        (m.id === '11' && (inputLower === 'clemso' || inputLower === 'leger' || inputLower === 'stanis' || inputLower === 'venceslas'))
       );
 
-      // Si aucun membre n'est trouvé, vérifier s'il s'agit d'un compte Administrateur direct (TRESORIER, CERVEAU, PAYOR, etc.)
+      // Si aucun membre n'est reconnu, refuser l'accès sans exception
       if (!member) {
-        const adminRes = loginAdmin(inputName, pinCodeSaisi);
-        if (adminRes.success) {
-          setSuccessMsg(adminRes.message);
-          clearAllFields();
-          return;
-        }
-        setErrorMsg("Prénom ou identifiant non reconnu. Veuillez vérifier l'orthographe.");
+        setErrorMsg("Désolé mais ce prénom ne correspond à aucun des 12 membres officiels Rouama. Veuillez saisir votre prénom officiel.");
         return;
       }
 
@@ -431,15 +446,8 @@ export const AuthScreen: React.FC = () => {
         return;
       }
 
-      // Cas 2 : Le compte est déjà activé -> Vérification du code PIN
+      // Cas 2 : Le compte est déjà activé -> Vérification stricte du code PIN
       if (inputPin !== expectedPin) {
-        // Possibilité alternative : le membre a saisi son mot de passe de rôle Admin
-        const adminRes = loginAdmin(inputName, pinCodeSaisi);
-        if (adminRes.success) {
-          setSuccessMsg(adminRes.message);
-          clearAllFields();
-          return;
-        }
         setErrorMsg("Code PIN incorrect. Veuillez vérifier votre code.");
         return;
       }

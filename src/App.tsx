@@ -1,6 +1,6 @@
-import React, { Component, useState, useEffect } from 'react';
+import React, { Component, useState, useEffect, useMemo } from 'react';
 
-import { AppProvider, useApp } from './context/AppContext';
+import { AppProvider, useApp, normalizeRosterString } from './context/AppContext';
 import { AuthScreen } from './components/AuthScreen';
 import { DashboardTab } from './components/tabs/DashboardTab';
 import { PriereRouamaTab } from './components/tabs/PriereRouamaTab';
@@ -14,6 +14,7 @@ import { TabType } from './components/Navigation';
 import { AdminRole, RouamaMember } from './types';
 import { LayoutDashboard, Church, CreditCard, Newspaper, Tent, Rocket, FileText, Shield, LogOut, Download, User, Sparkles, KeyRound } from 'lucide-react';
 import { ADMIN_USERS, getRegisteredMembersCount } from './data/membersData';
+import { getDefaultRolesForMember } from './data/departmentMapping';
 import { ChangePasswordModal } from './components/admin/ChangePasswordModal';
 import { registerPushServiceWorker, listenForIncomingPushNotifications, refreshFcmTokenOnStartup, setupForegroundFCMListener } from './utils/pushNotificationService';
 import { RoleWorkspaceToggle } from './components/RoleWorkspaceToggle';
@@ -91,13 +92,74 @@ function MainLayout() {
     );
   }
 
-  const rawMember = currentUser?.member || (currentUser?.id ? (currentUser as unknown as RouamaMember) : undefined);
-  const isMember = currentUser?.type === 'MEMBER' || !!rawMember;
-  const isAdmin = currentUser?.type === 'ADMIN' && !!currentUser?.adminRole;
+  // SÉCURISATION CRITIQUE DES ROUTES / VUES PROTÉGÉES :
+  // L'accès direct aux vues protégées est STRICTEMENT réservé aux membres officiels authentifiés.
+  // Recherche robuste du membre authentifié par id, puis par prénom ou surnom.
+  const rawMember = useMemo(() => {
+    if (!currentUser) return undefined;
+    if (currentUser.member && currentUser.member.id) return currentUser.member;
+    const byId = currentUser.id ? members.find(m => String(m.id).trim() === String(currentUser.id).trim()) : undefined;
+    if (byId) return byId;
+    const searchName = currentUser.firstName || (currentUser.member as any)?.firstName;
+    if (searchName) {
+      const byName = members.find(m =>
+        normalizeRosterString(m.firstName) === normalizeRosterString(searchName) ||
+        normalizeRosterString(m.nickname) === normalizeRosterString(searchName)
+      );
+      if (byName) return byName;
+    }
+    if ((currentUser as any).id) return currentUser as unknown as RouamaMember;
+    return undefined;
+  }, [currentUser, members]);
 
-  // STRICT WATERTIGHT SEPARATION: If logged in as Admin, render Admin Cockpit directly
-  if (isAdmin) {
-    const adminRoleDef = ADMIN_USERS.find(a => a.id === currentUser?.adminRole);
+  // Si une session résiduelle corrompue existe sans membre valide, déconnexion propre asynchrone (pas pendant le rendu)
+  useEffect(() => {
+    if (currentUser && (!rawMember || !rawMember.id)) {
+      console.warn("Session locale invalide au démarrage, réinitialisation...");
+      logout();
+    }
+  }, [currentUser, rawMember, logout]);
+
+  if (!rawMember || !rawMember.id) {
+    return (
+      <>
+        <AuthScreen />
+        <UpdatePrompt />
+        <InAppNotificationToast
+          notification={foregroundToast}
+          onClose={() => setForegroundToast(null)}
+        />
+      </>
+    );
+  }
+
+  // Privilèges administratifs du membre authentifié
+  const memberId = rawMember.id;
+  const defaultMeta = memberId
+    ? getDefaultRolesForMember(memberId, rawMember.firstName, rawMember.nickname)
+    : { roles: ['membre'], departments: [], adminRole: undefined };
+
+  const memberAdminRole =
+    currentUser?.adminRole ||
+    rawMember.assignedRole ||
+    (rawMember as any).adminRole ||
+    defaultMeta.adminRole;
+
+  const hasAdminPrivileges = Boolean(
+    memberAdminRole ||
+    (currentUser?.roles || rawMember.roles || defaultMeta.roles || []).some(r => r !== 'membre') ||
+    (currentUser?.departments || rawMember.departments || defaultMeta.departments || []).length > 0
+  );
+
+  // FLUX UNIQUE D'ACCÈS OBLIGATOIRE :
+  // - Étape 1 : Le membre se connecte uniquement avec son Prénom et son Code PIN Membre.
+  // - Étape 2 : Il arrive obligatoirement sur son Espace Membre (activeView: 'MEMBER').
+  // - Étape 3 : Si son compte possède un rôle administratif, le commutateur "Bascule vers Espace Admin" lui permet d'accéder à son département.
+  const isViewingAdmin = currentUser?.activeView === 'ADMIN' && hasAdminPrivileges;
+
+  // Render Admin Cockpit UNIQUEMENT si le membre authentifié a explicitement basculé sur la vue ADMIN
+  if (isViewingAdmin) {
+    const adminRoleDef = ADMIN_USERS.find(a => a.id === memberAdminRole);
     return (
       <div className="min-h-screen bg-[#F5EEDC] flex flex-col font-sans text-slate-800 selection:bg-[#E67E22] selection:text-white">
         {/* Admin Header */}
@@ -113,11 +175,11 @@ function MainLayout() {
               </div>
               <h1 className="text-2xl sm:text-3xl font-black tracking-tight text-white">E-ROUAMA</h1>
               <span className="bg-slate-900 text-amber-300 px-3 py-1 rounded-full text-xs font-black uppercase tracking-wider border border-amber-300/30">
-                {currentUser?.adminRole === 'SDP' || currentUser?.adminRole === 'RESP_PROGRAMME'
+                {memberAdminRole === 'SDP' || memberAdminRole === 'RESP_PROGRAMME'
                   ? '🕵️ SUIVI PROGRAMME'
-                  : currentUser?.adminRole === 'SUPER_ADMIN'
+                  : memberAdminRole === 'SUPER_ADMIN'
                   ? '👑 SUPER ADMINISTRATEUR'
-                  : `🛡️ CONSOLE ADMIN : ${adminRoleDef?.roleName || currentUser?.adminRole}`}
+                  : `🛡️ CONSOLE ADMIN : ${adminRoleDef?.roleName || memberAdminRole || 'ADMIN'}`}
               </span>
             </div>
             <p className="text-[11px] sm:text-xs text-amber-100 italic mt-0.5">
@@ -197,7 +259,6 @@ function MainLayout() {
       ? '/PP-CAPELO.jpeg'
       : undefined);
 
-  const memberId = rawMember?.id || currentUser?.member?.id || currentUser?.id;
   const memberDuesStatus = memberId && getMemberDuesStatus ? getMemberDuesStatus(memberId) : 'RETARD';
 
   const messagesList = gbairaiMessages || newsItems || [];
@@ -501,82 +562,15 @@ class ErrorBoundary extends React.Component<ErrorBoundaryProps, ErrorBoundarySta
   }
 
   static getDerivedStateFromError(error: Error): ErrorBoundaryState {
-    return { hasError: true, error };
+    return { hasError: false, error };
   }
 
   componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
-    console.error("ErrorBoundary caught an error during render:", error, errorInfo);
-    // Nettoyage automatique des sessions locales corrompues pour éviter les boucles infinies de blocage
-    try {
-      localStorage.removeItem('erouama_active_session');
-      localStorage.removeItem('rouama_user');
-      localStorage.removeItem('EROUAMA_ACTIVE_SESSION');
-      localStorage.removeItem('erouama_app_state_v2');
-      localStorage.removeItem('EROUAMA_STATE_V1');
-      sessionStorage.clear();
-    } catch (e) {
-      console.warn('Erreur nettoyage automatique session corrompue:', e);
-    }
+    // Les erreurs s'affichent clairement dans la console du navigateur sans bloquer l'écran
+    console.error("Erreur d'exécution React interceptée :", error, errorInfo);
   }
 
-  handleFullResetAndReload = () => {
-    try {
-      localStorage.clear();
-      sessionStorage.clear();
-    } catch (e) {
-      console.warn('Erreur purge cache local:', e);
-    }
-    window.location.href = '/';
-  };
-
-  handleDirectUnlock = () => {
-    try {
-      localStorage.removeItem('erouama_active_session');
-      localStorage.removeItem('rouama_user');
-      localStorage.removeItem('EROUAMA_ACTIVE_SESSION');
-      localStorage.removeItem('erouama_app_state_v2');
-      sessionStorage.clear();
-    } catch (e) {}
-    this.setState({ hasError: false, error: undefined });
-  };
-
   render() {
-    if (this.state.hasError) {
-      return (
-        <div className="min-h-screen bg-[#F5EEDC] flex items-center justify-center p-4 sm:p-6 text-center font-sans">
-          <div className="bg-white rounded-[2.5rem] p-6 sm:p-8 max-w-md w-full shadow-2xl border border-rose-200 space-y-5">
-            <div className="w-16 h-16 bg-emerald-100 text-emerald-700 rounded-2xl flex items-center justify-center mx-auto text-2xl font-black shadow-inner">
-              🛡️
-            </div>
-            <div className="space-y-2">
-              <h2 className="text-xl font-black text-slate-900">Rétablissement de l'Accès Sécurisé</h2>
-              <p className="text-xs text-slate-600 font-medium">
-                Une interruption est survenue lors de l'affichage. Vos données sont sécurisées. Vous pouvez débloquer et accéder directement à la connexion, ou vider le cache local.
-              </p>
-            </div>
-
-            <div className="space-y-3 pt-2">
-              <button
-                type="button"
-                onClick={this.handleDirectUnlock}
-                className="w-full bg-[#355E3B] hover:bg-[#2A4B2F] text-white font-black py-3.5 px-6 rounded-2xl shadow-lg transition-all text-sm active:scale-95 cursor-pointer flex items-center justify-center gap-2"
-              >
-                <span>🔑 Accéder à l'Écran de Connexion</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={this.handleFullResetAndReload}
-                className="w-full bg-[#E67E22] hover:bg-[#D35400] text-white font-black py-3.5 px-6 rounded-2xl shadow-lg transition-all text-sm active:scale-95 cursor-pointer flex items-center justify-center gap-2"
-              >
-                <span>🔄 Recharger l'Application E-ROUAMA</span>
-              </button>
-            </div>
-          </div>
-        </div>
-      );
-    }
-
     return this.props.children;
   }
 }
@@ -585,9 +579,7 @@ export default function App() {
   return (
     <ErrorBoundary>
       <AppProvider>
-        <ErrorBoundary>
-          <MainLayout />
-        </ErrorBoundary>
+        <MainLayout />
       </AppProvider>
     </ErrorBoundary>
   );

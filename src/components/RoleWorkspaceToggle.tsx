@@ -33,9 +33,7 @@ export const RoleWorkspaceToggle: React.FC<{ compact?: boolean; className?: stri
     return null;
   }
 
-  const isCurrentlyAdminView =
-    currentUser.activeView === 'ADMIN' ||
-    (currentUser.type === 'ADMIN' && currentUser.activeView !== 'MEMBER');
+  const isCurrentlyAdminView = currentUser.activeView === 'ADMIN';
 
   const effectiveRole =
     currentUser.adminRole ||
