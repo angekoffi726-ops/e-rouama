@@ -100,9 +100,30 @@
         "readBy": { "type": "array", "items": { "type": "string" } }
       },
       "required": ["id", "title", "content"]
+    },
+    "ReligiousEvent": {
+      "title": "ReligiousEvent",
+      "description": "Événements religieux, messes et célébrations",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "eventDate": { "type": "string" },
+        "eventTime": { "type": "string" },
+        "location": { "type": "string" },
+        "theme": { "type": "string" },
+        "status": { "type": "string", "enum": ["DRAFT", "PUBLISHED"] },
+        "publishedAt": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "title", "eventDate", "eventTime", "location"]
     }
   },
   "firestore": {
+    "/religious_events/{relId}": {
+      "schema": "ReligiousEvent",
+      "description": "Programmation des événements religieux et célébrations"
+    },
     "/news/{newsId}": {
       "schema": "NewsItem",
       "description": "Communiqués et alertes GBAÏRAÏ"

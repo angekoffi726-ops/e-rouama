@@ -917,13 +917,32 @@ export const SuiviProgrammeConsole: React.FC<SuiviProgrammeConsoleProps> = () =>
     });
 
     // --- 2. DÉPARTEMENT SPIRITUALITÉ ---
-    // Aucune activité publiée pour le moment (aucune fausse activité inventée)
+    religiousEvents
+      .filter(r => r.status === 'PUBLISHED' || r.publishedToGbairai)
+      .forEach(relEvt => {
+        const relReminder = calculateReminderDate(relEvt.eventDate);
+        list.push({
+          id: relEvt.id,
+          departmentKey: 'SPIRITUALITE',
+          departmentName: 'Commission Spiritualité',
+          departmentIcon: '✨',
+          departmentBadgeColor: 'bg-amber-500/20 text-amber-300 border-amber-500/40',
+          title: relEvt.title,
+          date: `${relEvt.eventDate} à ${relEvt.eventTime}`,
+          location: relEvt.location || 'À définir',
+          reminderDate: relReminder.reminderDateStr,
+          isPast: relReminder.isPast,
+          isDueForReminder: relReminder.isDueForReminder,
+          statusLabel: 'Activité Publiée (Gbairai)',
+          description: relEvt.theme ? `Thème : ${relEvt.theme}` : 'Événement et célébration spirituelle',
+        });
+      });
 
     // --- 3. COMMISSION PROJETS (AGR) ---
     // Aucune activité publiée pour le moment (aucune fausse activité inventée)
 
     return list;
-  }, [activities]);
+  }, [activities, religiousEvents]);
 
   const filteredActivities = useMemo(() => {
     return allDepartmentActivities.filter(act => {

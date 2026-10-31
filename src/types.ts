@@ -64,7 +64,11 @@ export interface ReligiousEvent {
   eventTime: string;
   location: string;
   theme?: string;
-  publishedAt: string;
+  status?: 'DRAFT' | 'PUBLISHED';
+  createdAt?: string;
+  publishedAt?: string;
+  dispatchChannel?: 'APP' | 'MAIL' | 'GENERAL';
+  publishedToGbairai?: boolean;
 }
 
 export interface RouamaMember {

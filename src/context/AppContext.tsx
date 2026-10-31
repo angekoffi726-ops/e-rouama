@@ -112,6 +112,10 @@ interface AppContextType {
   updateVerseOfTheDay: (verse: string, reference?: string) => void;
   addPrayerIntention: (intention: string, memberNickname?: string, isChain?: boolean) => void;
   createReligiousEvent: (event: Omit<ReligiousEvent, 'id' | 'publishedAt'>, dispatchChannel?: 'APP' | 'MAIL' | 'GENERAL') => void;
+  saveReligiousEventDraft: (event: Omit<ReligiousEvent, 'id' | 'publishedAt' | 'status' | 'createdAt'>) => Promise<string>;
+  publishReligiousEventToGbairai: (eventId: string, dispatchChannel?: 'APP' | 'MAIL' | 'GENERAL') => Promise<void>;
+  updateReligiousEvent: (eventId: string, data: Partial<Omit<ReligiousEvent, 'id'>>) => Promise<void>;
+  deleteReligiousEvent: (eventId: string) => Promise<void>;
 
   // Auth
   setCurrentUser: (userOrUpdater: any) => void;
@@ -1462,7 +1466,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
         if (relEventSnap.status === 'fulfilled') {
           const loaded: ReligiousEvent[] = [];
-          relEventSnap.value.forEach(d => loaded.push({ id: d.id, ...(d.data() as any) }));
+          relEventSnap.value.forEach(d => {
+            const data = d.data() as any;
+            loaded.push({
+              id: d.id,
+              status: data.status || (data.publishedAt ? 'PUBLISHED' : 'DRAFT'),
+              publishedToGbairai: Boolean(data.publishedToGbairai || data.publishedAt),
+              ...data,
+            });
+          });
+          loaded.sort((a, b) => (b.createdAt || b.publishedAt || b.id).localeCompare(a.createdAt || a.publishedAt || a.id));
           setReligiousEvents(loaded);
         }
 
@@ -1598,6 +1611,24 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       console.warn('Erreur écouteur temps réel admin_logs:', err);
     });
 
+    // Écouteur temps réel pour les événements religieux (actualisation et suppression instantanées)
+    const unsubReligiousEvents = onSnapshot(collection(db, 'religious_events'), (snapshot) => {
+      const loaded: ReligiousEvent[] = [];
+      snapshot.forEach((d) => {
+        const data = d.data() as any;
+        loaded.push({
+          id: d.id,
+          status: data.status || (data.publishedAt ? 'PUBLISHED' : 'DRAFT'),
+          publishedToGbairai: Boolean(data.publishedToGbairai || data.publishedAt),
+          ...data,
+        });
+      });
+      loaded.sort((a, b) => (b.createdAt || b.publishedAt || b.id).localeCompare(a.createdAt || a.publishedAt || a.id));
+      setReligiousEvents(loaded);
+    }, (err) => {
+      console.warn('Erreur écouteur temps réel religious_events:', err);
+    });
+
     // Références pour rafraîchissements ponctuels après création ou validation
     treasuryLoaderRef.current = loadTreasury;
     gbairaiLoaderRef.current = loadGbairai;
@@ -1607,6 +1638,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (unsubGbairai) unsubGbairai();
       if (unsubNavette) unsubNavette();
       if (unsubAdminLogs) unsubAdminLogs();
+      if (unsubReligiousEvents) unsubReligiousEvents();
     };
   }, []);
 
@@ -5502,6 +5534,89 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setPrayerIntentions(prev => [newIntention, ...prev]);
   };
 
+  const saveReligiousEventDraft = async (
+    eventData: Omit<ReligiousEvent, 'id' | 'publishedAt' | 'status' | 'createdAt'>
+  ): Promise<string> => {
+    const newEvt: ReligiousEvent = {
+      ...eventData,
+      id: 'REL-EVT-' + Date.now(),
+      status: 'DRAFT',
+      publishedToGbairai: false,
+      createdAt: new Date().toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }),
+    };
+    await setDoc(doc(db, 'religious_events', newEvt.id), sanitizeFirestore(newEvt)).catch(console.warn);
+    setReligiousEvents(prev => [newEvt, ...prev.filter(e => e.id !== newEvt.id)]);
+    return newEvt.id;
+  };
+
+  const publishReligiousEventToGbairai = async (
+    eventId: string,
+    dispatchChannel: 'APP' | 'MAIL' | 'GENERAL' = 'GENERAL'
+  ) => {
+    const evt = religiousEvents.find(e => e.id === eventId);
+    if (!evt) return;
+
+    const publishedDate = new Date().toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+    const updatedEvt: ReligiousEvent = {
+      ...evt,
+      status: 'PUBLISHED',
+      publishedAt: publishedDate,
+      dispatchChannel,
+      publishedToGbairai: true,
+    };
+
+    await setDoc(doc(db, 'religious_events', eventId), sanitizeFirestore(updatedEvt)).catch(console.warn);
+    setReligiousEvents(prev => prev.map(e => e.id === eventId ? updatedEvt : e));
+
+    const title = `[ÉVÉNEMENT RELIGIEUX] ${evt.title}`;
+    const content = `Date: ${evt.eventDate} à ${evt.eventTime}\nLieu: ${evt.location}${evt.theme ? `\nThème: ${evt.theme}` : ''}`;
+    publishNews(title, content, 'ANNONCE', 'TOUS', 'SPIRITUALITÉ', dispatchChannel);
+
+    // Notification Push FCM : TOUS LES MEMBRES
+    dispatchPushNotification({
+      title: '📢 Événement Religieux',
+      body: `${evt.title} - ${evt.eventDate} à ${evt.location}`,
+      senderRole: 'SPIRITUALITE',
+      senderName: 'Commission Spiritualité',
+      targetRole: 'ALL',
+      type: 'GENERAL',
+      rawTitle: true,
+      priority: 'high',
+      sound: 'default',
+      requireInteraction: true,
+      url: '/',
+    }).catch(console.warn);
+  };
+
+  const updateReligiousEvent = async (
+    eventId: string,
+    data: Partial<Omit<ReligiousEvent, 'id'>>
+  ) => {
+    const existing = religiousEvents.find(e => e.id === eventId);
+    const updatedEvt: ReligiousEvent = {
+      ...(existing || {} as any),
+      ...data,
+      id: eventId,
+      updatedAt: new Date().toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }),
+    };
+
+    try {
+      await setDoc(doc(db, 'religious_events', eventId), sanitizeFirestore(updatedEvt), { merge: true });
+    } catch (err) {
+      console.warn('Erreur Firestore setDoc updateReligiousEvent:', err);
+    }
+    setReligiousEvents(prev => prev.map(e => e.id === eventId ? updatedEvt : e));
+  };
+
+  const deleteReligiousEvent = async (eventId: string) => {
+    try {
+      await deleteDoc(doc(db, 'religious_events', eventId));
+    } catch (err) {
+      console.warn('Erreur Firestore deleteDoc religious_events:', err);
+    }
+    setReligiousEvents(prev => prev.filter(e => e.id !== eventId));
+  };
+
   const createReligiousEvent = (
     eventData: Omit<ReligiousEvent, 'id' | 'publishedAt'>,
     dispatchChannel: 'APP' | 'MAIL' | 'GENERAL' = 'GENERAL'
@@ -5509,7 +5624,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const newEvt: ReligiousEvent = {
       ...eventData,
       id: 'REL-EVT-' + Date.now(),
+      status: 'PUBLISHED',
       publishedAt: new Date().toLocaleDateString('fr-FR'),
+      publishedToGbairai: true,
+      dispatchChannel,
     };
     setDoc(doc(db, 'religious_events', newEvt.id), sanitizeFirestore(newEvt)).catch(console.warn);
     setReligiousEvents(prev => [newEvt, ...prev]);
@@ -5575,6 +5693,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         updateVerseOfTheDay,
         addPrayerIntention,
         createReligiousEvent,
+        saveReligiousEventDraft,
+        publishReligiousEventToGbairai,
+        updateReligiousEvent,
+        deleteReligiousEvent,
         setCurrentUser,
         switchWorkspace,
         registerMember,
