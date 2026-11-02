@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { doc, setDoc } from 'firebase/firestore';
 import { db } from '../../firebase';
 import { useApp } from '../../context/AppContext';
@@ -50,19 +50,13 @@ export const NouvellesTab: React.FC<NouvellesTabProps> = ({ onNavigateTab }) => 
 
   const sourceMessages = gbairaiMessages || newsItems || [];
 
-  // MARQUAGE AUTOMATIQUE DES MESSAGES GBAÏRAÏ COMME LUS À L'OUVERTURE DU MODULE
-  useEffect(() => {
-    if (currentMemberId) {
-      markAllGbairaiAsRead(currentMemberId);
-    }
-  }, [currentMemberId, markAllGbairaiAsRead]);
-
   // 2. FILTRAGE DU DESTINATAIRE DE L'ALERTE (GBAÏRAÏ) :
   // Masque le message si l'utilisateur connecté est l'auteur du paiement pour une alerte générale
   // Filtre strictement par targetMemberIds pour les alertes ciblées
   const currentNick = currentUser?.member?.nickname || currentUser?.nickname;
 
-  const visibleMessages = sourceMessages.filter(msg => {
+  const visibleMessages = useMemo(() => {
+    return sourceMessages.filter(msg => {
     if (!msg) return false;
     if (msg.dispatchChannel === 'MAIL') return false;
 
@@ -152,7 +146,8 @@ export const NouvellesTab: React.FC<NouvellesTabProps> = ({ onNavigateTab }) => 
 
     // Les administrateurs voient toutes les annonces
     return true;
-  });
+    });
+  }, [sourceMessages, isMember, memberDuesStatus, currentMemberId, currentUser?.id, currentNick, localDismissedIds]);
 
   const visibleNews = visibleMessages;
 
@@ -165,34 +160,10 @@ export const NouvellesTab: React.FC<NouvellesTabProps> = ({ onNavigateTab }) => 
   useEffect(() => {
     if (!currentMemberId) return;
 
-    const unreadItems = visibleNews.filter(m => {
-      const readList = (m.readBy || []).map(r => String(r).trim().toUpperCase());
-      const isRead =
-        readList.includes(String(currentMemberId).toUpperCase()) ||
-        (currentNick && readList.includes(currentNick.toUpperCase()));
-      return !isRead;
-    });
-
-    if (unreadItems.length > 0) {
-      // 1. Déclenche immédiatement la mise à jour globale et l'écriture Firestore
+    if (unreadGbairaiCount > 0) {
       markAllGbairaiAsRead(currentMemberId);
-
-      // 2. Écriture directe Firestore (setDoc merge) pour synchronisation temps réel immédiate
-      unreadItems.forEach(async (msg) => {
-        try {
-          const toAdd = [String(currentMemberId)];
-          if (currentNick) toAdd.push(currentNick);
-          const currentRead = (msg.readBy || []).map(String);
-          const updatedRead = Array.from(new Set([...currentRead, ...toAdd]));
-
-          await setDoc(doc(db, 'news', msg.id), { readBy: updatedRead }, { merge: true });
-          await setDoc(doc(db, 'announcements', msg.id), { readBy: updatedRead }, { merge: true }).catch(() => {});
-        } catch (err) {
-          console.warn(`Erreur sync Firestore direct Gbairai [${msg.id}]:`, err);
-        }
-      });
     }
-  }, [visibleNews, unreadGbairaiCount, currentMemberId, currentNick, markAllGbairaiAsRead]);
+  }, [unreadGbairaiCount, currentMemberId, markAllGbairaiAsRead]);
 
   // Action: Member deletes/removes the announcement from their personal feed
   const handleRemoveNews = (newsId: string, newsTitle: string) => {

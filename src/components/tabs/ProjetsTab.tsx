@@ -23,10 +23,11 @@ export const ProjetsTab: React.FC = () => {
     const payorSigBlock = proj.payorSignature
       ? `<div style="text-align:center;">
            <img src="${proj.payorSignature.stampUrl && proj.payorSignature.stampUrl !== '/SIDEPO.png' ? proj.payorSignature.stampUrl : '/SS.png'}" alt="Cachet Payor - WOYA SYLAS" style="height:65px; margin-bottom:5px; object-fit:contain;" />
-           <div style="font-size:8.5pt; font-weight:800; color:#065f46;">VISA ACCORDÉ & SIGNÉ</div>
-           <div style="font-size:7.5pt; color:#475569;">${proj.payorSignature.signedBy && !proj.payorSignature.signedBy.includes('NDEPO') && !proj.payorSignature.signedBy.includes("N'DEPO") ? proj.payorSignature.signedBy : 'WOYA SYLAS (LE PAYOR)'} • ${proj.payorSignature.signedAt}</div>
+           <div style="font-size:8.5pt; font-weight:800; color:#065f46; text-transform:uppercase;">VISA & ACCORD DÉLIVRÉS</div>
+           <div style="font-size:8pt; font-weight:bold; color:#1e293b;">WOYA SYLAS (LE PAYOR)</div>
+           <div style="font-size:7.5pt; color:#64748b;">Validé le ${proj.payorSignature.signedAt || proj.date || 'Récemment'}</div>
          </div>`
-      : `<div class="sig-line">Visa de Validation</div>`;
+      : `<div class="sig-line">Visa de Validation Payor</div>`;
 
     const htmlContent = `
       <!DOCTYPE html>
@@ -52,9 +53,9 @@ export const ProjetsTab: React.FC = () => {
           .team-box { background: #f0fdf4; border: 1px solid #bbf7d0; padding: 15px; border-radius: 8px; margin-bottom: 20px; }
           .team-box ul { margin: 5px 0 0 0; padding-left: 20px; color: #166534; font-size: 10pt; list-style-type: none; }
           .content-body { font-size: 10pt; color: #334155; white-space: pre-wrap; background: #fafafa; border: 1px solid #e2e8f0; padding: 15px; border-radius: 8px; min-height: 150px; }
-          .signatures { margin-top: 40px; display: flex; justify-content: space-between; page-break-inside: avoid; }
-          .sig-box { text-align: center; width: 45%; }
-          .sig-title { font-size: 9pt; font-weight: bold; color: #475569; text-transform: uppercase; margin-bottom: 45px; }
+          .signatures { margin-top: 40px; display: flex; justify-content: center; page-break-inside: avoid; }
+          .sig-box { text-align: center; width: 60%; border: 1.5px solid #cbd5e1; border-radius: 10px; padding: 15px; background: #fafafa; }
+          .sig-title { font-size: 9.5pt; font-weight: 900; color: #0f172a; text-transform: uppercase; margin-bottom: 8px; border-bottom: 1px solid #e2e8f0; padding-bottom: 4px; }
           .sig-line { border-top: 1px solid #94a3b8; margin-top: 10px; font-size: 8pt; color: #64748b; }
           .footer { margin-top: 35px; text-align: center; font-size: 8pt; color: #94a3b8; border-top: 1px solid #e2e8f0; padding-top: 10px; }
         </style>
@@ -62,7 +63,7 @@ export const ProjetsTab: React.FC = () => {
       <body>
         <div class="header">
           <img src="/LOGOPRO.png" alt="Logo E-ROUAMA" style="height:55px; margin-bottom:8px; object-fit:contain;" />
-          <h1>ASSOCIATION ÉLÈVES & ÉTUDIANTS ROUAMA (E-ROUAMA)</h1>
+          <h1>FAMILLE ROUAMA</h1>
           <h2>COMMISSION PROJETS (AGR) & DIRECTION ADMINISTRATIVE</h2>
           <p>Dossier Officiel de Montage de Projet Générateur de Revenus</p>
         </div>
@@ -101,11 +102,7 @@ export const ProjetsTab: React.FC = () => {
 
         <div class="signatures">
           <div class="sig-box">
-            <div class="sig-title">La Commission Projets</div>
-            <div class="sig-line">Signature & Date</div>
-          </div>
-          <div class="sig-box">
-            <div class="sig-title">Le PAYOR / Direction</div>
+            <div class="sig-title">APPROBATION : LE PAYOR / DIRECTION</div>
             ${payorSigBlock}
           </div>
         </div>

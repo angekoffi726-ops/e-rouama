@@ -47,7 +47,7 @@ export const ArchivesTab: React.FC<ArchivesTabProps> = ({ highlightedDocId }) =>
       <body>
         <div class="header">
           <img src="/LOGOPRO.png" alt="Logo E-ROUAMA" style="height:55px; margin-bottom:8px; object-fit:contain;" />
-          <h1>ASSOCIATION ÉLÈVES & ÉTUDIANTS ROUAMA (E-ROUAMA)</h1>
+          <h1>FAMILLE ROUAMA</h1>
           <h2>COFFRE-FORT NUMÉRIQUE & ARCHIVES OFFICIELLES</h2>
           <p>Document Certifié • Copie d'Archivage Officielle</p>
         </div>

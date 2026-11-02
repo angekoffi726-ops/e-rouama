@@ -64,11 +64,26 @@ export interface ReligiousEvent {
   eventTime: string;
   location: string;
   theme?: string;
-  status?: 'DRAFT' | 'PUBLISHED';
+  status?: 'DRAFT' | 'SENT_TO_SECRETARIAT' | 'PENDING_PAYOR' | 'APPROVED' | 'APPROVED_PAYOR' | 'PUBLISHED' | 'returned_for_correction' | 'ARCHIVED';
   createdAt?: string;
   publishedAt?: string;
   dispatchChannel?: 'APP' | 'MAIL' | 'GENERAL';
   publishedToGbairai?: boolean;
+  payorFeedback?: string;
+  payorSignature?: {
+    signedBy: string;
+    signedAt: string;
+    stampUrl: string;
+    role: string;
+  };
+  sentToSecretariat?: boolean;
+  sentToPayor?: boolean;
+  sentToCom?: boolean;
+  ackByCom?: boolean;
+  archivedBySecretariat?: boolean;
+  batchId?: string;
+  batchTitle?: string;
+  isConsolidated?: boolean;
 }
 
 export interface RouamaMember {
@@ -334,10 +349,25 @@ export interface EventActivity {
   adHocRoles?: AdHocCommitteeRoles;
   program: string;
   budget?: number;
-  status: 'DRAFT' | 'PENDING_PAYOR' | 'APPROVED' | 'PUBLISHED';
+  status: 'DRAFT' | 'SENT_TO_SECRETARIAT' | 'PENDING_PAYOR' | 'APPROVED' | 'PUBLISHED' | 'returned_for_correction' | 'ARCHIVED';
   createdBy: string;
   budgetStatus?: 'NONE' | 'PENDING_TRESORIER' | 'APPROVED_TRESORIER';
   createdAt?: string;
+  payorFeedback?: string;
+  payorSignature?: {
+    signedBy: string;
+    signedAt: string;
+    stampUrl: string;
+    role: string;
+  };
+  sentToSecretariat?: boolean;
+  sentToPayor?: boolean;
+  sentToCom?: boolean;
+  ackByCom?: boolean;
+  archivedBySecretariat?: boolean;
+  batchId?: string;
+  batchTitle?: string;
+  isConsolidated?: boolean;
 }
 
 export const DEFAULT_ANNIVERSAIRE_ACTIVITY: EventActivity = {
@@ -453,6 +483,7 @@ export interface AgrProject {
     | 'active'
     | 'archived'
     | 'DRAFT'
+    | 'SENT_TO_SECRETARIAT'
     | 'PENDING_PAYOR'
     | 'APPROVED_PAYOR'
     | 'PUBLISHED'
@@ -470,6 +501,14 @@ export interface AgrProject {
   currentReturn: number;
   date: string;
   createdBy: string;
+  sentToSecretariat?: boolean;
+  sentToPayor?: boolean;
+  sentToCom?: boolean;
+  ackByCom?: boolean;
+  archivedBySecretariat?: boolean;
+  batchId?: string;
+  batchTitle?: string;
+  isConsolidated?: boolean;
 }
 
 export interface ArchiveDoc {
@@ -512,7 +551,7 @@ export interface FinancialBilan {
   balances: Record<FundType, number>;
   summary: string;
   date: string;
-  status: 'PENDING_PAYOR' | 'APPROVED_PAYOR' | 'ACK_COM_RECU' | 'ARCHIVED' | 'returned_for_correction';
+  status: 'DRAFT' | 'SENT_TO_SECRETARIAT' | 'PENDING_PAYOR' | 'APPROVED_PAYOR' | 'ACK_COM_RECU' | 'ARCHIVED' | 'returned_for_correction';
   payorFeedback?: string;
   treasurerSignatureDate?: string;
   payorSignatureDate?: string;

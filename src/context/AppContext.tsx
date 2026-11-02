@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
 import {
   RouamaMember,
   AdminRole,
@@ -116,6 +116,16 @@ interface AppContextType {
   publishReligiousEventToGbairai: (eventId: string, dispatchChannel?: 'APP' | 'MAIL' | 'GENERAL') => Promise<void>;
   updateReligiousEvent: (eventId: string, data: Partial<Omit<ReligiousEvent, 'id'>>) => Promise<void>;
   deleteReligiousEvent: (eventId: string) => Promise<void>;
+  sendReligiousEventToSecretariat: (eventId: string) => void;
+  sendReligiousEventsBatchToSecretariat: (eventIds: string[]) => void;
+  sendReligiousEventFromSecretariatToPayor: (eventId: string) => void;
+  sendReligiousEventsBatchFromSecretariatToPayor: (eventIds: string[]) => void;
+  approveReligiousEventPayor: (eventId: string) => void;
+  approveReligiousEventsBatchPayor: (eventIds: string[]) => void;
+  returnReligiousEventForCorrectionPayor: (eventId: string, feedback: string) => void;
+  sendReligiousEventNoteToCom: (eventId: string) => void;
+  ackReligiousEventCOM: (eventId: string) => void;
+  archiveReligiousEventSecretariat: (eventId: string) => void;
 
   // Auth
   setCurrentUser: (userOrUpdater: any) => void;
@@ -236,7 +246,17 @@ interface AppContextType {
   createActivity: (activity: Omit<EventActivity, 'id' | 'status' | 'budgetStatus'>) => void;
   updateActivity: (activityId: string, updatedData: Partial<EventActivity>) => Promise<void>;
   deleteActivity: (activityId: string) => Promise<void>;
+  publishActivity: (activityId: string) => void;
+  sendActivityToSecretariat: (activityId: string) => void;
+  sendActivitiesBatchToSecretariat: (activityIds: string[]) => void;
+  sendActivityFromSecretariatToPayor: (activityId: string) => void;
+  sendActivitiesBatchFromSecretariatToPayor: (activityIds: string[]) => void;
   approveActivityPayor: (activityId: string) => void;
+  approveActivitiesBatchPayor: (activityIds: string[]) => void;
+  returnActivityForCorrectionPayor: (activityId: string, feedback: string) => void;
+  sendActivityNoteToCom: (activityId: string) => void;
+  ackActivityCOM: (activityId: string) => void;
+  archiveActivitySecretariat: (activityId: string) => void;
   approveActivityBudgetTresorier: (activityId: string) => void;
 
   // Financial Events (Trésorier : Sorties & Cas Sociaux)
@@ -248,8 +268,16 @@ interface AppContextType {
   createProject: (project: Omit<AgrProject, 'id' | 'status' | 'tresorierFeasibility' | 'currentReturn'> & { status?: AgrProject['status'] }) => void;
   updateProject: (projectId: string, updates: Partial<AgrProject>) => void;
   deleteProject: (projectId: string) => void;
+  sendProjectToSecretariat: (projectId: string) => void;
+  sendProjectsBatchToSecretariat: (projectIds: string[]) => void;
+  sendProjectFromSecretariatToPayor: (projectId: string) => void;
+  sendProjectsBatchFromSecretariatToPayor: (projectIds: string[]) => void;
   approveProjectPayor: (projectId: string) => void;
+  approveProjectsBatchPayor: (projectIds: string[]) => void;
   returnProjectForCorrectionPayor: (projectId: string, feedback: string) => void;
+  sendProjectNoteToCom: (projectId: string) => void;
+  ackProjectCOM: (projectId: string) => void;
+  archiveProjectSecretariat: (projectId: string) => void;
   assessProjectTresorier: (projectId: string, feasible: boolean) => void;
   publishProject: (projectId: string) => void;
   archiveProject: (projectId: string) => void;
@@ -276,6 +304,7 @@ interface AppContextType {
   deleteFinancialBilan: (bilanId: string) => void;
   approveBilanPayor: (bilanId: string) => void;
   sendBilanToSecretariat: (bilanId: string) => void;
+  sendBilanFromSecretariatToPayor: (bilanId: string) => void;
   sendBilanFromSecretariatToCom: (bilanId: string) => void;
   ackBilanCOM: (bilanId: string) => void;
   publishBilanNewsCOM: (bilanId: string) => void;
@@ -617,6 +646,21 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const gbairaiLoaderRef = useRef<() => Promise<void>>(() => Promise.resolve());
   const navetteLoaderRef = useRef<() => Promise<void>>(() => Promise.resolve());
   const [newsItems, setNewsItems] = useState<NewsItem[]>(DEFAULT_GBAIRAI_NEWS);
+  const newsItemsRef = useRef<NewsItem[]>(DEFAULT_GBAIRAI_NEWS);
+  const membersRef = useRef<RouamaMember[]>(members);
+  const currentUserRef = useRef<CurrentUser | null>(currentUser);
+
+  useEffect(() => {
+    newsItemsRef.current = newsItems;
+  }, [newsItems]);
+
+  useEffect(() => {
+    membersRef.current = members;
+  }, [members]);
+
+  useEffect(() => {
+    currentUserRef.current = currentUser;
+  }, [currentUser]);
   const [activities, setActivities] = useState<EventActivity[]>([DEFAULT_ANNIVERSAIRE_ACTIVITY, DEFAULT_SOIREE_ACTIVITY]);
   const [projects, setProjects] = useState<AgrProject[]>([]);
   const [financialEvents, setFinancialEvents] = useState<FinancialEvent[]>([]);
@@ -2067,7 +2111,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   // Enregistrement de l'activité/présence en temps réel d'un administrateur (session persistante & connexions)
-  const recordAdminActivity = async (role: string, memberName?: string, userId?: string) => {
+  const recordAdminActivity = useCallback(async (role: string, memberName?: string, userId?: string) => {
     if (!role || !role.trim()) return;
     const cleanRole = role.trim().toUpperCase().replace(/[\s-]/g, '_');
     const now = new Date();
@@ -2092,7 +2136,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       ).catch(e => console.warn('Mise à jour admins doc:', e));
 
       // 2. Si userId ou memberId fourni, mise à jour dans users
-      const targetUserId = userId || (currentUser?.type === 'MEMBER' ? currentUser.member?.id : undefined);
+      const curUser = currentUserRef.current;
+      const targetUserId = userId || (curUser?.type === 'MEMBER' ? curUser.member?.id : undefined);
       if (targetUserId) {
         setDoc(
           doc(db, 'users', String(targetUserId)),
@@ -2126,7 +2171,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     } catch (err) {
       console.warn('Erreur recordAdminActivity:', err);
     }
-  };
+  }, []);
 
   // Enregistrement des connexions d'administrateurs dans Firestore (admin_logs)
   const logAdminConnection = async (role: string, memberName?: string, userId?: string) => {
@@ -4188,25 +4233,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
-  const markAllGbairaiAsRead = async (specificMemberId?: string): Promise<void> => {
-    const targetMemberId = String(specificMemberId || currentUser?.member?.id || (currentUser as any)?.id || '').trim();
+  const markAllGbairaiAsRead = useCallback(async (specificMemberId?: string): Promise<void> => {
+    const curUser = currentUserRef.current;
+    const targetMemberId = String(specificMemberId || curUser?.member?.id || (curUser as any)?.id || '').trim();
     if (!targetMemberId) return;
 
-    const targetMember = members.find(m => String(m.id).trim() === targetMemberId);
-    const targetNick = targetMember?.nickname || (currentUser?.member?.id === targetMemberId ? currentUser?.member?.nickname : undefined);
+    const curMembers = membersRef.current || [];
+    const targetMember = curMembers.find(m => String(m.id).trim() === targetMemberId);
+    const targetNick = targetMember?.nickname || (curUser?.member?.id === targetMemberId ? curUser?.member?.nickname : undefined);
     const toAdd = [targetMemberId];
     if (targetNick) toAdd.push(targetNick);
 
-    try {
-      const readKey = `erouama_read_gbairai_${targetMemberId}`;
-      const existingStored = JSON.parse(localStorage.getItem(readKey) || '[]');
-      const newStored = Array.from(new Set([...existingStored, ...newsItems.map(n => n.id)]));
-      localStorage.setItem(readKey, JSON.stringify(newStored));
-    } catch {}
+    const currentItems = newsItemsRef.current || [];
 
     // 1. Calcul synchrone immédiat des documents non lus à mettre à jour
     const docsToUpdate: { id: string; readBy: string[] }[] = [];
-    (newsItems || []).forEach(n => {
+    currentItems.forEach(n => {
       const currentRead = (n.readBy || []).map(r => String(r).trim());
       const isAlreadyRead =
         currentRead.includes(targetMemberId) ||
@@ -4218,19 +4260,24 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
     });
 
+    // RÈGLE ANTI-BOUCLE CRITIQUE : Si tous les documents sont déjà marqués comme lus, ne déclencher aucun setState
+    if (docsToUpdate.length === 0) {
+      return;
+    }
+
+    try {
+      const readKey = `erouama_read_gbairai_${targetMemberId}`;
+      const existingStored = JSON.parse(localStorage.getItem(readKey) || '[]');
+      const newStored = Array.from(new Set([...existingStored, ...currentItems.map(n => n.id)]));
+      localStorage.setItem(readKey, JSON.stringify(newStored));
+    } catch {}
+
     // 2. Mise à jour de l'état local pour remise instantanée du compteur visuel à 0
     setNewsItems(prev => {
       return prev.map(n => {
         const found = docsToUpdate.find(u => u.id === n.id);
         if (found) {
           return { ...n, readBy: found.readBy };
-        }
-        const currentRead = (n.readBy || []).map(r => String(r).trim());
-        const isAlreadyRead =
-          currentRead.includes(targetMemberId) ||
-          (targetNick && currentRead.some(r => r.toUpperCase() === targetNick.toUpperCase()));
-        if (!isAlreadyRead) {
-          return { ...n, readBy: Array.from(new Set([...currentRead, ...toAdd])) };
         }
         return n;
       });
@@ -4251,31 +4298,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         })
       );
     }
-
-    // 4. Balayage Firestore complet en arrière-plan pour garantir 100% d'exactitude
-    try {
-      const snap = await getDocs(collection(db, 'news'));
-      const writes: Promise<any>[] = [];
-      snap.forEach(d => {
-        const data = d.data();
-        if (data.deleted === true || data.isDeleted === true || data.status === 'deleted' || data.status === 'hidden' || data.isHidden === true) return;
-        const currentRead = (data.readBy || []).map((r: any) => String(r).trim());
-        const isRead =
-          currentRead.includes(targetMemberId) ||
-          (targetNick && currentRead.some((r: string) => r.toUpperCase() === targetNick.toUpperCase()));
-        if (!isRead) {
-          const updatedRead = Array.from(new Set([...currentRead, ...toAdd]));
-          writes.push(setDoc(doc(db, 'news', d.id), { readBy: updatedRead }, { merge: true }));
-          writes.push(setDoc(doc(db, 'announcements', d.id), { readBy: updatedRead }, { merge: true }).catch(() => {}));
-        }
-      });
-      if (writes.length > 0) {
-        await Promise.allSettled(writes);
-      }
-    } catch (err) {
-      console.warn('Erreur balayage Firestore news:', err);
-    }
-  };
+  }, []);
 
   const deleteNewsItem = async (newsId: string) => {
     try {
@@ -4330,51 +4353,211 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   // Activités & Sorties
-  const createActivity = (activity: Omit<EventActivity, 'id' | 'status' | 'budgetStatus'> & { status?: 'DRAFT' | 'PENDING_PAYOR' | 'APPROVED' | 'PUBLISHED' }) => {
+  const createActivity = (activity: Omit<EventActivity, 'id' | 'status' | 'budgetStatus'> & { status?: EventActivity['status'] }) => {
     // Vérification stricte des droits de création par rôle
     // Commission ORGANISATION a les droits exclusifs sur les Événements Fixes et Sorties & Loisirs
     if (currentUser?.type === 'ADMIN') {
       const allowedRoles = ['ORGANISATION', 'PAYOR', 'SUPER_ADMIN'];
       if (!allowedRoles.includes(currentUser.adminRole || '')) {
         console.warn(`[RBAC] Création d'activité refusée pour le rôle ${currentUser.adminRole}. Rôle ORGANISATION requis.`);
-        alert(`Action non autorisée : Seule la Commission Organisation (ou Payor) est habilitée à créer et publier des Événements Fixes ou Sorties & Loisirs.`);
+        alert(`Action non autorisée : Seule la Commission Organisation (ou Payor) est habilitée à créer et enregistrer des Événements Fixes ou Sorties & Loisirs.`);
         return;
       }
     }
 
+    // Numérotation séquentielle automatique basée sur le dernier document existant (ORG-001, ORG-002, ...)
+    let maxActSeq = 0;
+    activities.forEach(a => {
+      if (!a.id) return;
+      const m = a.id.match(/^ORG-(\d+)$/);
+      if (m) {
+        const num = parseInt(m[1], 10);
+        if (!isNaN(num) && num > maxActSeq) maxActSeq = num;
+      }
+    });
+    const nextActSeq = maxActSeq > 0 ? maxActSeq + 1 : (activities.length + 1);
+    const seqActId = `ORG-${String(nextActSeq).padStart(3, '0')}`;
+
     const newAct: EventActivity = {
       ...activity,
-      id: 'ACT-' + Date.now(),
-      status: activity.status || 'PUBLISHED',
+      id: seqActId,
+      status: activity.status || 'DRAFT',
       budgetStatus: (activity.budget && activity.budget > 0) ? 'PENDING_TRESORIER' : 'NONE',
       createdAt: new Date().toISOString(),
+      sentToSecretariat: false,
+      sentToPayor: false,
+      sentToCom: false,
+      ackByCom: false,
+      archivedBySecretariat: false,
     };
     setDoc(doc(db, 'activities', newAct.id), sanitizeFirestore(newAct)).catch(console.warn);
     setActivities(prev => [newAct, ...prev]);
 
-    // Annonce automatique aux membres
-    publishNews(
-      `⛺ ÉVÉNEMENT PUBLIÉ : ${newAct.title}`,
-      `L'événement « ${newAct.title} » (${newAct.eventDate}) a été planifié et publié par la Commission Organisation ! Retrouvez le programme et le décompte dans l'onglet SHOW.`,
-      'ANNONCE',
-      'TOUS',
-      'COMMISSION ORGANISATION'
-    );
+    if (newAct.status === 'PUBLISHED') {
+      publishNews(
+        `⛺ ÉVÉNEMENT PUBLIÉ : ${newAct.title}`,
+        `L'événement « ${newAct.title} » (${newAct.eventDate}) a été planifié et publié par la Commission Organisation ! Retrouvez le programme et le décompte dans l'onglet SHOW.`,
+        'ANNONCE',
+        'TOUS',
+        'COMMISSION ORGANISATION'
+      );
+      dispatchPushNotification({
+        title: '📢 Nouveauté Organisation',
+        body: newAct.title,
+        senderRole: 'ORGANISATION',
+        senderName: 'Commission Organisation',
+        targetRole: 'ALL',
+        type: 'GENERAL',
+        rawTitle: true,
+        priority: 'high',
+        sound: 'default',
+        requireInteraction: true,
+        url: '/',
+      }).catch(console.warn);
+    }
+  };
 
-    // Notification Push FCM : TOUS LES MEMBRES
-    dispatchPushNotification({
-      title: '📢 Nouveauté Organisation',
-      body: newAct.title,
-      senderRole: 'ORGANISATION',
-      senderName: 'Commission Organisation',
-      targetRole: 'ALL',
-      type: 'GENERAL',
-      rawTitle: true,
-      priority: 'high',
-      sound: 'default',
-      requireInteraction: true,
-      url: '/',
-    }).catch(console.warn);
+  const publishActivity = (activityId: string) => {
+    const updates = { status: 'PUBLISHED' as const };
+    setDoc(doc(db, 'activities', activityId), updates, { merge: true }).catch(console.warn);
+    setActivities(prev => prev.map(a => a.id === activityId ? { ...a, ...updates } : a));
+
+    const act = activities.find(a => a.id === activityId);
+    if (act) {
+      publishNews(
+        `⛺ ÉVÉNEMENT DIFFUSÉ : ${act.title}`,
+        `Programme officiel diffusé pour « ${act.title} » (Date: ${act.eventDate}). Consultez la rubrique SHOW / Activités pour le détail des comités !`,
+        'ANNONCE',
+        'TOUS',
+        'COMMISSION ORGANISATION'
+      );
+      dispatchPushNotification({
+        title: '📢 Nouveauté Organisation',
+        body: act.title,
+        senderRole: 'ORGANISATION',
+        senderName: 'Commission Organisation',
+        targetRole: 'ALL',
+        type: 'GENERAL',
+        rawTitle: true,
+        priority: 'high',
+        sound: 'default',
+        requireInteraction: true,
+        url: '/',
+      }).catch(console.warn);
+    }
+  };
+
+  const sendActivityToSecretariat = (activityId: string) => {
+    const updates = { status: 'SENT_TO_SECRETARIAT' as const, sentToSecretariat: true };
+    setDoc(doc(db, 'activities', activityId), updates, { merge: true }).catch(console.warn);
+    setActivities(prev => prev.map(a => a.id === activityId ? { ...a, ...updates } : a));
+  };
+
+  const sendActivitiesBatchToSecretariat = (activityIds: string[]) => {
+    const batchId = 'BATCH-ACT-' + Date.now();
+    activityIds.forEach(id => {
+      const updates = { status: 'SENT_TO_SECRETARIAT' as const, sentToSecretariat: true, batchId, isConsolidated: true };
+      setDoc(doc(db, 'activities', id), updates, { merge: true }).catch(console.warn);
+    });
+    setActivities(prev =>
+      prev.map(a => (activityIds.includes(a.id) ? { ...a, status: 'SENT_TO_SECRETARIAT', sentToSecretariat: true, batchId, isConsolidated: true } : a))
+    );
+  };
+
+  const sendActivityFromSecretariatToPayor = (activityId: string) => {
+    const updates = { status: 'PENDING_PAYOR' as const, sentToPayor: true };
+    setDoc(doc(db, 'activities', activityId), updates, { merge: true }).catch(console.warn);
+    setActivities(prev => prev.map(a => a.id === activityId ? { ...a, ...updates } : a));
+  };
+
+  const sendActivitiesBatchFromSecretariatToPayor = (activityIds: string[]) => {
+    activityIds.forEach(id => {
+      const updates = { status: 'PENDING_PAYOR' as const, sentToPayor: true };
+      setDoc(doc(db, 'activities', id), updates, { merge: true }).catch(console.warn);
+    });
+    setActivities(prev =>
+      prev.map(a => (activityIds.includes(a.id) ? { ...a, status: 'PENDING_PAYOR', sentToPayor: true } : a))
+    );
+  };
+
+  const approveActivityPayor = (activityId: string) => {
+    const signedAt = new Date().toLocaleDateString('fr-FR', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+    const payorSignature = {
+      signedBy: 'WOYA SYLAS (LE PAYOR)',
+      signedAt,
+      stampUrl: '/SS.png',
+      role: 'PAYOR',
+    };
+    const updates = {
+      status: 'APPROVED' as const,
+      payorSignature,
+      payorFeedback: '',
+      sentToSecretariat: true,
+    };
+    setDoc(doc(db, 'activities', activityId), updates, { merge: true }).catch(console.warn);
+    setActivities(prev => prev.map(a => a.id === activityId ? { ...a, ...updates } : a));
+  };
+
+  const approveActivitiesBatchPayor = (activityIds: string[]) => {
+    const signedAt = new Date().toLocaleDateString('fr-FR', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+    const payorSignature = {
+      signedBy: 'WOYA SYLAS (LE PAYOR)',
+      signedAt,
+      stampUrl: '/SS.png',
+      role: 'PAYOR',
+    };
+    activityIds.forEach(id => {
+      const updates = {
+        status: 'APPROVED' as const,
+        payorSignature,
+        payorFeedback: '',
+        sentToSecretariat: true,
+      };
+      setDoc(doc(db, 'activities', id), updates, { merge: true }).catch(console.warn);
+    });
+    setActivities(prev =>
+      prev.map(a => (activityIds.includes(a.id) ? { ...a, status: 'APPROVED', payorSignature, payorFeedback: '', sentToSecretariat: true } : a))
+    );
+  };
+
+  const returnActivityForCorrectionPayor = (activityId: string, feedback: string) => {
+    const updates = {
+      status: 'returned_for_correction' as const,
+      payorFeedback: feedback,
+      sentToSecretariat: true,
+    };
+    setDoc(doc(db, 'activities', activityId), updates, { merge: true }).catch(console.warn);
+    setActivities(prev => prev.map(a => a.id === activityId ? { ...a, ...updates } : a));
+  };
+
+  const sendActivityNoteToCom = (activityId: string) => {
+    const updates = { sentToCom: true };
+    setDoc(doc(db, 'activities', activityId), updates, { merge: true }).catch(console.warn);
+    setActivities(prev => prev.map(a => a.id === activityId ? { ...a, ...updates } : a));
+  };
+
+  const ackActivityCOM = (activityId: string) => {
+    const updates = { ackByCom: true };
+    setDoc(doc(db, 'activities', activityId), updates, { merge: true }).catch(console.warn);
+    setActivities(prev => prev.map(a => a.id === activityId ? { ...a, ...updates } : a));
+  };
+
+  const archiveActivitySecretariat = (activityId: string) => {
+    const updates = { archivedBySecretariat: true, status: 'ARCHIVED' as const };
+    setDoc(doc(db, 'activities', activityId), updates, { merge: true }).catch(console.warn);
+    setActivities(prev => prev.map(a => a.id === activityId ? { ...a, ...updates } : a));
   };
 
   const updateActivity = async (activityId: string, updatedData: Partial<EventActivity>) => {
@@ -4396,39 +4579,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     } catch (err) {
       console.warn('Erreur lors de la suppression de l\'activité :', err);
       throw err;
-    }
-  };
-
-  const approveActivityPayor = (activityId: string) => {
-    setDoc(doc(db, 'activities', activityId), { status: 'PUBLISHED' }, { merge: true }).catch(console.warn);
-    setActivities(prev =>
-      prev.map(a => (a.id === activityId ? { ...a, status: 'PUBLISHED' } : a))
-    );
-
-    const act = activities.find(a => a.id === activityId);
-    if (act) {
-      publishNews(
-        `⛺ ÉVÉNEMENT VALIDÉ : ${act.title}`,
-        `Programme officiel publié pour la ${act.title} (Date: ${act.eventDate}). Consultez la rubrique Activités pour le détail des comités !`,
-        'ANNONCE',
-        'TOUS',
-        'ORGANISATION / PAYOR'
-      );
-
-      // Notification Push FCM : TOUS LES MEMBRES
-      dispatchPushNotification({
-        title: '📢 Nouveauté Organisation',
-        body: act.title,
-        senderRole: 'ORGANISATION',
-        senderName: 'Commission Organisation',
-        targetRole: 'ALL',
-        type: 'GENERAL',
-        rawTitle: true,
-        priority: 'high',
-        sound: 'default',
-        requireInteraction: true,
-        url: '/',
-      }).catch(console.warn);
     }
   };
 
@@ -4520,33 +4670,54 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
 
     const realDate = project.dateRealisation || project.eventDate || '';
+
+    // Numérotation séquentielle automatique basée sur le dernier document existant (PROJ-001, PROJ-002, ...)
+    let maxProjSeq = 0;
+    projects.forEach(p => {
+      if (!p.id) return;
+      const m = p.id.match(/^PROJ-(\d+)$/);
+      if (m) {
+        const num = parseInt(m[1], 10);
+        if (!isNaN(num) && num > maxProjSeq) maxProjSeq = num;
+      }
+    });
+    const nextProjSeq = maxProjSeq > 0 ? maxProjSeq + 1 : (projects.length + 1);
+    const seqProjId = `PROJ-${String(nextProjSeq).padStart(3, '0')}`;
+
     const newProj: AgrProject = {
       ...project,
-      id: 'PROJ-' + Date.now(),
+      id: seqProjId,
       dateRealisation: realDate,
       eventDate: realDate,
-      status: project.status || 'pending_payor_approval',
+      status: project.status || 'DRAFT',
       officialDocGenerated: true,
       tresorierFeasibility: 'PENDING',
       currentReturn: 0,
+      sentToSecretariat: false,
+      sentToPayor: false,
+      sentToCom: false,
+      ackByCom: false,
+      archivedBySecretariat: false,
     };
     setDoc(doc(db, 'projects', newProj.id), sanitizeFirestore(newProj)).catch(console.warn);
     setProjects(prev => [newProj, ...prev]);
 
-    // Notification Push FCM : TOUS LES MEMBRES
-    dispatchPushNotification({
-      title: '📢 Nouveauté Projet',
-      body: newProj.title || 'Un nouveau projet est disponible.',
-      senderRole: 'PROJET',
-      senderName: 'Responsable Projets',
-      targetRole: 'ALL',
-      type: 'GENERAL',
-      rawTitle: true,
-      priority: 'high',
-      sound: 'default',
-      requireInteraction: true,
-      url: '/',
-    }).catch(console.warn);
+    if (newProj.status === 'PUBLISHED' || newProj.status === 'active') {
+      // Notification Push FCM : TOUS LES MEMBRES
+      dispatchPushNotification({
+        title: '📢 Nouveauté Projet',
+        body: newProj.title || 'Un nouveau projet est disponible.',
+        senderRole: 'PROJET',
+        senderName: 'Responsable Projets',
+        targetRole: 'ALL',
+        type: 'GENERAL',
+        rawTitle: true,
+        priority: 'high',
+        sound: 'default',
+        requireInteraction: true,
+        url: '/',
+      }).catch(console.warn);
+    }
   };
 
   const updateProject = (projectId: string, updates: Partial<AgrProject>) => {
@@ -4554,6 +4725,39 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setDoc(doc(db, 'projects', projectId), sanitized, { merge: true }).catch(console.warn);
     setProjects(prev =>
       prev.map(p => (p.id === projectId ? { ...p, ...updates } : p))
+    );
+  };
+
+  const sendProjectToSecretariat = (projectId: string) => {
+    const updates = { status: 'SENT_TO_SECRETARIAT' as const, sentToSecretariat: true };
+    setDoc(doc(db, 'projects', projectId), updates, { merge: true }).catch(console.warn);
+    setProjects(prev => prev.map(p => (p.id === projectId ? { ...p, ...updates } : p)));
+  };
+
+  const sendProjectsBatchToSecretariat = (projectIds: string[]) => {
+    const batchId = 'BATCH-PROJ-' + Date.now();
+    projectIds.forEach(id => {
+      const updates = { status: 'SENT_TO_SECRETARIAT' as const, sentToSecretariat: true, batchId, isConsolidated: true };
+      setDoc(doc(db, 'projects', id), updates, { merge: true }).catch(console.warn);
+    });
+    setProjects(prev =>
+      prev.map(p => (projectIds.includes(p.id) ? { ...p, status: 'SENT_TO_SECRETARIAT', sentToSecretariat: true, batchId, isConsolidated: true } : p))
+    );
+  };
+
+  const sendProjectFromSecretariatToPayor = (projectId: string) => {
+    const updates = { status: 'PENDING_PAYOR' as const, sentToPayor: true };
+    setDoc(doc(db, 'projects', projectId), updates, { merge: true }).catch(console.warn);
+    setProjects(prev => prev.map(p => (p.id === projectId ? { ...p, ...updates } : p)));
+  };
+
+  const sendProjectsBatchFromSecretariatToPayor = (projectIds: string[]) => {
+    projectIds.forEach(id => {
+      const updates = { status: 'PENDING_PAYOR' as const, sentToPayor: true };
+      setDoc(doc(db, 'projects', id), updates, { merge: true }).catch(console.warn);
+    });
+    setProjects(prev =>
+      prev.map(p => (projectIds.includes(p.id) ? { ...p, status: 'PENDING_PAYOR', sentToPayor: true } : p))
     );
   };
 
@@ -4578,6 +4782,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         status: 'approved_by_payor',
         payorSignature,
         payorFeedback: '',
+        sentToSecretariat: true,
       },
       { merge: true }
     ).catch(console.warn);
@@ -4590,6 +4795,50 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               status: 'approved_by_payor',
               payorSignature,
               payorFeedback: '',
+              sentToSecretariat: true,
+            }
+          : p
+      )
+    );
+  };
+
+  const approveProjectsBatchPayor = (projectIds: string[]) => {
+    const signedAt = new Date().toLocaleDateString('fr-FR', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+    const payorSignature = {
+      signedBy: 'WOYA SYLAS (LE PAYOR)',
+      signedAt,
+      stampUrl: '/SS.png',
+      role: 'PAYOR',
+    };
+
+    projectIds.forEach(id => {
+      setDoc(
+        doc(db, 'projects', id),
+        {
+          status: 'approved_by_payor',
+          payorSignature,
+          payorFeedback: '',
+          sentToSecretariat: true,
+        },
+        { merge: true }
+      ).catch(console.warn);
+    });
+
+    setProjects(prev =>
+      prev.map(p =>
+        projectIds.includes(p.id)
+          ? {
+              ...p,
+              status: 'approved_by_payor',
+              payorSignature,
+              payorFeedback: '',
+              sentToSecretariat: true,
             }
           : p
       )
@@ -4602,6 +4851,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       {
         status: 'returned_for_correction',
         payorFeedback: feedback,
+        sentToSecretariat: true,
       },
       { merge: true }
     ).catch(console.warn);
@@ -4613,10 +4863,29 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               ...p,
               status: 'returned_for_correction',
               payorFeedback: feedback,
+              sentToSecretariat: true,
             }
           : p
       )
     );
+  };
+
+  const sendProjectNoteToCom = (projectId: string) => {
+    const updates = { sentToCom: true };
+    setDoc(doc(db, 'projects', projectId), updates, { merge: true }).catch(console.warn);
+    setProjects(prev => prev.map(p => (p.id === projectId ? { ...p, ...updates } : p)));
+  };
+
+  const ackProjectCOM = (projectId: string) => {
+    const updates = { ackByCom: true };
+    setDoc(doc(db, 'projects', projectId), updates, { merge: true }).catch(console.warn);
+    setProjects(prev => prev.map(p => (p.id === projectId ? { ...p, ...updates } : p)));
+  };
+
+  const archiveProjectSecretariat = (projectId: string) => {
+    const updates = { archivedBySecretariat: true, status: 'archived' as const };
+    setDoc(doc(db, 'projects', projectId), updates, { merge: true }).catch(console.warn);
+    setProjects(prev => prev.map(p => (p.id === projectId ? { ...p, ...updates } : p)));
   };
 
   const assessProjectTresorier = (projectId: string, feasible: boolean) => {
@@ -4878,7 +5147,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       balances: computed.balances,
       summary,
       date: dateStr,
-      status: 'PENDING_PAYOR',
+      status: 'DRAFT',
       treasurerSignatureDate: fullDate,
       sentToSecretariat: false,
       sentToCom: false,
@@ -4941,6 +5210,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const updates = {
       status: 'returned_for_correction' as const,
       payorFeedback: feedback,
+      sentToSecretariat: true,
     };
     setDoc(doc(db, 'secretary_bilans', bilanId), updates, { merge: true }).catch(console.warn);
     setBilans(prev => prev.map(b => (b.id === bilanId ? { ...b, ...updates } : b)));
@@ -4952,8 +5222,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const sendBilanToSecretariat = (bilanId: string) => {
-    setDoc(doc(db, 'secretary_bilans', bilanId), { sentToSecretariat: true }, { merge: true }).catch(console.warn);
-    setBilans(prev => prev.map(b => (b.id === bilanId ? { ...b, sentToSecretariat: true } : b)));
+    const updates = { sentToSecretariat: true, status: 'SENT_TO_SECRETARIAT' as const };
+    setDoc(doc(db, 'secretary_bilans', bilanId), updates, { merge: true }).catch(console.warn);
+    setBilans(prev => prev.map(b => (b.id === bilanId ? { ...b, ...updates } : b)));
+  };
+
+  const sendBilanFromSecretariatToPayor = (bilanId: string) => {
+    const updates = { status: 'PENDING_PAYOR' as const };
+    setDoc(doc(db, 'secretary_bilans', bilanId), updates, { merge: true }).catch(console.warn);
+    setBilans(prev => prev.map(b => (b.id === bilanId ? { ...b, ...updates } : b)));
   };
 
   const sendBilanFromSecretariatToCom = (bilanId: string) => {
@@ -5537,9 +5814,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const saveReligiousEventDraft = async (
     eventData: Omit<ReligiousEvent, 'id' | 'publishedAt' | 'status' | 'createdAt'>
   ): Promise<string> => {
+    // Numérotation séquentielle automatique basée sur le dernier document existant (SPI-001, SPI-002, ...)
+    let maxSpiSeq = 0;
+    religiousEvents.forEach(e => {
+      if (!e.id) return;
+      const m = e.id.match(/^SPI-(\d+)$/);
+      if (m) {
+        const num = parseInt(m[1], 10);
+        if (!isNaN(num) && num > maxSpiSeq) maxSpiSeq = num;
+      }
+    });
+    const nextSpiSeq = maxSpiSeq > 0 ? maxSpiSeq + 1 : (religiousEvents.length + 1);
+    const seqSpiId = `SPI-${String(nextSpiSeq).padStart(3, '0')}`;
+
     const newEvt: ReligiousEvent = {
       ...eventData,
-      id: 'REL-EVT-' + Date.now(),
+      id: seqSpiId,
       status: 'DRAFT',
       publishedToGbairai: false,
       createdAt: new Date().toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }),
@@ -5621,9 +5911,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     eventData: Omit<ReligiousEvent, 'id' | 'publishedAt'>,
     dispatchChannel: 'APP' | 'MAIL' | 'GENERAL' = 'GENERAL'
   ) => {
+    // Numérotation séquentielle automatique basée sur le dernier document existant (SPI-001, SPI-002, ...)
+    let maxSpiSeq = 0;
+    religiousEvents.forEach(e => {
+      if (!e.id) return;
+      const m = e.id.match(/^SPI-(\d+)$/);
+      if (m) {
+        const num = parseInt(m[1], 10);
+        if (!isNaN(num) && num > maxSpiSeq) maxSpiSeq = num;
+      }
+    });
+    const nextSpiSeq = maxSpiSeq > 0 ? maxSpiSeq + 1 : (religiousEvents.length + 1);
+    const seqSpiId = `SPI-${String(nextSpiSeq).padStart(3, '0')}`;
+
     const newEvt: ReligiousEvent = {
       ...eventData,
-      id: 'REL-EVT-' + Date.now(),
+      id: seqSpiId,
       status: 'PUBLISHED',
       publishedAt: new Date().toLocaleDateString('fr-FR'),
       publishedToGbairai: true,
@@ -5650,6 +5953,140 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       requireInteraction: true,
       url: '/',
     }).catch(console.warn);
+  };
+
+  const sendReligiousEventToSecretariat = (eventId: string) => {
+    const updates = {
+      status: 'SENT_TO_SECRETARIAT' as const,
+      sentToSecretariat: true,
+    };
+    setDoc(doc(db, 'religious_events', eventId), updates, { merge: true }).catch(console.warn);
+    setReligiousEvents(prev => prev.map(e => e.id === eventId ? { ...e, ...updates } : e));
+  };
+
+  const sendReligiousEventsBatchToSecretariat = (eventIds: string[]) => {
+    const batchId = 'BATCH-REL-' + Date.now();
+    eventIds.forEach(id => {
+      const updates = {
+        status: 'SENT_TO_SECRETARIAT' as const,
+        sentToSecretariat: true,
+        batchId,
+        isConsolidated: true,
+      };
+      setDoc(doc(db, 'religious_events', id), updates, { merge: true }).catch(console.warn);
+    });
+    setReligiousEvents(prev =>
+      prev.map(e => (eventIds.includes(e.id) ? { ...e, status: 'SENT_TO_SECRETARIAT', sentToSecretariat: true, batchId, isConsolidated: true } : e))
+    );
+  };
+
+  const sendReligiousEventFromSecretariatToPayor = (eventId: string) => {
+    const updates = {
+      status: 'PENDING_PAYOR' as const,
+      sentToPayor: true,
+    };
+    setDoc(doc(db, 'religious_events', eventId), updates, { merge: true }).catch(console.warn);
+    setReligiousEvents(prev => prev.map(e => e.id === eventId ? { ...e, ...updates } : e));
+  };
+
+  const sendReligiousEventsBatchFromSecretariatToPayor = (eventIds: string[]) => {
+    eventIds.forEach(id => {
+      const updates = {
+        status: 'PENDING_PAYOR' as const,
+        sentToPayor: true,
+      };
+      setDoc(doc(db, 'religious_events', id), updates, { merge: true }).catch(console.warn);
+    });
+    setReligiousEvents(prev =>
+      prev.map(e => (eventIds.includes(e.id) ? { ...e, status: 'PENDING_PAYOR', sentToPayor: true } : e))
+    );
+  };
+
+  const approveReligiousEventPayor = (eventId: string) => {
+    const signedAt = new Date().toLocaleDateString('fr-FR', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+    const payorSignature = {
+      signedBy: 'WOYA SYLAS (LE PAYOR)',
+      signedAt,
+      stampUrl: '/SS.png',
+      role: 'PAYOR',
+    };
+    const updates = {
+      status: 'APPROVED' as const,
+      payorSignature,
+      payorFeedback: '',
+      sentToSecretariat: true,
+    };
+    setDoc(doc(db, 'religious_events', eventId), updates, { merge: true }).catch(console.warn);
+    setReligiousEvents(prev => prev.map(e => e.id === eventId ? { ...e, ...updates } : e));
+  };
+
+  const approveReligiousEventsBatchPayor = (eventIds: string[]) => {
+    const signedAt = new Date().toLocaleDateString('fr-FR', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+    const payorSignature = {
+      signedBy: 'WOYA SYLAS (LE PAYOR)',
+      signedAt,
+      stampUrl: '/SS.png',
+      role: 'PAYOR',
+    };
+    eventIds.forEach(id => {
+      const updates = {
+        status: 'APPROVED' as const,
+        payorSignature,
+        payorFeedback: '',
+        sentToSecretariat: true,
+      };
+      setDoc(doc(db, 'religious_events', id), updates, { merge: true }).catch(console.warn);
+    });
+    setReligiousEvents(prev =>
+      prev.map(e => (eventIds.includes(e.id) ? { ...e, status: 'APPROVED', payorSignature, payorFeedback: '', sentToSecretariat: true } : e))
+    );
+  };
+
+  const returnReligiousEventForCorrectionPayor = (eventId: string, feedback: string) => {
+    const updates = {
+      status: 'returned_for_correction' as const,
+      payorFeedback: feedback,
+      sentToSecretariat: true,
+    };
+    setDoc(doc(db, 'religious_events', eventId), updates, { merge: true }).catch(console.warn);
+    setReligiousEvents(prev => prev.map(e => e.id === eventId ? { ...e, ...updates } : e));
+  };
+
+  const sendReligiousEventNoteToCom = (eventId: string) => {
+    const updates = {
+      sentToCom: true,
+    };
+    setDoc(doc(db, 'religious_events', eventId), updates, { merge: true }).catch(console.warn);
+    setReligiousEvents(prev => prev.map(e => e.id === eventId ? { ...e, ...updates } : e));
+  };
+
+  const ackReligiousEventCOM = (eventId: string) => {
+    const updates = {
+      ackByCom: true,
+    };
+    setDoc(doc(db, 'religious_events', eventId), updates, { merge: true }).catch(console.warn);
+    setReligiousEvents(prev => prev.map(e => e.id === eventId ? { ...e, ...updates } : e));
+  };
+
+  const archiveReligiousEventSecretariat = (eventId: string) => {
+    const updates = {
+      archivedBySecretariat: true,
+      status: 'ARCHIVED' as const,
+    };
+    setDoc(doc(db, 'religious_events', eventId), updates, { merge: true }).catch(console.warn);
+    setReligiousEvents(prev => prev.map(e => e.id === eventId ? { ...e, ...updates } : e));
   };
 
   return (
@@ -5697,6 +6134,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         publishReligiousEventToGbairai,
         updateReligiousEvent,
         deleteReligiousEvent,
+        sendReligiousEventToSecretariat,
+        sendReligiousEventsBatchToSecretariat,
+        sendReligiousEventFromSecretariatToPayor,
+        sendReligiousEventsBatchFromSecretariatToPayor,
+        approveReligiousEventPayor,
+        approveReligiousEventsBatchPayor,
+        returnReligiousEventForCorrectionPayor,
+        sendReligiousEventNoteToCom,
+        ackReligiousEventCOM,
+        archiveReligiousEventSecretariat,
         setCurrentUser,
         switchWorkspace,
         registerMember,
@@ -5735,7 +6182,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         createActivity,
         updateActivity,
         deleteActivity,
+        publishActivity,
+        sendActivityToSecretariat,
+        sendActivitiesBatchToSecretariat,
+        sendActivityFromSecretariatToPayor,
+        sendActivitiesBatchFromSecretariatToPayor,
         approveActivityPayor,
+        approveActivitiesBatchPayor,
+        returnActivityForCorrectionPayor,
+        sendActivityNoteToCom,
+        ackActivityCOM,
+        archiveActivitySecretariat,
         approveActivityBudgetTresorier,
         createFinancialEvent,
         archiveFinancialEvent,
@@ -5743,8 +6200,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         createProject,
         updateProject,
         deleteProject,
+        sendProjectToSecretariat,
+        sendProjectsBatchToSecretariat,
+        sendProjectFromSecretariatToPayor,
+        sendProjectsBatchFromSecretariatToPayor,
         approveProjectPayor,
+        approveProjectsBatchPayor,
         returnProjectForCorrectionPayor,
+        sendProjectNoteToCom,
+        ackProjectCOM,
+        archiveProjectSecretariat,
         assessProjectTresorier,
         publishProject,
         archiveProject,
@@ -5760,6 +6225,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         deleteFinancialBilan,
         approveBilanPayor,
         sendBilanToSecretariat,
+        sendBilanFromSecretariatToPayor,
         sendBilanFromSecretariatToCom,
         ackBilanCOM,
         publishBilanNewsCOM,
