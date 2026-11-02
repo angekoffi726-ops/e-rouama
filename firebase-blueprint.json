@@ -112,7 +112,7 @@
         "eventTime": { "type": "string" },
         "location": { "type": "string" },
         "theme": { "type": "string" },
-        "status": { "type": "string", "enum": ["DRAFT", "PUBLISHED"] },
+        "status": { "type": "string", "enum": ["DRAFT", "SENT_TO_SECRETARIAT", "PENDING_PAYOR", "APPROVED", "APPROVED_PAYOR", "PUBLISHED", "returned_for_correction", "ARCHIVED"] },
         "publishedAt": { "type": "string" },
         "createdAt": { "type": "string" }
       },

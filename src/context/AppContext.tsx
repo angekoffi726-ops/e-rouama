@@ -680,6 +680,125 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [adminLogs, setAdminLogs] = useState<AdminLoginLog[]>([]);
   const [infoRequests, setInfoRequests] = useState<InfoRequest[]>([]);
 
+  // Synchronisation et réconciliation automatique des événements spirituels historiques (antérieurs ou créés dans News/Gbaïraï)
+  const reconcileHistoricalSpiritualEvents = (currentRelEvents: ReligiousEvent[], currentNews: NewsItem[]): ReligiousEvent[] => {
+    const result = [...currentRelEvents];
+    const normalizeStr = (str?: string) => (str || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+
+    (currentNews || []).forEach(news => {
+      if (!news) return;
+      const rawItem = news as any;
+      const isSpiritual =
+        rawItem.department === 'SPIRITUALITÉ' ||
+        rawItem.category === 'SPIRITUALITÉ' ||
+        news.authorRole === 'SPIRITUALITÉ' ||
+        news.author === 'SPIRITUALITÉ' ||
+        news.createdBy === 'SPIRITUALITÉ' ||
+        (news.title && (news.title.includes('RELIGIEUX') || news.title.includes('SPIRITUEL') || news.title.toLowerCase().includes('messe')));
+
+      if (!isSpiritual) return;
+
+      // Exclusion stricte de la Prière de Saint Augustin (prière permanente, non un événement calendaire)
+      const lowerTitle = (news.title || '').toLowerCase();
+      if (
+        lowerTitle.includes('prière rouama') ||
+        lowerTitle.includes('priere rouama') ||
+        lowerTitle.includes('saint augustin')
+      ) {
+        return;
+      }
+
+      const cleanTitle = (news.title || '').replace(/\[(?:ÉVÉNEMENT RELIGIEUX|EVENEMENT RELIGIEUX|SPIRITUALITÉ)\]\s*/gi, '').trim();
+      const cleanNormTitle = normalizeStr(cleanTitle);
+
+      const exists = result.some(e => {
+        if (e.id === news.id || e.id === 'EVT-' + news.id) return true;
+        const eNormTitle = normalizeStr(e.title);
+        if (cleanNormTitle && eNormTitle && (cleanNormTitle === eNormTitle || eNormTitle.includes(cleanNormTitle) || cleanNormTitle.includes(eNormTitle))) {
+          return true;
+        }
+        return false;
+      });
+
+      if (!exists) {
+        const content = news.content || '';
+        let eventDate = '';
+        let eventTime = '';
+        let location = '';
+        let theme = '';
+
+        const dateMatch = content.match(/Date:\s*([^\s\n]+(?:\s+à\s+[^\n]+)?)/i);
+        if (dateMatch) {
+          const rawDatePart = dateMatch[1];
+          if (rawDatePart.includes('à')) {
+            const parts = rawDatePart.split('à');
+            eventDate = parts[0].trim();
+            eventTime = parts[1].trim();
+          } else {
+            eventDate = rawDatePart.trim();
+          }
+        }
+
+        const timeMatch = content.match(/(?:Heure|à)\s*:\s*([0-9]{1,2}[:h][0-9]{2})/i);
+        if (timeMatch && !eventTime) {
+          eventTime = timeMatch[1].replace('h', ':').trim();
+        }
+
+        const locationMatch = content.match(/Lieu\s*:\s*([^\n]+)/i);
+        if (locationMatch) {
+          location = locationMatch[1].trim();
+        }
+
+        const themeMatch = content.match(/Thème\s*:\s*([^\n]+)/i);
+        if (themeMatch) {
+          theme = themeMatch[1].trim();
+        }
+
+        const inferredEvt: ReligiousEvent = {
+          id: 'EVT-' + news.id,
+          title: cleanTitle || news.title,
+          eventDate: eventDate || news.date || '2027-01-17',
+          eventTime: eventTime || '17:00',
+          location: location || 'Sanctuaire ROUAMA',
+          theme: theme || undefined,
+          status: 'PUBLISHED',
+          publishedAt: news.date,
+          createdAt: news.date,
+          publishedToGbairai: true,
+        };
+
+        result.push(inferredEvt);
+
+        try {
+          setDoc(doc(db, 'religious_events', inferredEvt.id), sanitizeFirestore(inferredEvt), { merge: true }).catch(() => {});
+        } catch {}
+      }
+    });
+
+    // Dédoublonnage strict final du tableau (par titre + date) et exclusion des mentions de prière permanente
+    const uniqueResult: ReligiousEvent[] = [];
+    const seenKeys = new Set<string>();
+
+    result.forEach(evt => {
+      if (!evt) return;
+      const lowerEvtTitle = (evt.title || '').toLowerCase();
+      if (
+        lowerEvtTitle.includes('prière rouama') ||
+        lowerEvtTitle.includes('priere rouama') ||
+        lowerEvtTitle.includes('saint augustin')
+      ) {
+        return;
+      }
+      const key = `${normalizeStr(evt.title)}_${normalizeStr(evt.eventDate || '')}`;
+      if (!seenKeys.has(key)) {
+        seenKeys.add(key);
+        uniqueResult.push(evt);
+      }
+    });
+
+    return uniqueResult.sort((a, b) => (b.createdAt || b.publishedAt || b.id).localeCompare(a.createdAt || a.publishedAt || a.id));
+  };
+
   // Sauvegarder la session active locale et enregistrer automatiquement l'assiduité du jour
   useEffect(() => {
     try {
@@ -1226,6 +1345,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         if (loaded.length > 0) {
           loaded.sort((a, b) => b.id.localeCompare(a.id));
           setNewsItems(loaded);
+          setReligiousEvents(prev => reconcileHistoricalSpiritualEvents(prev, loaded));
         } else {
           setNewsItems(DEFAULT_GBAIRAI_NEWS);
         }
@@ -1513,14 +1633,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           relEventSnap.value.forEach(d => {
             const data = d.data() as any;
             loaded.push({
+              ...data,
               id: d.id,
               status: data.status || (data.publishedAt ? 'PUBLISHED' : 'DRAFT'),
               publishedToGbairai: Boolean(data.publishedToGbairai || data.publishedAt),
-              ...data,
             });
           });
-          loaded.sort((a, b) => (b.createdAt || b.publishedAt || b.id).localeCompare(a.createdAt || a.publishedAt || a.id));
-          setReligiousEvents(loaded);
+          const currentNews = newsItemsRef.current || [];
+          const reconciled = reconcileHistoricalSpiritualEvents(loaded, currentNews);
+          setReligiousEvents(reconciled);
         }
 
         if (pvsSnap.status === 'fulfilled') {
@@ -1624,6 +1745,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (loaded.length > 0) {
         loaded.sort((a, b) => b.id.localeCompare(a.id));
         setNewsItems(loaded);
+        setReligiousEvents(prev => reconcileHistoricalSpiritualEvents(prev, loaded));
       }
     }, (err) => {
       console.warn('Erreur écouteur temps réel Gbairai:', err);
@@ -1661,14 +1783,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       snapshot.forEach((d) => {
         const data = d.data() as any;
         loaded.push({
+          ...data,
           id: d.id,
           status: data.status || (data.publishedAt ? 'PUBLISHED' : 'DRAFT'),
           publishedToGbairai: Boolean(data.publishedToGbairai || data.publishedAt),
-          ...data,
         });
       });
-      loaded.sort((a, b) => (b.createdAt || b.publishedAt || b.id).localeCompare(a.createdAt || a.publishedAt || a.id));
-      setReligiousEvents(loaded);
+      const currentNews = newsItemsRef.current || [];
+      const reconciled = reconcileHistoricalSpiritualEvents(loaded, currentNews);
+      setReligiousEvents(reconciled);
     }, (err) => {
       console.warn('Erreur écouteur temps réel religious_events:', err);
     });
