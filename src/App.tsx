@@ -12,7 +12,7 @@ import { ArchivesTab } from './components/tabs/ArchivesTab';
 import { AdminPortal } from './components/admin/AdminPortal';
 import { TabType } from './components/Navigation';
 import { AdminRole, RouamaMember } from './types';
-import { LayoutDashboard, Church, CreditCard, Newspaper, Tent, Rocket, FileText, Shield, LogOut, Download, User, Sparkles, KeyRound } from 'lucide-react';
+import { LayoutDashboard, Church, CreditCard, Newspaper, Tent, Rocket, FileText, Shield, LogOut, Download, User, Sparkles, KeyRound, Bell } from 'lucide-react';
 import { ADMIN_USERS, getRegisteredMembersCount } from './data/membersData';
 import { getDefaultRolesForMember } from './data/departmentMapping';
 import { ChangePasswordModal } from './components/admin/ChangePasswordModal';
@@ -21,6 +21,7 @@ import { RoleWorkspaceToggle } from './components/RoleWorkspaceToggle';
 import { InstallPwaBanner } from './components/InstallPwaBanner';
 import { UpdatePrompt } from './components/UpdatePrompt';
 import { InAppNotificationToast, ForegroundNotification } from './components/InAppNotificationToast';
+import { PushNotificationPromptModal } from './components/common/PushNotificationPromptModal';
 
 interface AuthenticatedAppProps {
   currentUser: any;
@@ -33,8 +34,27 @@ function AuthenticatedApp({ currentUser, rawMember }: AuthenticatedAppProps) {
   const [targetDocId, setTargetDocId] = useState<string | undefined>(undefined);
   const [isAdminChangePasswordOpen, setIsAdminChangePasswordOpen] = useState(false);
   const [foregroundToast, setForegroundToast] = useState<ForegroundNotification | null>(null);
+  const [isPushPromptOpen, setIsPushPromptOpen] = useState(false);
 
   const memberId = rawMember.id;
+  const memberNickname = rawMember?.nickname || currentUser?.nickname || 'MEMBRE';
+
+  // Demande l'autorisation d'affichage des notifications aux utilisateurs lors de leur première connexion à leur espace membre
+  useEffect(() => {
+    if (typeof window !== 'undefined' && 'Notification' in window) {
+      try {
+        const isDismissed = sessionStorage.getItem('erouama_push_prompt_dismissed') === 'true';
+        if (Notification.permission === 'default' && !isDismissed) {
+          const timer = setTimeout(() => {
+            setIsPushPromptOpen(true);
+          }, 1400);
+          return () => clearTimeout(timer);
+        }
+      } catch (e) {
+        console.warn('Erreur vérification notification permission:', e);
+      }
+    }
+  }, [memberId]);
 
   const handleNavigateTab = (tab: TabType, docId?: string) => {
     setActiveTab(tab);
@@ -205,12 +225,19 @@ function AuthenticatedApp({ currentUser, rawMember }: AuthenticatedAppProps) {
           notification={foregroundToast}
           onClose={() => setForegroundToast(null)}
         />
+
+        {/* Modal d'autorisation des notifications push */}
+        <PushNotificationPromptModal
+          isOpen={isPushPromptOpen}
+          onClose={() => setIsPushPromptOpen(false)}
+          memberId={memberId || currentUser?.id || 'MEMBRE'}
+          memberNickname={memberNickname}
+        />
       </div>
     );
   }
 
   // MEMBER VIEW (Logged in as MEMBER)
-  const memberNickname = rawMember?.nickname || currentUser?.nickname || 'MEMBRE';
   const memberFirstName = rawMember?.firstName || currentUser?.firstName || '';
   const userAvatar = rawMember?.photoUrl || rawMember?.avatar ||
     (rawMember && (memberNickname.toUpperCase() === 'CAPELO' || memberFirstName.toUpperCase() === 'WILFRIED')
@@ -397,6 +424,20 @@ function AuthenticatedApp({ currentUser, rawMember }: AuthenticatedAppProps) {
 
         {/* Action Buttons */}
         <div className="flex items-center space-x-3 ml-auto flex-wrap justify-end">
+          {/* Bouton d'accès direct aux Notifications Push */}
+          <button
+            type="button"
+            onClick={() => setIsPushPromptOpen(true)}
+            title="Activer ou configurer les notifications Push en direct"
+            className="relative flex items-center space-x-1.5 px-3 py-2 bg-white/15 hover:bg-white/25 text-white rounded-[2rem] text-xs font-bold transition-all border border-white/25 shadow-sm active:scale-95 cursor-pointer"
+          >
+            <Bell className="w-3.5 h-3.5 text-amber-300" />
+            <span className="hidden sm:inline">Notifications</span>
+            {typeof window !== 'undefined' && 'Notification' in window && Notification.permission !== 'granted' && (
+              <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse ml-0.5" />
+            )}
+          </button>
+
           {/* In-App Workspace Switcher Toggle */}
           <RoleWorkspaceToggle />
 
@@ -490,6 +531,14 @@ function AuthenticatedApp({ currentUser, rawMember }: AuthenticatedAppProps) {
             setActiveTab('PRIERE_ROUAMA');
           }
         }}
+      />
+
+      {/* Modal d'autorisation des notifications push */}
+      <PushNotificationPromptModal
+        isOpen={isPushPromptOpen}
+        onClose={() => setIsPushPromptOpen(false)}
+        memberId={memberId || currentUser?.id || 'MEMBRE'}
+        memberNickname={memberNickname}
       />
     </div>
   );

@@ -4200,6 +4200,26 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setDoc(doc(db, 'news', item.id), sanitizeFirestore(item)).catch(console.warn);
     setDoc(doc(db, 'announcements', item.id), sanitizeFirestore(item)).catch(console.warn);
     setNewsItems(prev => [item, ...prev]);
+
+    // Déclenchement automatique de la notification push FCM / Web Push pour toute publication sur le Gbaïraï
+    dispatchPushNotification({
+      title: `E-ROUAMA • Gbaïraï : ${title}`,
+      body: content.length > 140 ? content.substring(0, 137) + '...' : content,
+      senderRole: authorRole || 'COM',
+      senderName: authorRole || 'Communication E-ROUAMA',
+      targetRole: targetAudience === 'TOUS' ? 'ALL' : targetAudience,
+      type: 'GENERAL',
+      rawTitle: true,
+      priority: 'high',
+      sound: 'default',
+      requireInteraction: true,
+      url: linkTab ? `/#tab=${linkTab}` : '/#tab=NOUVELLES',
+      metadata: {
+        newsId: item.id,
+        linkTab,
+        targetDocId,
+      },
+    }).catch(console.warn);
   };
 
   const markNewsAsRead = (newsId: string, specificMemberId?: string) => {
@@ -4448,9 +4468,21 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const sendActivityToSecretariat = (activityId: string) => {
+    const act = activities.find(a => a.id === activityId);
     const updates = { status: 'SENT_TO_SECRETARIAT' as const, sentToSecretariat: true };
     setDoc(doc(db, 'activities', activityId), updates, { merge: true }).catch(console.warn);
     setActivities(prev => prev.map(a => a.id === activityId ? { ...a, ...updates } : a));
+
+    dispatchPushNotification({
+      title: 'E-ROUAMA • Commission Organisation 🎪',
+      body: `Fiche d'activité transmise au Secrétariat : "${act?.title || activityId}".`,
+      senderRole: 'ORGANISATION',
+      senderName: 'Commission Organisation',
+      targetRole: 'SECRETARIAT',
+      targetDepartment: 'secretariat',
+      type: 'INFO_REQUEST',
+      url: '/',
+    }).catch(console.warn);
   };
 
   const sendActivitiesBatchToSecretariat = (activityIds: string[]) => {
@@ -4462,12 +4494,35 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setActivities(prev =>
       prev.map(a => (activityIds.includes(a.id) ? { ...a, status: 'SENT_TO_SECRETARIAT', sentToSecretariat: true, batchId, isConsolidated: true } : a))
     );
+
+    dispatchPushNotification({
+      title: 'E-ROUAMA • Programme Global d\'Activités 🎪',
+      body: `La Commission Organisation a transmis le Programme Global (${activityIds.length} activités) au Secrétariat Général.`,
+      senderRole: 'ORGANISATION',
+      senderName: 'Commission Organisation',
+      targetRole: 'SECRETARIAT',
+      targetDepartment: 'secretariat',
+      type: 'INFO_REQUEST',
+      url: '/',
+    }).catch(console.warn);
   };
 
   const sendActivityFromSecretariatToPayor = (activityId: string) => {
+    const act = activities.find(a => a.id === activityId);
     const updates = { status: 'PENDING_PAYOR' as const, sentToPayor: true };
     setDoc(doc(db, 'activities', activityId), updates, { merge: true }).catch(console.warn);
     setActivities(prev => prev.map(a => a.id === activityId ? { ...a, ...updates } : a));
+
+    dispatchPushNotification({
+      title: 'E-ROUAMA • Transmission Payor ⚖️',
+      body: `Le Secrétariat a transmis l'activité "${act?.title || activityId}" pour visa officiel du Payor.`,
+      senderRole: 'SECRÉTARIAT',
+      senderName: 'Secrétariat Général',
+      targetRole: 'PAYOR',
+      targetDepartment: 'payor',
+      type: 'INFO_REQUEST',
+      url: '/',
+    }).catch(console.warn);
   };
 
   const sendActivitiesBatchFromSecretariatToPayor = (activityIds: string[]) => {
@@ -4478,9 +4533,21 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setActivities(prev =>
       prev.map(a => (activityIds.includes(a.id) ? { ...a, status: 'PENDING_PAYOR', sentToPayor: true } : a))
     );
+
+    dispatchPushNotification({
+      title: 'E-ROUAMA • Transmission Payor ⚖️',
+      body: `Le Secrétariat a transmis le Programme Global (${activityIds.length} activités) pour visa du Payor.`,
+      senderRole: 'SECRÉTARIAT',
+      senderName: 'Secrétariat Général',
+      targetRole: 'PAYOR',
+      targetDepartment: 'payor',
+      type: 'INFO_REQUEST',
+      url: '/',
+    }).catch(console.warn);
   };
 
   const approveActivityPayor = (activityId: string) => {
+    const act = activities.find(a => a.id === activityId);
     const signedAt = new Date().toLocaleDateString('fr-FR', {
       day: '2-digit',
       month: '2-digit',
@@ -4502,6 +4569,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
     setDoc(doc(db, 'activities', activityId), updates, { merge: true }).catch(console.warn);
     setActivities(prev => prev.map(a => a.id === activityId ? { ...a, ...updates } : a));
+
+    dispatchPushNotification({
+      title: 'E-ROUAMA • Visa Payor Accordé ✅',
+      body: `Le Payor (WOYA SYLAS) a validé et visé l'activité "${act?.title || activityId}".`,
+      senderRole: 'PAYOR',
+      senderName: 'WOYA SYLAS (LE PAYOR)',
+      targetRole: 'ALL',
+      type: 'GENERAL',
+      url: '/',
+    }).catch(console.warn);
   };
 
   const approveActivitiesBatchPayor = (activityIds: string[]) => {
@@ -4530,9 +4607,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setActivities(prev =>
       prev.map(a => (activityIds.includes(a.id) ? { ...a, status: 'APPROVED', payorSignature, payorFeedback: '', sentToSecretariat: true } : a))
     );
+
+    dispatchPushNotification({
+      title: 'E-ROUAMA • Visa Payor Accordé ✅',
+      body: `Le Payor (WOYA SYLAS) a validé et visé le Programme Global (${activityIds.length} activités).`,
+      senderRole: 'PAYOR',
+      senderName: 'WOYA SYLAS (LE PAYOR)',
+      targetRole: 'ALL',
+      type: 'GENERAL',
+      url: '/',
+    }).catch(console.warn);
   };
 
   const returnActivityForCorrectionPayor = (activityId: string, feedback: string) => {
+    const act = activities.find(a => a.id === activityId);
     const updates = {
       status: 'returned_for_correction' as const,
       payorFeedback: feedback,
@@ -4540,6 +4628,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
     setDoc(doc(db, 'activities', activityId), updates, { merge: true }).catch(console.warn);
     setActivities(prev => prev.map(a => a.id === activityId ? { ...a, ...updates } : a));
+
+    dispatchPushNotification({
+      title: 'E-ROUAMA • Activité Retournée pour Correction ⚠️',
+      body: `Le Payor a retourné l'activité "${act?.title || activityId}" avec observations : ${feedback.substring(0, 100)}`,
+      senderRole: 'PAYOR',
+      senderName: 'Espace Payor',
+      targetRole: 'ORGANISATION',
+      targetDepartment: 'organisation',
+      type: 'INFO_REQUEST',
+      url: '/',
+    }).catch(console.warn);
   };
 
   const sendActivityNoteToCom = (activityId: string) => {
@@ -4729,9 +4828,21 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const sendProjectToSecretariat = (projectId: string) => {
+    const proj = projects.find(p => p.id === projectId);
     const updates = { status: 'SENT_TO_SECRETARIAT' as const, sentToSecretariat: true };
     setDoc(doc(db, 'projects', projectId), updates, { merge: true }).catch(console.warn);
     setProjects(prev => prev.map(p => (p.id === projectId ? { ...p, ...updates } : p)));
+
+    dispatchPushNotification({
+      title: 'E-ROUAMA • Commission Projets 🚀',
+      body: `Fiche Projet transmise au Secrétariat Général : "${proj?.title || projectId}".`,
+      senderRole: 'PROJET',
+      senderName: 'Commission Projets (AGR)',
+      targetRole: 'SECRETARIAT',
+      targetDepartment: 'secretariat',
+      type: 'INFO_REQUEST',
+      url: '/',
+    }).catch(console.warn);
   };
 
   const sendProjectsBatchToSecretariat = (projectIds: string[]) => {
@@ -4743,12 +4854,35 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setProjects(prev =>
       prev.map(p => (projectIds.includes(p.id) ? { ...p, status: 'SENT_TO_SECRETARIAT', sentToSecretariat: true, batchId, isConsolidated: true } : p))
     );
+
+    dispatchPushNotification({
+      title: 'E-ROUAMA • Dossier Global Projets 🚀',
+      body: `Dossier consolidé de ${projectIds.length} projets transmis au Secrétariat Général.`,
+      senderRole: 'PROJET',
+      senderName: 'Commission Projets (AGR)',
+      targetRole: 'SECRETARIAT',
+      targetDepartment: 'secretariat',
+      type: 'INFO_REQUEST',
+      url: '/',
+    }).catch(console.warn);
   };
 
   const sendProjectFromSecretariatToPayor = (projectId: string) => {
+    const proj = projects.find(p => p.id === projectId);
     const updates = { status: 'PENDING_PAYOR' as const, sentToPayor: true };
     setDoc(doc(db, 'projects', projectId), updates, { merge: true }).catch(console.warn);
     setProjects(prev => prev.map(p => (p.id === projectId ? { ...p, ...updates } : p)));
+
+    dispatchPushNotification({
+      title: 'E-ROUAMA • Transmission Payor ⚖️',
+      body: `Le Secrétariat a transmis le projet "${proj?.title || projectId}" pour visa officiel du Payor.`,
+      senderRole: 'SECRÉTARIAT',
+      senderName: 'Secrétariat Général',
+      targetRole: 'PAYOR',
+      targetDepartment: 'payor',
+      type: 'INFO_REQUEST',
+      url: '/',
+    }).catch(console.warn);
   };
 
   const sendProjectsBatchFromSecretariatToPayor = (projectIds: string[]) => {
@@ -4759,9 +4893,21 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setProjects(prev =>
       prev.map(p => (projectIds.includes(p.id) ? { ...p, status: 'PENDING_PAYOR', sentToPayor: true } : p))
     );
+
+    dispatchPushNotification({
+      title: 'E-ROUAMA • Transmission Payor ⚖️',
+      body: `Le Secrétariat a transmis le Dossier Global (${projectIds.length} projets) pour visa officiel du Payor.`,
+      senderRole: 'SECRÉTARIAT',
+      senderName: 'Secrétariat Général',
+      targetRole: 'PAYOR',
+      targetDepartment: 'payor',
+      type: 'INFO_REQUEST',
+      url: '/',
+    }).catch(console.warn);
   };
 
   const approveProjectPayor = (projectId: string) => {
+    const proj = projects.find(p => p.id === projectId);
     const signedAt = new Date().toLocaleDateString('fr-FR', {
       day: '2-digit',
       month: '2-digit',
@@ -4800,6 +4946,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           : p
       )
     );
+
+    dispatchPushNotification({
+      title: 'E-ROUAMA • Visa Payor Accordé ✅',
+      body: `Le Payor (WOYA SYLAS) a validé et visé le projet "${proj?.title || projectId}".`,
+      senderRole: 'PAYOR',
+      senderName: 'WOYA SYLAS (LE PAYOR)',
+      targetRole: 'ALL',
+      type: 'GENERAL',
+      url: '/',
+    }).catch(console.warn);
   };
 
   const approveProjectsBatchPayor = (projectIds: string[]) => {
@@ -4843,9 +4999,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           : p
       )
     );
+
+    dispatchPushNotification({
+      title: 'E-ROUAMA • Visa Payor Accordé ✅',
+      body: `Le Payor (WOYA SYLAS) a validé et visé le Dossier Global (${projectIds.length} projets).`,
+      senderRole: 'PAYOR',
+      senderName: 'WOYA SYLAS (LE PAYOR)',
+      targetRole: 'ALL',
+      type: 'GENERAL',
+      url: '/',
+    }).catch(console.warn);
   };
 
   const returnProjectForCorrectionPayor = (projectId: string, feedback: string) => {
+    const proj = projects.find(p => p.id === projectId);
     setDoc(
       doc(db, 'projects', projectId),
       {
@@ -4868,6 +5035,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           : p
       )
     );
+
+    dispatchPushNotification({
+      title: 'E-ROUAMA • Projet Retourné pour Correction ⚠️',
+      body: `Le Payor a retourné le projet "${proj?.title || projectId}" avec observations : ${feedback.substring(0, 100)}`,
+      senderRole: 'PAYOR',
+      senderName: 'Espace Payor',
+      targetRole: 'PROJET',
+      targetDepartment: 'projet',
+      type: 'INFO_REQUEST',
+      url: '/',
+    }).catch(console.warn);
   };
 
   const sendProjectNoteToCom = (projectId: string) => {
@@ -5175,6 +5353,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setBilans(prev =>
       prev.map(b => (b.id === bilanId ? { ...b, ...updates } : b))
     );
+
+    const targetBilan = bilans.find(b => b.id === bilanId);
+    dispatchPushNotification({
+      title: 'E-ROUAMA • Bilan Financier Approuvé ✅',
+      body: `Le Payor a visé et approuvé le bilan financier "${targetBilan?.period || bilanId}".`,
+      senderRole: 'PAYOR',
+      senderName: 'Espace Payor',
+      targetRole: 'TRESORIER',
+      targetDepartment: 'tresorerie',
+      type: 'APPROVAL',
+      url: '/',
+    }).catch(console.warn);
   };
 
   const updateFinancialBilan = (bilanId: string, updates: Partial<FinancialBilan>) => {
@@ -5214,6 +5404,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
     setDoc(doc(db, 'secretary_bilans', bilanId), updates, { merge: true }).catch(console.warn);
     setBilans(prev => prev.map(b => (b.id === bilanId ? { ...b, ...updates } : b)));
+
+    const targetBilan = bilans.find(b => b.id === bilanId);
+    dispatchPushNotification({
+      title: 'E-ROUAMA • Bilan Retourné pour Correction ⚠️',
+      body: `Le Payor a retourné le bilan "${targetBilan?.period || bilanId}" avec remarques : ${feedback.substring(0, 100)}`,
+      senderRole: 'PAYOR',
+      senderName: 'Espace Payor',
+      targetRole: 'TRESORIER',
+      targetDepartment: 'tresorerie',
+      type: 'INFO_REQUEST',
+      url: '/',
+    }).catch(console.warn);
   };
 
   const deleteFinancialBilan = (bilanId: string) => {
@@ -5225,12 +5427,36 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const updates = { sentToSecretariat: true, status: 'SENT_TO_SECRETARIAT' as const };
     setDoc(doc(db, 'secretary_bilans', bilanId), updates, { merge: true }).catch(console.warn);
     setBilans(prev => prev.map(b => (b.id === bilanId ? { ...b, ...updates } : b)));
+
+    const targetBilan = bilans.find(b => b.id === bilanId);
+    dispatchPushNotification({
+      title: 'E-ROUAMA • Bilan Transmis au Secrétariat 📄',
+      body: `Le Trésorier a transmis le bilan "${targetBilan?.period || bilanId}" au Secrétariat Général.`,
+      senderRole: 'TRESORIER',
+      senderName: 'Trésorerie Générale',
+      targetRole: 'SECRETAIRE',
+      targetDepartment: 'secretariat',
+      type: 'DOCUMENT_TRANSMITTED',
+      url: '/',
+    }).catch(console.warn);
   };
 
   const sendBilanFromSecretariatToPayor = (bilanId: string) => {
     const updates = { status: 'PENDING_PAYOR' as const };
     setDoc(doc(db, 'secretary_bilans', bilanId), updates, { merge: true }).catch(console.warn);
     setBilans(prev => prev.map(b => (b.id === bilanId ? { ...b, ...updates } : b)));
+
+    const targetBilan = bilans.find(b => b.id === bilanId);
+    dispatchPushNotification({
+      title: 'E-ROUAMA • Bilan Soumis au Payor ⚖️',
+      body: `Le Secrétariat Général a transmis le bilan "${targetBilan?.period || bilanId}" pour approbation au Payor.`,
+      senderRole: 'SECRETAIRE',
+      senderName: 'Secrétariat Général',
+      targetRole: 'PAYOR',
+      targetDepartment: 'payor',
+      type: 'DOCUMENT_TRANSMITTED',
+      url: '/',
+    }).catch(console.warn);
   };
 
   const sendBilanFromSecretariatToCom = (bilanId: string) => {
@@ -5962,6 +6188,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
     setDoc(doc(db, 'religious_events', eventId), updates, { merge: true }).catch(console.warn);
     setReligiousEvents(prev => prev.map(e => e.id === eventId ? { ...e, ...updates } : e));
+
+    const ev = religiousEvents.find(e => e.id === eventId);
+    dispatchPushNotification({
+      title: 'E-ROUAMA • Fiche Spiritualité Transmise 📄',
+      body: `Le département Spiritualité a transmis l'activité "${ev?.title || eventId}" au Secrétariat Général.`,
+      senderRole: 'SPIRITUALITE',
+      senderName: 'Département Spiritualité',
+      targetRole: 'SECRETAIRE',
+      targetDepartment: 'secretariat',
+      type: 'DOCUMENT_TRANSMITTED',
+      url: '/',
+    }).catch(console.warn);
   };
 
   const sendReligiousEventsBatchToSecretariat = (eventIds: string[]) => {
@@ -5978,6 +6216,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setReligiousEvents(prev =>
       prev.map(e => (eventIds.includes(e.id) ? { ...e, status: 'SENT_TO_SECRETARIAT', sentToSecretariat: true, batchId, isConsolidated: true } : e))
     );
+
+    dispatchPushNotification({
+      title: 'E-ROUAMA • Programme Global Spiritualité Transmis 📋',
+      body: `Le département Spiritualité a transmis un programme consolidé de ${eventIds.length} activités au Secrétariat Général.`,
+      senderRole: 'SPIRITUALITE',
+      senderName: 'Département Spiritualité',
+      targetRole: 'SECRETAIRE',
+      targetDepartment: 'secretariat',
+      type: 'DOCUMENT_TRANSMITTED',
+      url: '/',
+    }).catch(console.warn);
   };
 
   const sendReligiousEventFromSecretariatToPayor = (eventId: string) => {
@@ -5987,6 +6236,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
     setDoc(doc(db, 'religious_events', eventId), updates, { merge: true }).catch(console.warn);
     setReligiousEvents(prev => prev.map(e => e.id === eventId ? { ...e, ...updates } : e));
+
+    const ev = religiousEvents.find(e => e.id === eventId);
+    dispatchPushNotification({
+      title: 'E-ROUAMA • Fiche Spiritualité Soumise au Payor ⚖️',
+      body: `Le Secrétariat a transmis l'activité spirituelle "${ev?.title || eventId}" au Payor pour validation.`,
+      senderRole: 'SECRETAIRE',
+      senderName: 'Secrétariat Général',
+      targetRole: 'PAYOR',
+      targetDepartment: 'payor',
+      type: 'DOCUMENT_TRANSMITTED',
+      url: '/',
+    }).catch(console.warn);
   };
 
   const sendReligiousEventsBatchFromSecretariatToPayor = (eventIds: string[]) => {
@@ -6000,6 +6261,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setReligiousEvents(prev =>
       prev.map(e => (eventIds.includes(e.id) ? { ...e, status: 'PENDING_PAYOR', sentToPayor: true } : e))
     );
+
+    dispatchPushNotification({
+      title: 'E-ROUAMA • Programme Global Spiritualité Soumis au Payor ⚖️',
+      body: `Le Secrétariat a transmis le programme consolidé (${eventIds.length} activités) pour validation au Payor.`,
+      senderRole: 'SECRETAIRE',
+      senderName: 'Secrétariat Général',
+      targetRole: 'PAYOR',
+      targetDepartment: 'payor',
+      type: 'DOCUMENT_TRANSMITTED',
+      url: '/',
+    }).catch(console.warn);
   };
 
   const approveReligiousEventPayor = (eventId: string) => {
@@ -6024,6 +6296,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
     setDoc(doc(db, 'religious_events', eventId), updates, { merge: true }).catch(console.warn);
     setReligiousEvents(prev => prev.map(e => e.id === eventId ? { ...e, ...updates } : e));
+
+    const ev = religiousEvents.find(e => e.id === eventId);
+    dispatchPushNotification({
+      title: 'E-ROUAMA • Activité Spirituelle Approuvée ✅',
+      body: `Le Payor a visé et approuvé l'activité "${ev?.title || eventId}".`,
+      senderRole: 'PAYOR',
+      senderName: 'Espace Payor',
+      targetRole: 'SPIRITUALITE',
+      targetDepartment: 'spiritualite',
+      type: 'APPROVAL',
+      url: '/',
+    }).catch(console.warn);
   };
 
   const approveReligiousEventsBatchPayor = (eventIds: string[]) => {
@@ -6052,6 +6336,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setReligiousEvents(prev =>
       prev.map(e => (eventIds.includes(e.id) ? { ...e, status: 'APPROVED', payorSignature, payorFeedback: '', sentToSecretariat: true } : e))
     );
+
+    dispatchPushNotification({
+      title: 'E-ROUAMA • Programme Global Spirituel Approuvé ✅',
+      body: `Le Payor a visé et validé le programme global consolidé comprenant ${eventIds.length} activités.`,
+      senderRole: 'PAYOR',
+      senderName: 'Espace Payor',
+      targetRole: 'SPIRITUALITE',
+      targetDepartment: 'spiritualite',
+      type: 'APPROVAL',
+      url: '/',
+    }).catch(console.warn);
   };
 
   const returnReligiousEventForCorrectionPayor = (eventId: string, feedback: string) => {
@@ -6062,6 +6357,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
     setDoc(doc(db, 'religious_events', eventId), updates, { merge: true }).catch(console.warn);
     setReligiousEvents(prev => prev.map(e => e.id === eventId ? { ...e, ...updates } : e));
+
+    const ev = religiousEvents.find(e => e.id === eventId);
+    dispatchPushNotification({
+      title: 'E-ROUAMA • Activité Spirituelle Retournée ⚠️',
+      body: `Le Payor a retourné l'activité "${ev?.title || eventId}" avec observations : ${feedback.substring(0, 100)}`,
+      senderRole: 'PAYOR',
+      senderName: 'Espace Payor',
+      targetRole: 'SPIRITUALITE',
+      targetDepartment: 'spiritualite',
+      type: 'INFO_REQUEST',
+      url: '/',
+    }).catch(console.warn);
   };
 
   const sendReligiousEventNoteToCom = (eventId: string) => {

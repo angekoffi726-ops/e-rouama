@@ -11,6 +11,7 @@ import {
   where,
   getDocs,
   arrayUnion,
+  onSnapshot,
 } from 'firebase/firestore';
 import { db } from '../firebase';
 import app from '../firebase';
@@ -500,7 +501,7 @@ export interface PushDispatchOptions {
   targetDepartment?: string; // ex: "cerveau", "tresorerie", "communication", "projet", "organisation", "spiritualite", etc.
   fcmToken?: string; // Jeton FCM direct du destinataire ciblé
   fcmTokens?: string[]; // Liste de jetons FCM directs
-  type: 'INFO_REQUEST' | 'PV_PUBLISHED' | 'BILAN_PUBLISHED' | 'PAYMENT' | 'GENERAL';
+  type: 'INFO_REQUEST' | 'PV_PUBLISHED' | 'BILAN_PUBLISHED' | 'PAYMENT' | 'GENERAL' | 'APPROVAL' | 'DOCUMENT_TRANSMITTED' | (string & {});
   url?: string;
   metadata?: Record<string, any>;
   rawTitle?: boolean; // When true, does not prefix title with E-ROUAMA : [sender]
@@ -927,24 +928,116 @@ export const listenForIncomingPushNotifications = (
     const notifsRef = collection(db, 'push_notifications');
     const q = query(notifsRef, orderBy('createdAt', 'desc'), limit(15));
 
+    let initialLoadDone = false;
 
-    // FREIN DE SECOURS FIRESTORE : Remplacement de l'écouteur en continu onSnapshot
-    // par une lecture ponctuelle unique getDocs au montage pour préserver les quotas gratuits.
-    getDocs(q).then((snapshot) => {
-      // Marquer l'historique initial sans déclencher de carillons ni de boucles
-      snapshot.docs.forEach((docSnap) => {
-        const docData = docSnap.data() as any;
-        const initialMsgId = docData.messageId || docData.id || docSnap.id;
-        const initialTag = docData.tag || `erouama-msg-${initialMsgId}`;
-        markNotificationAsHandled(initialMsgId);
-        markNotificationAsHandled(initialTag);
-        markNotificationAsHandled(docSnap.id);
+    // Écouteur en temps réel sécurisé avec dédoublonnage strict
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      // 1. Au tout premier chargement, marquer tous les documents existants comme déjà traités
+      // afin de ne pas déclencher de notifications intempestives sur d'anciennes alertes
+      if (!initialLoadDone) {
+        snapshot.docs.forEach((docSnap) => {
+          const docData = docSnap.data() as any;
+          const initialMsgId = docData.messageId || docData.id || docSnap.id;
+          const initialTag = docData.tag || `erouama-msg-${initialMsgId}`;
+          markNotificationAsHandled(initialMsgId);
+          markNotificationAsHandled(initialTag);
+          markNotificationAsHandled(docSnap.id);
+        });
+        initialLoadDone = true;
+        return;
+      }
+
+      // 2. Traitement des nouvelles notifications push arrivées en temps réel
+      snapshot.docChanges().forEach((change) => {
+        if (change.type === 'added') {
+          const docData = change.doc.data() as any;
+          const notifId = docData.messageId || docData.id || change.doc.id;
+          const notifTag = docData.tag || `erouama-msg-${notifId}`;
+
+          // Ignorer les notifications marquées supprimées
+          if (docData.deleted === true || docData.status === 'deleted') {
+            return;
+          }
+
+          // Anti-doublon strict (déjà affiché par cet onglet ou ce client)
+          if (hasNotificationBeenHandled(notifId) || hasNotificationBeenHandled(notifTag)) {
+            return;
+          }
+
+          // Vérification du ciblage destinataire
+          const targetRoleClean = (docData.targetRole || '').toUpperCase().trim();
+          const targetDeptNormalized = docData.targetDepartment
+            ? normalizeDepartmentKey(docData.targetDepartment)
+            : '';
+          const isBroadcastAll =
+            targetRoleClean === 'ALL' ||
+            targetRoleClean === 'TOUS' ||
+            targetDeptNormalized === 'all' ||
+            !docData.targetRole;
+
+          // Exclusion stricte si l'expéditeur a exclu cet utilisateur (ex: l'auteur de l'action)
+          if (docData.metadata?.excludedUserId && String(docData.metadata.excludedUserId).trim() === cleanUserId) {
+            return;
+          }
+
+          const isDirectTarget =
+            (docData.targetUserId && String(docData.targetUserId).trim() === cleanUserId) ||
+            (Array.isArray(docData.targetUserIds) && docData.targetUserIds.map(String).includes(cleanUserId));
+
+          const isRoleTarget = Boolean(
+            targetRoleClean &&
+            cleanRole &&
+            (targetRoleClean === cleanRole ||
+              (targetRoleClean === 'CERVEAU' && cleanRole === 'CERVEAU') ||
+              (targetRoleClean === 'TRESORIER' && cleanRole === 'TRESORIER') ||
+              (targetRoleClean === 'PAYOR' && cleanRole === 'PAYOR') ||
+              (targetRoleClean === 'SECRETARIAT' && cleanRole === 'SECRETARIAT') ||
+              (targetRoleClean === 'COM' && cleanRole === 'COM') ||
+              (targetRoleClean === 'ORGANISATION' && cleanRole === 'ORGANISATION') ||
+              (targetRoleClean === 'PROJET' && cleanRole === 'PROJET') ||
+              (targetRoleClean === 'SPIRITUALITE' && (cleanRole === 'SPIRITUALITE' || cleanRole === 'SPIRIT')))
+          );
+
+          const isDeptTarget = Boolean(
+            targetDeptNormalized && userDeptsNormalized.includes(targetDeptNormalized)
+          );
+
+          if (isBroadcastAll || isDirectTarget || isRoleTarget || isDeptTarget) {
+            markNotificationAsHandled(notifId);
+            markNotificationAsHandled(notifTag);
+            markNotificationAsHandled(change.doc.id);
+
+            // Déclenchement de la notification push système native (Android shade / WebPush)
+            triggerDirectNotification({
+              title: docData.title || 'E-ROUAMA',
+              body: docData.body || '',
+              icon: docData.icon || '/icon-192.png',
+              tag: notifTag,
+              url: docData.url || '/',
+              data: docData,
+            });
+
+            // Affichage de l'alerte visuelle in-app / toast
+            if (onReceived) {
+              onReceived({
+                id: notifId,
+                title: docData.title || 'E-ROUAMA',
+                body: docData.body || '',
+                icon: docData.icon || '/icon-192.png',
+                url: docData.url || '/',
+                data: docData,
+              });
+            }
+          }
+        }
       });
-    }).catch(err => {
-      console.warn('Initialisation push ponctuelle Firestore:', err);
+    }, (err) => {
+      console.warn('Erreur écouteur push notifications Firestore:', err);
     });
 
-    return () => {};
+    return () => {
+      unsubscribe();
+    };
   } catch (err) {
     console.warn('Erreur écouteur push notifications Firestore:', err);
     return () => {};
