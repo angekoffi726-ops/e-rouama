@@ -536,6 +536,31 @@ export interface SecretaryPV {
   attendance: { memberId: string; present: boolean }[];
   status: 'DRAFT' | 'SENT_TO_PAYOR' | 'APPROVED_PAYOR' | 'SENT_TO_COM' | 'ARCHIVED' | 'returned_for_correction';
   payorFeedback?: string;
+  sentToPayor?: boolean;
+  payorSignature?: {
+    role: string;
+    signedBy: string;
+    signedAt: string;
+    stampUrl?: string;
+  };
+  payorSignatureDate?: string;
+  createdAt?: string;
+  refNumber?: string;
+  agenda?: string[];
+  decisions?: string[];
+  secretarySignature?: {
+    role?: string;
+    signedBy?: string;
+    signedAt?: string;
+  };
+  archivedBySecretariat?: boolean;
+  archivedAt?: string;
+  sentToCom?: boolean;
+  sentToComAt?: string;
+  ackByCom?: boolean;
+  ackByComAt?: string;
+  publishedByCom?: boolean;
+  publishedByComAt?: string;
 }
 
 export interface FinancialBilan {

@@ -282,11 +282,15 @@ interface AppContextType {
   publishProject: (projectId: string) => void;
   archiveProject: (projectId: string) => void;
 
-  createSecretaryPV: (pv: Omit<SecretaryPV, 'id' | 'status'>) => void;
+  createSecretaryPV: (pv: Omit<SecretaryPV, 'id' | 'status'> & { status?: SecretaryPV['status'] }) => void;
   updateSecretaryPV: (pvId: string, updates: Partial<SecretaryPV>) => void;
+  sendPVFromSecretariatToPayor: (pvId: string) => void;
   returnPVForCorrectionPayor: (pvId: string, feedback: string) => void;
   deleteSecretaryPV: (pvId: string) => void;
   approvePVPayor: (pvId: string) => void;
+  archivePVSecretariat: (pvId: string) => void;
+  sendPVNoteToCom: (pvId: string) => void;
+  ackPVCOM: (pvId: string) => void;
   publishPVCOM: (pvId: string) => void;
 
   createFinancialBilan: (
@@ -5253,140 +5257,233 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   // Secrétariat, PVs et Bilans
-  const generateSequentialPvId = (meetingDateStr?: string): string => {
-    // Format: PV-JJ/MM/AAAA/0001
-    let dayStr = '';
-    let monthStr = '';
-    let yearStr = '';
-
-    if (meetingDateStr && meetingDateStr.includes('-')) {
-      const parts = meetingDateStr.split('-');
-      if (parts.length === 3) {
-        yearStr = parts[0];
-        monthStr = parts[1].padStart(2, '0');
-        dayStr = parts[2].padStart(2, '0');
-      }
-    } else if (meetingDateStr && meetingDateStr.includes('/')) {
-      const parts = meetingDateStr.split('/');
-      if (parts.length === 3) {
-        if (parts[0].length === 4) {
-          yearStr = parts[0];
-          monthStr = parts[1].padStart(2, '0');
-          dayStr = parts[2].padStart(2, '0');
-        } else {
-          dayStr = parts[0].padStart(2, '0');
-          monthStr = parts[1].padStart(2, '0');
-          yearStr = parts[2];
-        }
-      }
-    }
-
-    if (!dayStr || !monthStr || !yearStr || yearStr.length !== 4) {
-      const now = new Date();
-      dayStr = String(now.getDate()).padStart(2, '0');
-      monthStr = String(now.getMonth() + 1).padStart(2, '0');
-      yearStr = String(now.getFullYear());
-    }
-
-    const datePrefix = `PV-${dayStr}/${monthStr}/${yearStr}`;
-
-    // Find highest counter among existing PVs matching the sequential format
+  const generateSequentialPvId = (): string => {
+    // Format incrémentiel normé officiel : PV-001, PV-002, ...
     let maxSeq = 0;
     pvs.forEach(p => {
       if (!p.id) return;
-      const match = p.id.match(/^PV-.*\/(\d+)$/);
+      const match = p.id.match(/^PV-(\d+)$/);
       if (match) {
         const num = parseInt(match[1], 10);
         if (!isNaN(num) && num > maxSeq) {
           maxSeq = num;
         }
+      } else {
+        const mLegacy = p.id.match(/\/(\d+)$/);
+        if (mLegacy) {
+          const num = parseInt(mLegacy[1], 10);
+          if (!isNaN(num) && num > maxSeq) maxSeq = num;
+        }
       }
     });
 
-    let nextSeq = maxSeq + 1;
-    let candidateId = `${datePrefix}/${String(nextSeq).padStart(4, '0')}`;
-
+    const nextSeq = maxSeq > 0 ? maxSeq + 1 : (pvs.length + 1);
+    let candidateId = `PV-${String(nextSeq).padStart(3, '0')}`;
     while (pvs.some(p => p.id === candidateId)) {
-      nextSeq++;
-      candidateId = `${datePrefix}/${String(nextSeq).padStart(4, '0')}`;
+      maxSeq++;
+      candidateId = `PV-${String(maxSeq).padStart(3, '0')}`;
     }
-
     return candidateId;
   };
 
-  const createSecretaryPV = (pv: Omit<SecretaryPV, 'id' | 'status'>) => {
-    const generatedId = generateSequentialPvId(pv.meetingDate);
+  const createSecretaryPV = (pv: Omit<SecretaryPV, 'id' | 'status'> & { status?: SecretaryPV['status'] }) => {
+    const generatedId = generateSequentialPvId();
     const newPv: SecretaryPV = {
       ...pv,
       id: generatedId,
-      status: 'SENT_TO_PAYOR',
+      status: pv.status || 'DRAFT',
+      sentToPayor: false,
+      createdAt: new Date().toISOString(),
     };
     setDoc(doc(db, 'secretary_pvs', newPv.id), sanitizeFirestore(newPv)).catch(console.warn);
     setPvs(prev => [newPv, ...prev]);
 
-    // Notification Push FCM immédiate pour tous les membres / admins
+    // Notification interne Secrétariat
     dispatchPushNotification({
-      title: 'E-ROUAMA : Secrétariat Général',
-      body: `Nouveau Procès-Verbal rédigé : "${newPv.title}" (${newPv.meetingDate}).`,
+      title: 'E-ROUAMA • Secrétariat Général 📝',
+      body: `Procès-Verbal "${newPv.title}" enregistré sous la référence ${newPv.id}.`,
       senderRole: 'SECRÉTARIAT',
       senderName: 'Secrétariat Général',
-      targetRole: 'ALL',
+      targetRole: 'SECRETARIAT',
       type: 'PV_PUBLISHED',
       url: '/',
     }).catch(console.warn);
   };
 
+  const sendPVFromSecretariatToPayor = (pvId: string) => {
+    const targetPv = pvs.find(p => p.id === pvId);
+    const updates = { status: 'SENT_TO_PAYOR' as const, sentToPayor: true };
+    setDoc(doc(db, 'secretary_pvs', pvId), updates, { merge: true }).catch(console.warn);
+    setPvs(prev => prev.map(p => (p.id === pvId ? { ...p, ...updates } : p)));
+
+    dispatchPushNotification({
+      title: 'E-ROUAMA • Transmission Payor ⚖️',
+      body: `Le Secrétariat a transmis le Procès-Verbal "${targetPv?.title || pvId}" pour visa officiel du Payor.`,
+      senderRole: 'SECRÉTARIAT',
+      senderName: 'Secrétariat Général',
+      targetRole: 'PAYOR',
+      targetDepartment: 'payor',
+      type: 'INFO_REQUEST',
+      url: '/',
+    }).catch(console.warn);
+  };
+
   const approvePVPayor = (pvId: string) => {
-    setDoc(doc(db, 'secretary_pvs', pvId), { status: 'APPROVED_PAYOR' }, { merge: true }).catch(console.warn);
+    const nowStr = `${new Date().toLocaleDateString('fr-FR')} à ${new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}`;
+    const payorSig = {
+      role: 'PAYOR',
+      signedBy: 'WOYA SYLAS (LE PAYOR)',
+      signedAt: nowStr,
+      stampUrl: '/SS.png',
+    };
+    const updates = {
+      status: 'APPROVED_PAYOR' as const,
+      payorSignature: payorSig,
+      payorSignatureDate: nowStr,
+      archivedBySecretariat: false,
+      sentToCom: false,
+      ackByCom: false,
+    };
+    setDoc(doc(db, 'secretary_pvs', pvId), updates, { merge: true }).catch(console.warn);
     setPvs(prev =>
-      prev.map(p => (p.id === pvId ? { ...p, status: 'APPROVED_PAYOR' } : p))
+      prev.map(p => (p.id === pvId ? { ...p, ...updates } : p))
     );
     const pv = pvs.find(p => p.id === pvId);
     if (pv) {
       dispatchPushNotification({
-        title: 'E-ROUAMA : Secrétariat Général',
-        body: `Procès-Verbal officiel validé par le Payor : "${pv.title}".`,
+        title: 'E-ROUAMA : Décision Payor',
+        body: `Procès-Verbal validé par le Payor : "${pv.title}". En attente d'archivage par le Secrétariat.`,
         senderRole: 'PAYOR',
         senderName: 'Espace Payor',
-        targetRole: 'ALL',
+        targetRole: 'SECRETAIRE',
         type: 'PV_PUBLISHED',
         url: '/',
       }).catch(console.warn);
+    }
+  };
 
-      const detailsHeader = [
-        (pv.startTime || pv.endTime) ? `⏱️ Horaires : ${pv.startTime || '--:--'} à ${pv.endTime || '--:--'}` : null,
-        pv.attendeesCount !== undefined && pv.attendeesCount !== null ? `👥 Participants : ${pv.attendeesCount} personne(s)` : null,
-      ].filter(Boolean).join(' | ');
+  const archivePVSecretariat = (pvId: string) => {
+    const pv = pvs.find(p => p.id === pvId);
+    if (!pv) return;
+    const nowStr = `${new Date().toLocaleDateString('fr-FR')} à ${new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}`;
+    const updates = {
+      archivedBySecretariat: true,
+      archivedAt: nowStr,
+    };
+    setDoc(doc(db, 'secretary_pvs', pvId), updates, { merge: true }).catch(console.warn);
+    setPvs(prev => prev.map(p => (p.id === pvId ? { ...p, ...updates } : p)));
 
-      const fullArchiveContent = detailsHeader
-        ? `${detailsHeader}\n\n${pv.content}`
-        : pv.content;
+    const detailsHeader = [
+      (pv.startTime || pv.endTime) ? `⏱️ Horaires : ${pv.startTime || '--:--'} à ${pv.endTime || '--:--'}` : null,
+      pv.attendeesCount !== undefined && pv.attendeesCount !== null ? `👥 Participants : ${pv.attendeesCount} personne(s)` : null,
+    ].filter(Boolean).join(' | ');
 
-      const archiveItem: ArchiveDoc = {
-        id: 'ARCH-' + Date.now(),
-        title: pv.title,
-        type: 'PV',
-        content: fullArchiveContent,
-        author: 'SECRÉTARIAT',
-        date: pv.meetingDate,
-        status: 'SENT_TO_COM',
-        ackByCom: false,
-        sentToComBySecretariat: true,
-        archivedBySecretariat: false,
-        metadata: {
-          startTime: pv.startTime,
-          endTime: pv.endTime,
-          attendeesCount: pv.attendeesCount,
-        },
-      };
-      setDoc(doc(db, 'archive_docs', archiveItem.id), sanitizeFirestore(archiveItem)).catch(console.warn);
-      setArchiveDocs(prev => [archiveItem, ...prev]);
+    const fullArchiveContent = detailsHeader
+      ? `${detailsHeader}\n\n${pv.content}`
+      : pv.content;
+
+    const archiveDocId = 'ARCH-PV-' + pvId;
+    const archiveItem: ArchiveDoc = {
+      id: archiveDocId,
+      title: pv.title,
+      type: 'PV',
+      content: fullArchiveContent,
+      author: 'SECRÉTARIAT',
+      date: pv.meetingDate,
+      status: 'ARCHIVED',
+      ackByCom: false,
+      sentToComBySecretariat: false,
+      archivedBySecretariat: true,
+      metadata: {
+        pvId: pv.id,
+        refNumber: pv.refNumber,
+        startTime: pv.startTime,
+        endTime: pv.endTime,
+        attendeesCount: pv.attendeesCount,
+        agenda: pv.agenda,
+        decisions: pv.decisions,
+        secretarySignature: pv.secretarySignature,
+        payorSignature: pv.payorSignature,
+      },
+    };
+    setDoc(doc(db, 'archive_docs', archiveItem.id), sanitizeFirestore(archiveItem)).catch(console.warn);
+    setArchiveDocs(prev => [archiveItem, ...prev.filter(a => a.id !== archiveDocId)]);
+  };
+
+  const sendPVNoteToCom = (pvId: string) => {
+    const pv = pvs.find(p => p.id === pvId);
+    if (!pv) return;
+    const nowStr = `${new Date().toLocaleDateString('fr-FR')} à ${new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}`;
+    const updates = {
+      sentToCom: true,
+      sentToComAt: nowStr,
+    };
+    setDoc(doc(db, 'secretary_pvs', pvId), updates, { merge: true }).catch(console.warn);
+    setPvs(prev => prev.map(p => (p.id === pvId ? { ...p, ...updates } : p)));
+
+    dispatchPushNotification({
+      title: 'E-ROUAMA : Secrétariat Général',
+      body: 'Un nouveau procès-verbal de réunion a été mis au grenier. Prière informer tous les membres',
+      senderRole: 'SECRETAIRE',
+      senderName: 'Secrétariat Général',
+      targetRole: 'COM',
+      type: 'PV_PUBLISHED',
+      url: '/archives',
+    }).catch(console.warn);
+  };
+
+  const ackPVCOM = (pvId: string) => {
+    const pv = pvs.find(p => p.id === pvId);
+    const nowStr = `${new Date().toLocaleDateString('fr-FR')} à ${new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}`;
+    const updates = {
+      ackByCom: true,
+      ackByComAt: nowStr,
+    };
+    setDoc(doc(db, 'secretary_pvs', pvId), updates, { merge: true }).catch(console.warn);
+    setPvs(prev => prev.map(p => (p.id === pvId ? { ...p, ...updates } : p)));
+
+    if (pv) {
+      dispatchPushNotification({
+        title: 'Communication (BIC) : Accusé de Réception',
+        body: `Accusé de réception (ACK) confirmé pour le PV "${pv.title}".`,
+        senderRole: 'COM',
+        senderName: 'Commission Communication',
+        targetRole: 'SECRETAIRE',
+        type: 'PV_ACK',
+        url: '/',
+      }).catch(console.warn);
     }
   };
 
   const publishPVCOM = (pvId: string) => {
-    setDoc(doc(db, 'secretary_pvs', pvId), { status: 'ARCHIVED' }, { merge: true }).catch(console.warn);
-    setPvs(prev => prev.map(p => (p.id === pvId ? { ...p, status: 'ARCHIVED' } : p)));
+    const nowStr = `${new Date().toLocaleDateString('fr-FR')} à ${new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}`;
+    const updates = {
+      publishedByCom: true,
+      publishedByComAt: nowStr,
+    };
+    setDoc(doc(db, 'secretary_pvs', pvId), updates, { merge: true }).catch(console.warn);
+    setPvs(prev => prev.map(p => (p.id === pvId ? { ...p, ...updates } : p)));
+
+    const pv = pvs.find(p => p.id === pvId);
+    if (pv) {
+      publishNews(
+        `📢 PV AU GRENIER : ${pv.title}`,
+        `Le Procès-Verbal officiel de séance « ${pv.title} » (${pv.refNumber || pv.id}) du ${pv.meetingDate} est désormais disponible en consultation intégrale au Grenier des Archives.`,
+        'ANNONCE',
+        'TOUS',
+        'COMMISSION COMMUNICATION (BIC)'
+      );
+
+      dispatchPushNotification({
+        title: 'E-ROUAMA : Flash Communication',
+        body: `Nouveau PV consultable au Grenier : "${pv.title}".`,
+        senderRole: 'COM',
+        senderName: 'Commission Communication',
+        targetRole: 'ALL',
+        type: 'PV_PUBLISHED',
+        url: '/archives',
+      }).catch(console.warn);
+    }
   };
 
   const updateSecretaryPV = (pvId: string, updates: Partial<SecretaryPV>) => {
@@ -6645,9 +6742,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         archiveProject,
         createSecretaryPV,
         updateSecretaryPV,
+        sendPVFromSecretariatToPayor,
         returnPVForCorrectionPayor,
         deleteSecretaryPV,
         approvePVPayor,
+        archivePVSecretariat,
+        sendPVNoteToCom,
+        ackPVCOM,
         publishPVCOM,
         createFinancialBilan,
         updateFinancialBilan,
