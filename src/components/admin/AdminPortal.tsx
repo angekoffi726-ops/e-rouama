@@ -16128,8 +16128,8 @@ export const AdminPortal: React.FC = () => {
                   {/* Actions pour documents consolidés */}
                   {isConsolidated ? (
                     <>
-                      {/* Transmettre au Secrétariat si non transmis */}
-                      {!isApproved && (
+                      {/* Transmettre au Secrétariat si non transmis (Départements émetteurs uniquement) */}
+                      {activeRole !== 'PAYOR' && activeRole !== 'SECRETARIAT' && !isApproved && (
                         <button
                           type="button"
                           onClick={() => {
@@ -16155,7 +16155,7 @@ export const AdminPortal: React.FC = () => {
                         </button>
                       )}
 
-                      {/* Transmettre au Payor (depuis le Secrétariat) */}
+                      {/* Transmettre au Payor (depuis le Secrétariat uniquement) */}
                       {activeRole === 'SECRETARIAT' && !isApproved && (
                         <button
                           type="button"
@@ -16179,7 +16179,7 @@ export const AdminPortal: React.FC = () => {
                         </button>
                       )}
 
-                      {/* Approuver le lot (depuis le Payor) */}
+                      {/* Approuver le lot (EXCLUSIVEMENT depuis le Payor) */}
                       {activeRole === 'PAYOR' && !isApproved && (
                         <button
                           type="button"
@@ -16206,97 +16206,172 @@ export const AdminPortal: React.FC = () => {
                   ) : (
                     /* Actions pour documents unitaires */
                     <>
-                      {/* 1. Bouton Retour pour correction */}
-                      {!isApproved && (
+                      {/* CAS 1 : SECRÉTARIAT - Bouton unique « 📤 Transmettre au Payor » (jamais d'approbation) */}
+                      {activeRole === 'SECRETARIAT' && !isApproved && docType !== 'PV' && (
+                        <>
+                          {(!rawData.sentToPayor && rawData.status !== 'PENDING_PAYOR') ? (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const doc = payorViewingOfficialDoc;
+                                if (doc.type === 'PROJECT') {
+                                  sendProjectFromSecretariatToPayor(doc.data.id);
+                                } else if (doc.type === 'ACTIVITY') {
+                                  sendActivityFromSecretariatToPayor(doc.data.id);
+                                } else if (doc.type === 'RELIGIOUS_EVENT') {
+                                  sendReligiousEventFromSecretariatToPayor(doc.data.id);
+                                } else if (doc.type === 'BILAN') {
+                                  sendBilanFromSecretariatToPayor(doc.data.id);
+                                }
+                                setToastMessage(`📤 Document "${doc.data.title || doc.data.id}" transmis au Payor pour accord & visa officiel !`);
+                                setPayorViewingOfficialDoc(null);
+                              }}
+                              className="bg-blue-600 hover:bg-blue-500 text-white font-black px-4 py-2.5 rounded-xl text-xs flex items-center gap-1.5 shadow active:scale-95 transition-all cursor-pointer"
+                            >
+                              <Send className="w-3.5 h-3.5" />
+                              <span>📤 Transmettre au Payor</span>
+                            </button>
+                          ) : (
+                            <span className="bg-amber-500/10 text-amber-300 border border-amber-500/30 px-3 py-2 rounded-xl text-xs font-bold flex items-center gap-1">
+                              ⏳ Transmis au Payor (En attente du visa)
+                            </span>
+                          )}
+                        </>
+                      )}
+
+                      {/* CAS 2 : DÉPARTEMENTS ÉMETTEURS (PROJET, ORG, SPIRITUALITE, TRESORIER) - Transmettre au Secrétariat uniquement, JAMAIS d'approbation */}
+                      {activeRole !== 'PAYOR' && activeRole !== 'SECRETARIAT' && !isApproved && docType !== 'PV' && (
+                        <>
+                          {(!rawData.sentToSecretariat && rawData.status !== 'SENT_TO_SECRETARIAT' && rawData.status !== 'PENDING_PAYOR') ? (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const doc = payorViewingOfficialDoc;
+                                if (doc.type === 'PROJECT') {
+                                  sendProjectToSecretariat(doc.data.id);
+                                } else if (doc.type === 'ACTIVITY') {
+                                  sendActivityToSecretariat(doc.data.id);
+                                } else if (doc.type === 'RELIGIOUS_EVENT') {
+                                  sendReligiousEventToSecretariat(doc.data.id);
+                                } else if (doc.type === 'BILAN') {
+                                  sendBilanToSecretariat(doc.data.id);
+                                }
+                                setToastMessage(`📤 Document "${doc.data.title || doc.data.id}" transmis au Secrétariat Général !`);
+                                setPayorViewingOfficialDoc(null);
+                              }}
+                              className="bg-amber-600 hover:bg-amber-500 text-white font-black px-4 py-2.5 rounded-xl text-xs flex items-center gap-1.5 shadow active:scale-95 transition-all cursor-pointer"
+                            >
+                              <Send className="w-3.5 h-3.5" />
+                              <span>📤 Transmettre au Secrétariat Général</span>
+                            </button>
+                          ) : (
+                            <span className="bg-blue-500/10 text-blue-300 border border-blue-500/30 px-3 py-2 rounded-xl text-xs font-bold flex items-center gap-1">
+                              🏛️ Transmis au Secrétariat Général
+                            </span>
+                          )}
+                        </>
+                      )}
+
+                      {/* CAS 3 : PAYOR STRICT ET EXCLUSIF - Retour pour correction & Approbation avec visa/tampon */}
+                      {activeRole === 'PAYOR' && !isApproved && (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const doc = payorViewingOfficialDoc;
+                              setPayorReturnDocModal({
+                                type: doc.type as any,
+                                id: doc.data.id,
+                                title: doc.data.title,
+                              });
+                              setPayorReturnDocFeedback('');
+                              setPayorReturnDocFeedbackError(null);
+                              setPayorViewingOfficialDoc(null);
+                            }}
+                            className="bg-rose-950/80 hover:bg-rose-900 text-rose-200 border border-rose-700/60 font-bold px-4 py-2.5 rounded-xl text-xs flex items-center gap-1.5 transition-all active:scale-95 cursor-pointer"
+                          >
+                            <XCircle className="w-3.5 h-3.5 text-rose-400" />
+                            <span>↩️ Retourner pour correction</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const doc = payorViewingOfficialDoc;
+                              if (doc.type === 'PV') {
+                                approvePVPayor(doc.data.id);
+                                setToastMessage(`✅ PV "${doc.data.title}" approuvé et visé par le PAYOR !`);
+                              } else if (doc.type === 'PROJECT') {
+                                approveProjectPayor(doc.data.id);
+                                setToastMessage(`✅ Projet "${doc.data.title}" approuvé par le PAYOR !`);
+                              } else if (doc.type === 'BILAN') {
+                                approveBilanPayor(doc.data.id);
+                                const nowStr = `${new Date().toLocaleDateString('fr-FR')} à ${new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}`;
+                                renderAndPrintBilanPDF({
+                                  ...doc.data,
+                                  status: 'APPROVED_PAYOR',
+                                  payorSignatureDate: nowStr,
+                                });
+                                setToastMessage(`🟢 Bilan "${doc.data.title}" approuvé avec visa WOYA SYLAS (SS.png) !`);
+                              } else if (doc.type === 'ACTIVITY') {
+                                approveActivityPayor(doc.data.id);
+                                setToastMessage(`🟢 Programme "${doc.data.title}" approuvé avec visa WOYA SYLAS (SS.png) !`);
+                              } else if (doc.type === 'RELIGIOUS_EVENT') {
+                                approveReligiousEventPayor(doc.data.id);
+                                setToastMessage(`🟢 Événement Spirituel "${doc.data.title}" approuvé avec visa WOYA SYLAS (SS.png) !`);
+                              }
+                              setPayorViewingOfficialDoc(null);
+                            }}
+                            className="bg-emerald-600 hover:bg-emerald-500 text-white font-black px-5 py-2.5 rounded-xl text-xs flex items-center gap-1.5 shadow-lg active:scale-95 transition-all cursor-pointer"
+                          >
+                            <CheckCircle2 className="w-4 h-4" />
+                            <span>✅ Approuver & Viser (SS.png)</span>
+                          </button>
+                        </>
+                      )}
+
+                      {/* Bouton Supprimer : accessible pour le Payor, le Secrétariat, ou le département tant que non transmis */}
+                      {(activeRole === 'PAYOR' || activeRole === 'SECRETARIAT' || !rawData.sentToSecretariat || rawData.status === 'DRAFT') && (
                         <button
                           type="button"
                           onClick={() => {
                             const doc = payorViewingOfficialDoc;
-                            setPayorReturnDocModal({
-                              type: doc.type as any,
-                              id: doc.data.id,
-                              title: doc.data.title,
+                            setDeleteConfirmModal({
+                              title: `Supprimer ce document (${doc.type})`,
+                              itemTitle: doc.data.title,
+                              itemId: doc.data.id,
+                              description: `Supprimer définitivement ce document "${doc.data.title}" (${doc.data.id}) ? Cette action sera synchronisée avec le pôle émetteur.`,
+                              onConfirm: () => {
+                                if (doc.type === 'PV') {
+                                  deleteSecretaryPV(doc.data.id);
+                                } else if (doc.type === 'PROJECT') {
+                                  deleteProject(doc.data.id);
+                                } else if (doc.type === 'BILAN') {
+                                  deleteFinancialBilan(doc.data.id);
+                                } else if (doc.type === 'ACTIVITY') {
+                                  deleteActivity(doc.data.id);
+                                } else if (doc.type === 'RELIGIOUS_EVENT') {
+                                  deleteReligiousEvent(doc.data.id);
+                                }
+                                setToastMessage(`🗑️ Document "${doc.data.title}" supprimé.`);
+                                setPayorViewingOfficialDoc(null);
+                              },
                             });
-                            setPayorReturnDocFeedback('');
-                            setPayorReturnDocFeedbackError(null);
-                            setPayorViewingOfficialDoc(null);
                           }}
-                          className="bg-rose-950/80 hover:bg-rose-900 text-rose-200 border border-rose-700/60 font-bold px-4 py-2.5 rounded-xl text-xs flex items-center gap-1.5 transition-all active:scale-95 cursor-pointer"
+                          className="bg-rose-950/40 hover:bg-rose-900 text-rose-300 border border-rose-800/60 font-bold px-3 py-2.5 rounded-xl text-xs flex items-center gap-1 transition-all active:scale-95 cursor-pointer"
+                          title="Supprimer définitivement ce document"
                         >
-                          <XCircle className="w-3.5 h-3.5 text-rose-400" />
-                          <span>↩️ Retourner pour correction</span>
+                          <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+                          <span>Supprimer</span>
                         </button>
                       )}
 
-                      {/* 2. Bouton Supprimer */}
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const doc = payorViewingOfficialDoc;
-                          setDeleteConfirmModal({
-                            title: `Supprimer ce document (${doc.type})`,
-                            itemTitle: doc.data.title,
-                            itemId: doc.data.id,
-                            description: `Supprimer définitivement ce document "${doc.data.title}" (${doc.data.id}) ? Cette action sera synchronisée avec le pôle émetteur.`,
-                            onConfirm: () => {
-                              if (doc.type === 'PV') {
-                                deleteSecretaryPV(doc.data.id);
-                              } else if (doc.type === 'PROJECT') {
-                                deleteProject(doc.data.id);
-                              } else if (doc.type === 'BILAN') {
-                                deleteFinancialBilan(doc.data.id);
-                              } else if (doc.type === 'ACTIVITY') {
-                                deleteActivity(doc.data.id);
-                              } else if (doc.type === 'RELIGIOUS_EVENT') {
-                                deleteReligiousEvent(doc.data.id);
-                              }
-                              setToastMessage(`🗑️ Document "${doc.data.title}" supprimé.`);
-                              setPayorViewingOfficialDoc(null);
-                            },
-                          });
-                        }}
-                        className="bg-rose-950/40 hover:bg-rose-900 text-rose-300 border border-rose-800/60 font-bold px-3 py-2.5 rounded-xl text-xs flex items-center gap-1 transition-all active:scale-95 cursor-pointer"
-                        title="Supprimer définitivement ce document"
-                      >
-                        <Trash2 className="w-3.5 h-3.5 text-rose-400" />
-                        <span>Supprimer</span>
-                      </button>
-
-                      {/* 3. Bouton Valider / Approuver & Signer (Payor) */}
-                      {!isApproved && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            const doc = payorViewingOfficialDoc;
-                            if (doc.type === 'PV') {
-                              approvePVPayor(doc.data.id);
-                              setToastMessage(`✅ PV "${doc.data.title}" approuvé et visé par le PAYOR !`);
-                            } else if (doc.type === 'PROJECT') {
-                              approveProjectPayor(doc.data.id);
-                              setToastMessage(`✅ Projet "${doc.data.title}" approuvé par le PAYOR !`);
-                            } else if (doc.type === 'BILAN') {
-                              approveBilanPayor(doc.data.id);
-                              const nowStr = `${new Date().toLocaleDateString('fr-FR')} à ${new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}`;
-                              renderAndPrintBilanPDF({
-                                ...doc.data,
-                                status: 'APPROVED_PAYOR',
-                                payorSignatureDate: nowStr,
-                              });
-                              setToastMessage(`🟢 Bilan "${doc.data.title}" approuvé avec visa WOYA SYLAS (SS.png) !`);
-                            } else if (doc.type === 'ACTIVITY') {
-                              approveActivityPayor(doc.data.id);
-                              setToastMessage(`🟢 Programme "${doc.data.title}" approuvé avec visa WOYA SYLAS (SS.png) !`);
-                            } else if (doc.type === 'RELIGIOUS_EVENT') {
-                              approveReligiousEventPayor(doc.data.id);
-                              setToastMessage(`🟢 Événement Spirituel "${doc.data.title}" approuvé avec visa WOYA SYLAS (SS.png) !`);
-                            }
-                            setPayorViewingOfficialDoc(null);
-                          }}
-                          className="bg-emerald-600 hover:bg-emerald-500 text-white font-black px-5 py-2.5 rounded-xl text-xs flex items-center gap-1.5 shadow-lg active:scale-95 transition-all cursor-pointer"
-                        >
-                          <CheckCircle2 className="w-4 h-4" />
-                          <span>✅ Approuver & Viser (SS.png)</span>
-                        </button>
+                      {/* Mention document officiel déjà approuvé */}
+                      {isApproved && (
+                        <span className="bg-emerald-500/15 text-emerald-300 border border-emerald-500/40 px-3.5 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 shadow">
+                          <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                          <span>Document Officiel Validé & Visé (Payor)</span>
+                        </span>
                       )}
                     </>
                   )}
