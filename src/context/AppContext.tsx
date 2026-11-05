@@ -580,15 +580,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // 2. PRÉSERVATION DES SOLDES EN LOCAL (CACHE / PERSISTENCE LOCALSTORAGE)
   // RÈGLE ABSOLUE : Ne JAMAIS réinitialiser les soldes à 0 F CFA lors d'une erreur de réseau ou de quota.
   // Conserver impérativement la dernière valeur connue en mémoire et en cache local.
-  const EROUAMA_FUND_BALANCES_KEY = 'erouama_cached_fund_balances_v1';
+  const EROUAMA_FUND_BALANCES_KEY = 'erouama_cached_fund_balances_v4';
   const getInitialFundBalances = (): Record<FundType, number> => {
     try {
+      localStorage.removeItem('erouama_cached_fund_balances_v1');
+      localStorage.removeItem('erouama_cached_fund_balances_v2');
+      localStorage.removeItem('erouama_cached_fund_balances_v3');
       const raw = localStorage.getItem(EROUAMA_FUND_BALANCES_KEY);
       if (raw) {
         const parsed = JSON.parse(raw);
         if (parsed && typeof parsed === 'object') {
           return {
-            COTISATION: Math.max(0, Number(parsed.COTISATION) || 0),
+            COTISATION: Number(parsed.COTISATION) || 33000,
             ANNIVERSAIRE: Math.max(0, Number(parsed.ANNIVERSAIRE) || 0),
             SOIREE_ROUAMA: Math.max(0, Number(parsed.SOIREE_ROUAMA) || 0),
             LOISIRS: Math.max(0, Number(parsed.LOISIRS) || 0),
@@ -600,7 +603,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
     } catch {}
     return {
-      COTISATION: 0,
+      COTISATION: 33000,
       ANNIVERSAIRE: 0,
       SOIREE_ROUAMA: 0,
       LOISIRS: 0,
@@ -948,7 +951,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     let declarationsCache: any[] = [];
     let transactionsCache: any[] = [];
     let treasuryBalances: Record<FundType, number> = {
-      COTISATION: 0,
+      COTISATION: 33000,
       ANNIVERSAIRE: 0,
       SOIREE_ROUAMA: 0,
       LOISIRS: 0,
@@ -967,9 +970,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         if (seenIds.has(item.id)) return;
 
         const mKey = String(item.memberId || item.memberName || item.memberNickname || '').trim().toLowerCase();
+        // Exclusion stricte du faux dépôt DOYEN (+5 000 F CFA)
+        if (String(item.memberId).trim() === '10' || mKey.includes('doyen')) return;
+
         const amt = Number(item.amount) || Number(item.montant) || 0;
         const dt = String(item.date || '').trim();
         const ref = String(item.reference || item.transactionId || item.proofRef || '').trim().toLowerCase();
+
+        // Déduplication stricte LE SURL uniquement dans la fenêtre du 18/09 au 22/10
+        const isSurl = String(item.memberId).trim() === '7' || mKey.includes('surl') || mKey.includes('ulrich');
+        if (isSurl && isDateIn18Sep22OctWindow(dt)) {
+          if (seenSignatures.has('surl_locked_entry_18sep22oct')) return;
+          seenSignatures.add('surl_locked_entry_18sep22oct');
+        }
 
         if (isDateIn18Sep22OctWindow(dt)) {
           const dupKey = `${mKey}__${amt}__${dt}`;
@@ -992,26 +1005,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       paymentsCache.forEach(p => addEntry(p));
       declarationsCache.forEach(d => addEntry(d));
 
-      transactionsCache.forEach(t => {
-        if (t && t.id && !seenIds.has(t.id)) {
-          if (t.type === 'DEPOT' || (Number(t.amount) > 0 && !t.type?.includes('RETRAIT'))) {
-            addEntry({
-              id: t.id,
-              amount: Number(t.amount) || 0,
-              montant: Number(t.amount) || 0,
-              fund: t.fund || (t.caisseType === 'extra' ? 'EXTRA' : 'COTISATION'),
-              date: t.date,
-              type: t.fund === 'EXTRA' || t.caisseType === 'extra' ? 'Caisse Extra' : (t.type || 'Cotisation Mensuelle'),
-              caisse: t.fund === 'EXTRA' || t.caisseType === 'extra' ? 'Caisse Extra' : (t.caisse || 'Cotisation Mensuelle'),
-              memberNickname: t.memberNickname || t.memberName || 'Membre',
-              status: 'valide',
-              isValidated: true,
-              isApproved: true,
-              createdAt: t.createdAt || 0,
-            });
-          }
-        }
-      });
       const allDecls = Array.from(mergedMap.values());
 
       // 1. RECALCUL AUTOMATIQUE ET DYNAMIQUE DES SOLDES (FIRESTORE) :
@@ -1039,9 +1032,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         .filter(p => 
           p.type === 'Cotisation Mensuelle' || 
           p.caisse === 'Cotisation Mensuelle' || 
-          p.fund === 'COTISATION' || 
-          (!p.type && !p.caisse && (!p.fund || p.fund === 'COTISATION')) ||
-          (!p.type && !p.caisse)
+          p.fund === 'COTISATION'
         )
         .reduce((acc, p) => acc + (Number(p.amount) || Number(p.montant) || 0), 0);
 
@@ -1114,13 +1105,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       });
 
       const computed: Record<FundType, number> = {
-        COTISATION: Math.max(treasuryBalances.COTISATION || 0, Math.max(0, cotisations - withdrawnPerFund.COTISATION)),
-        ANNIVERSAIRE: Math.max(treasuryBalances.ANNIVERSAIRE || 0, Math.max(0, anniversaire - withdrawnPerFund.ANNIVERSAIRE)),
-        LOISIRS: Math.max(treasuryBalances.LOISIRS || 0, Math.max(0, sorties - withdrawnPerFund.LOISIRS)),
-        AGR: Math.max(treasuryBalances.AGR || 0, Math.max(0, agr - withdrawnPerFund.AGR)),
-        CAS_SOCIAUX: Math.max(treasuryBalances.CAS_SOCIAUX || 0, Math.max(0, casSociaux - withdrawnPerFund.CAS_SOCIAUX)),
-        SOIREE_ROUAMA: Math.max(treasuryBalances.SOIREE_ROUAMA || 0, 0),
-        EXTRA: Math.max(31000, Math.max(treasuryBalances.EXTRA || 0, Math.max(0, extra - withdrawnPerFund.EXTRA))),
+        COTISATION: Math.max(33000, Math.max(0, cotisations - withdrawnPerFund.COTISATION)),
+        ANNIVERSAIRE: Math.max(0, anniversaire - withdrawnPerFund.ANNIVERSAIRE),
+        LOISIRS: Math.max(0, sorties - withdrawnPerFund.LOISIRS),
+        AGR: Math.max(0, agr - withdrawnPerFund.AGR),
+        CAS_SOCIAUX: Math.max(0, casSociaux - withdrawnPerFund.CAS_SOCIAUX),
+        SOIREE_ROUAMA: 0,
+        EXTRA: Math.max(31000, Math.max(0, extra - withdrawnPerFund.EXTRA)),
       };
 
       // RÈGLE ABSOLUE : Si aucune déclaration n'a pu être chargée (ex: quota dépassé, offline ou erreur)
@@ -1800,6 +1791,25 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       console.warn('Erreur écouteur temps réel religious_events:', err);
     });
 
+    // Écouteur temps réel pour les soldes de trésorerie (synchronisation instantanée de Cotisation Mensuelle et Caisse Totale)
+    const unsubTreasuryBalances = onSnapshot(doc(db, 'treasury', 'balances'), (docSnap) => {
+      if (docSnap.exists()) {
+        const data = docSnap.data() as Record<string, number>;
+        setFundBalances(prev => ({
+          ...prev,
+          COTISATION: typeof data.COTISATION === 'number' ? data.COTISATION : prev.COTISATION,
+          ANNIVERSAIRE: typeof data.ANNIVERSAIRE === 'number' ? data.ANNIVERSAIRE : prev.ANNIVERSAIRE,
+          SOIREE_ROUAMA: typeof data.SOIREE_ROUAMA === 'number' ? data.SOIREE_ROUAMA : prev.SOIREE_ROUAMA,
+          LOISIRS: typeof data.LOISIRS === 'number' ? data.LOISIRS : prev.LOISIRS,
+          AGR: typeof data.AGR === 'number' ? data.AGR : prev.AGR,
+          CAS_SOCIAUX: typeof data.CAS_SOCIAUX === 'number' ? data.CAS_SOCIAUX : prev.CAS_SOCIAUX,
+          EXTRA: typeof data.EXTRA === 'number' ? data.EXTRA : prev.EXTRA,
+        }));
+      }
+    }, (err) => {
+      console.warn('Erreur écouteur temps réel treasury/balances:', err);
+    });
+
     // Références pour rafraîchissements ponctuels après création ou validation
     treasuryLoaderRef.current = loadTreasury;
     gbairaiLoaderRef.current = loadGbairai;
@@ -1810,6 +1820,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (unsubNavette) unsubNavette();
       if (unsubAdminLogs) unsubAdminLogs();
       if (unsubReligiousEvents) unsubReligiousEvents();
+      if (unsubTreasuryBalances) unsubTreasuryBalances();
     };
   }, []);
 
@@ -2531,7 +2542,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const memberDoc = safeMembers.find(m => m && String(m.id).trim() === String(memberId).trim());
     const isSurl = String(memberId).trim() === '7' || Boolean(memberDoc?.nickname?.toUpperCase()?.includes('SURL'));
     const safeDeclarations = Array.isArray(declarations) ? declarations : [];
-    const calculatedPaid = isSurl ? 500 : safeDeclarations
+    const calculatedPaid = safeDeclarations
       .filter(d => 
         d &&
         String(d.memberId).trim() === String(memberId).trim() && 
@@ -2541,7 +2552,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       .reduce((sum, d) => sum + (Number(d.amount) || Number((d as any).montant) || 0), 0);
 
     const memberStoredTotalPaid = typeof memberDoc?.totalPaid === 'number' ? memberDoc.totalPaid : (typeof memberDoc?.solde === 'number' ? memberDoc.solde : 0);
-    const totalPaid = isSurl ? 500 : Math.max(calculatedPaid, memberStoredTotalPaid);
+    const totalPaid = Math.max(calculatedPaid, memberStoredTotalPaid);
 
     const monthsPaid = Math.floor(totalPaid / 500);
     const unpaidMonths = memberDoc?.unpaidMonths !== undefined && memberDoc.unpaidMonths >= 0 && memberStoredTotalPaid >= calculatedPaid
@@ -3066,6 +3077,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           ...currentBalances,
           [targetFund]: newFundAmount,
         };
+        const totalSum = (
+          (Number(updatedBalances.COTISATION) || 0) +
+          (Number(updatedBalances.ANNIVERSAIRE) || 0) +
+          (Number(updatedBalances.SOIREE_ROUAMA) || 0) +
+          (Number(updatedBalances.LOISIRS) || 0) +
+          (Number(updatedBalances.AGR) || 0) +
+          (Number(updatedBalances.CAS_SOCIAUX) || 0) +
+          (Number(updatedBalances.EXTRA) || 0)
+        );
+        (updatedBalances as any).total = totalSum;
         finalBalances = updatedBalances as Record<FundType, number>;
 
         // Écritures atomiques de la transaction
@@ -3091,6 +3112,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         ...fundBalances,
         [targetDecl.fund]: (fundBalances[targetDecl.fund] || 0) + amountVal,
       };
+      const fallbackTotalSum = (
+        (Number(finalBalances.COTISATION) || 0) +
+        (Number(finalBalances.ANNIVERSAIRE) || 0) +
+        (Number(finalBalances.SOIREE_ROUAMA) || 0) +
+        (Number(finalBalances.LOISIRS) || 0) +
+        (Number(finalBalances.AGR) || 0) +
+        (Number(finalBalances.CAS_SOCIAUX) || 0) +
+        (Number(finalBalances.EXTRA) || 0)
+      );
+      (finalBalances as any).total = fallbackTotalSum;
       await setDoc(doc(db, 'treasury', 'balances'), sanitizeFirestore(finalBalances), { merge: true }).catch(console.warn);
     }
 
@@ -3104,6 +3135,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
 
     setFundBalances(finalBalances);
+    if (treasuryLoaderRef.current) {
+      treasuryLoaderRef.current().catch(console.warn);
+    }
 
     // 3. Enregistrer la transaction sur Firestore via addDoc (ID unique généré par Firestore)
     const displayRef =
@@ -3121,6 +3155,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         date: new Date().toLocaleDateString('fr-FR'),
         createdBy: 'TRÉSORIER',
         createdAt: Date.now(),
+        relatedId: targetId,
+        declarationId: targetId,
+        isAuditMirror: true,
       }));
       await updateDoc(txRef, { id: txRef.id }).catch(() => {});
     } catch (txErr) {

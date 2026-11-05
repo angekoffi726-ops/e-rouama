@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import emailjs from '@emailjs/browser';
-import { doc, deleteDoc, updateDoc, setDoc, collection, getDocs, getDoc } from 'firebase/firestore';
+import { doc, deleteDoc, updateDoc, setDoc, collection, getDocs, getDoc, onSnapshot } from 'firebase/firestore';
 import { db } from '../../firebase';
 import { useApp } from '../../context/AppContext';
 import { AdminRole, FundType, FUND_LABELS, TargetAudience, Committee, AgrProject, FinancialBilan, SecretaryPV, NewsItem, AdHocCommitteeRoles, EventActivity, RouamaMember, PaymentDeclaration, WithdrawalRequest, ReligiousEvent } from '../../types';
@@ -717,103 +717,114 @@ export const AdminPortal: React.FC = () => {
 
     const totalWithdrawn = approvedWithdrawals.reduce((acc, w) => acc + getWithdrawalAmount(w), 0);
 
-    // Calcul brut des encaissements validés
+    // Calcul brut des encaissements validés pour la Cotisation Mensuelle
     const rawCotisations = validatedPayments
-      .filter(p => 
-        p.type === 'Cotisation Mensuelle' || 
-        p.caisse === 'Cotisation Mensuelle' || 
-        p.fund === 'COTISATION' || 
-        (!p.type && !p.caisse && (!p.fund || p.fund === 'COTISATION')) ||
-        (!p.type && !p.caisse)
-      )
+      .filter(p => {
+        const f = String(p.fund || '').toUpperCase().trim();
+        const t = String(p.type || '').toLowerCase().trim();
+        const c = String(p.caisse || '').toLowerCase().trim();
+        return f === 'COTISATION' || t.includes('cotisation') || c.includes('cotisation');
+      })
       .reduce((acc, p) => acc + (Number(p.amount) || Number(p.montant) || 0), 0);
 
     const rawAnniversaire = validatedPayments
-      .filter(p => 
-        p.type === 'Anniversaire' || 
-        p.caisse === 'Anniversaire' || 
-        p.fund === 'ANNIVERSAIRE' ||
-        p.type === 'Célébration 21 mars (Anniversaire)' ||
-        p.caisse === 'Célébration 21 mars (Anniversaire)'
-      )
+      .filter(p => {
+        const f = String(p.fund || '').toUpperCase().trim();
+        const t = String(p.type || '').toLowerCase().trim();
+        const c = String(p.caisse || '').toLowerCase().trim();
+        return f === 'ANNIVERSAIRE' || t.includes('anniversaire') || c.includes('anniversaire') || t.includes('21 mars') || c.includes('21 mars');
+      })
       .reduce((acc, p) => acc + (Number(p.amount) || Number(p.montant) || 0), 0);
 
     const rawSoiree = validatedPayments
-      .filter(p => 
-        p.fund === 'SOIREE_ROUAMA' ||
-        p.type === 'Soirée Rouama' ||
-        p.caisse === 'Soirée Rouama' ||
-        p.type === 'Soirée ROUAMA' ||
-        p.caisse === 'Soirée ROUAMA' ||
-        p.subCategory === 'Soirée Rouama' ||
-        p.subCategory === 'Soirée ROUAMA'
-      )
+      .filter(p => {
+        const f = String(p.fund || '').toUpperCase().trim();
+        const t = String(p.type || '').toLowerCase().trim();
+        const c = String(p.caisse || '').toLowerCase().trim();
+        const sub = String(p.subCategory || '').toLowerCase().trim();
+        return f === 'SOIREE_ROUAMA' || t.includes('soirée') || c.includes('soirée') || sub.includes('soirée') || t.includes('soiree') || c.includes('soiree');
+      })
       .reduce((acc, p) => acc + (Number(p.amount) || Number(p.montant) || 0), 0);
 
     const rawSorties = validatedPayments
-      .filter(p => 
-        p.type === 'Sorties & Loisirs' || 
-        p.caisse === 'Sorties & Loisirs' || 
-        p.fund === 'LOISIRS' ||
-        p.type === 'Loisirs' ||
-        p.caisse === 'Loisirs' ||
-        p.type === 'Sorties' ||
-        p.caisse === 'Sorties'
-      )
+      .filter(p => {
+        const f = String(p.fund || '').toUpperCase().trim();
+        const t = String(p.type || '').toLowerCase().trim();
+        const c = String(p.caisse || '').toLowerCase().trim();
+        return f === 'LOISIRS' || t.includes('loisir') || c.includes('loisir') || t.includes('sortie') || c.includes('sortie');
+      })
       .reduce((acc, p) => acc + (Number(p.amount) || Number(p.montant) || 0), 0);
 
     const rawAgr = validatedPayments
-      .filter(p => 
-        p.type === 'Projets AGR' || 
-        p.caisse === 'Projets AGR' || 
-        p.fund === 'AGR' ||
-        p.type === 'AGR' ||
-        p.caisse === 'AGR'
-      )
+      .filter(p => {
+        const f = String(p.fund || '').toUpperCase().trim();
+        const t = String(p.type || '').toLowerCase().trim();
+        const c = String(p.caisse || '').toLowerCase().trim();
+        return f === 'AGR' || t.includes('agr') || c.includes('agr') || t.includes('projet') || c.includes('projet');
+      })
       .reduce((acc, p) => acc + (Number(p.amount) || Number(p.montant) || 0), 0);
 
     const rawCasSociaux = validatedPayments
-      .filter(p => 
-        p.type === 'Cas Sociaux' || 
-        p.caisse === 'Cas Sociaux' || 
-        p.fund === 'CAS_SOCIAUX' ||
-        p.type === 'Cas Sociaux & Entraide' ||
-        p.caisse === 'Cas Sociaux & Entraide'
-      )
+      .filter(p => {
+        const f = String(p.fund || '').toUpperCase().trim();
+        const t = String(p.type || '').toLowerCase().trim();
+        const c = String(p.caisse || '').toLowerCase().trim();
+        return f === 'CAS_SOCIAUX' || t.includes('cas') || c.includes('cas') || t.includes('social') || c.includes('social') || t.includes('entraide') || c.includes('entraide');
+      })
       .reduce((acc, p) => acc + (Number(p.amount) || Number(p.montant) || 0), 0);
 
     // Mouvements officiels de référence de la Caisse Extra :
-    // Entrées : Amendes (8 000 F CFA) + Fond Carba (33 000 F CFA) = 41 000 F CFA
-    // Sorties : Remboursement Léger & Seka (-10 000 F CFA)
-    // Solde Net Caisse Extra = 31 000 F CFA
-    const BASE_EXTRA_INFLOW = 41000;
-    const BASE_EXTRA_OUTFLOW = 10000;
+    // Entrées de référence : Amendes (8 000 F CFA) + Fond Carba (33 000 F CFA) = 41 000 F CFA
+    // Décaissement de référence : Remboursement Léger & Seka (-10 000 F CFA)
+    // Solde Net de référence Caisse Extra = 31 000 F CFA
+    const isBaselineExtraEntry = (p: any) => {
+      const id = String(p.id || '');
+      return id === 'extra_amende_indiscipline' || id === 'extra_fond_carba';
+    };
 
-    const rawExtra = validatedPayments
-      .filter(p => 
-        p.type === 'Caisse Extra' || 
-        p.caisse === 'Caisse Extra' || 
-        p.fund === 'EXTRA' || 
-        p.subCategory === 'Caisse Extra'
-      )
+    const isExtraPayment = (p: any) => {
+      const f = String(p.fund || '').toUpperCase().trim();
+      const t = String(p.type || '').toLowerCase().trim();
+      const c = String(p.caisse || '').toLowerCase().trim();
+      const sub = String(p.subCategory || '').toLowerCase().trim();
+      return f === 'EXTRA' || t.includes('extra') || c.includes('extra') || sub.includes('extra');
+    };
+
+    // Entrées supplémentaires Caisse Extra (uniquement si enregistrées et validées via "Faire une Entrée en Caisse", hors baseline et hors transactions en miroir)
+    const additionalExtraInflow = validatedPayments
+      .filter(p => isExtraPayment(p) && !isBaselineExtraEntry(p) && !String(p.id || '').startsWith('tx_'))
       .reduce((acc, p) => acc + (Number(p.amount) || Number(p.montant) || 0), 0);
 
-    const effectiveRawExtra = Math.max(BASE_EXTRA_INFLOW, rawExtra);
-    const effectiveWithdrawnExtra = Math.max(BASE_EXTRA_OUTFLOW, withdrawnExtra);
+    // Décaissements approuvés Caisse Extra au-delà du remboursement de référence (10 000 F CFA)
+    const additionalExtraWithdrawn = Math.max(
+      0,
+      approvedWithdrawals
+        .filter(w => getWithdrawalFund(w) === 'EXTRA' && w.id !== 'with_extra_remboursement_leger_seka')
+        .reduce((acc, w) => acc + getWithdrawalAmount(w), 0)
+    );
 
-    // Caisse Mensuelle consolidée à exactement 27 000 F CFA
-    const cotisations = Math.max(27000, rawCotisations - withdrawnCotisations);
+    // 1. Cotisations Mensuelles : base minimale certifiée de 33 000 F CFA + paiements validés ultérieurs
+    const cotisations = Math.max(33000, rawCotisations - withdrawnCotisations);
+
+    // 2. Événements Fixes (Anniversaire 21 mars & Soirée Rouama)
     const anniversaire = Math.max(0, rawAnniversaire - withdrawnAnniversaire);
     const soiree = Math.max(0, rawSoiree - withdrawnSoiree);
-    const sorties = Math.max(0, rawSorties - withdrawnSorties);
-    const agr = Math.max(0, rawAgr - withdrawnAgr);
-    const casSociaux = Math.max(0, rawCasSociaux - withdrawnCasSociaux);
-    // Solde Caisse Extra consolidé à exactement 31 000 F CFA (41 000 - 10 000)
-    const extra = Math.max(31000, effectiveRawExtra - effectiveWithdrawnExtra);
 
-    // Consolidation du Solde Caisse Total = 27 000 F (Cotisations) + 31 000 F (Caisse Extra) = 58 000 F CFA
-    const total = Math.max(58000, cotisations + anniversaire + soiree + sorties + agr + casSociaux + extra);
-    const rawTotal = 27000 + 41000 + rawAnniversaire + rawSoiree + rawSorties + rawAgr + rawCasSociaux;
+    // 3. Sorties & Loisirs
+    const sorties = Math.max(0, rawSorties - withdrawnSorties);
+
+    // 4. Projets AGR
+    const agr = Math.max(0, rawAgr - withdrawnAgr);
+
+    // 5. Cas Sociaux & Entraide
+    const casSociaux = Math.max(0, rawCasSociaux - withdrawnCasSociaux);
+
+    // 6. Caisse Extra : 31 000 F CFA de référence + entrées manuelles Trésorier validées - décaissements approuvés
+    const extra = 31000 + additionalExtraInflow - additionalExtraWithdrawn;
+
+    // FORMULE STRICTE EXIGÉE PAR LE TRÉSORIER :
+    // Solde Caisse Total = Cotisation Mensuelle + Événements Fixes (Anniversaire + Soirée) + Sorties & Loisirs + Projets AGR + Cas Sociaux + Caisse Extra
+    const total = cotisations + anniversaire + soiree + sorties + agr + casSociaux + extra;
 
     return { 
       total, 
@@ -824,10 +835,10 @@ export const AdminPortal: React.FC = () => {
       agr, 
       casSociaux, 
       extra,
-      rawTotal,
-      rawExtra: effectiveRawExtra,
-      withdrawnExtra: effectiveWithdrawnExtra,
-      totalWithdrawn: totalWithdrawn + (effectiveWithdrawnExtra > withdrawnExtra ? (effectiveWithdrawnExtra - withdrawnExtra) : 0),
+      rawTotal: total,
+      rawExtra: 41000 + additionalExtraInflow,
+      withdrawnExtra: 10000 + additionalExtraWithdrawn,
+      totalWithdrawn,
     };
   };
 
@@ -918,10 +929,96 @@ export const AdminPortal: React.FC = () => {
   const [firestorePayments, setFirestorePayments] = useState<any[]>([]);
   const [locallyHiddenPaymentIds, setLocallyHiddenPaymentIds] = useState<Set<string>>(new Set());
 
+  // Vérificateur unifié de statut validé (insensible à la casse/format)
+  const isPaymentValidated = (p: any) => {
+    if (!p) return false;
+    if (p.isHidden || p.status === 'hidden' || p.status === 'deleted' || p.status === 'REJECTED' || p.status === 'rejected') {
+      return false;
+    }
+    const s = String(p.status || '').toLowerCase().trim();
+    return (
+      p.status === 'validated' ||
+      p.status === 'Validé' ||
+      p.status === 'approved' ||
+      p.status === 'APPROVED' ||
+      p.isValidated === true ||
+      s === 'validated' ||
+      s === 'validé' ||
+      s === 'valide' ||
+      s === 'approved'
+    );
+  };
+
   useEffect(() => {
     let isMounted = true;
 
-    // Déclenchement immédiat au montage sans attendre l'état auth.currentUser
+    const processDoc = (docSnap: any, loaded: any[], seenDocIds: Set<string>, seenSignatures: Set<string>) => {
+      if (!docSnap || !docSnap.id) return;
+      if (seenDocIds.has(docSnap.id)) return;
+      seenDocIds.add(docSnap.id);
+
+      const data = docSnap.data();
+      if (data.status === 'deleted' || data.isHidden === true || data.status === 'hidden') {
+        return;
+      }
+
+      const mKey = String(data.memberId || data.memberName || data.memberNickname || '').trim().toLowerCase();
+      // Exclusion stricte du faux dépôt DOYEN (+5 000 F CFA)
+      if (String(data.memberId).trim() === '10' || mKey.includes('doyen')) return;
+
+      const amt = Number(data.amount) || Number(data.montant) || 0;
+      const dt = String(data.date || '').trim();
+      const ref = String(data.reference || data.transactionId || data.proofRef || '').trim().toLowerCase();
+
+      // Déduplication stricte LE SURL uniquement dans la fenêtre du 18/09 au 22/10
+      const isSurl = String(data.memberId).trim() === '7' || mKey.includes('surl') || mKey.includes('ulrich');
+      if (isSurl && isDateIn18Sep22OctWindow(dt)) {
+        if (seenSignatures.has('surl_locked_entry_18sep22oct')) return;
+        seenSignatures.add('surl_locked_entry_18sep22oct');
+      }
+
+      if (isDateIn18Sep22OctWindow(dt)) {
+        const dupKey = `${mKey}__${amt}__${dt}`;
+        if (seenSignatures.has(dupKey)) return;
+        seenSignatures.add(dupKey);
+      } else if (ref && ref !== 'sans référence' && ref !== 'n/a') {
+        const refKey = `${mKey}__${amt}__${dt}__${ref}`;
+        if (seenSignatures.has(refKey)) return;
+        seenSignatures.add(refKey);
+      }
+
+      let type = data.type;
+      let caisse = data.caisse;
+      if (!type && !caisse && data.fund) {
+        if (data.fund === 'COTISATION') {
+          type = 'Cotisation Mensuelle';
+          caisse = 'Cotisation Mensuelle';
+        } else if (data.fund === 'ANNIVERSAIRE') {
+          type = 'Anniversaire';
+          caisse = 'Anniversaire';
+        } else if (data.fund === 'LOISIRS') {
+          type = 'Sorties & Loisirs';
+          caisse = 'Sorties & Loisirs';
+        } else if (data.fund === 'AGR') {
+          type = 'Projets AGR';
+          caisse = 'Projets AGR';
+        } else if (data.fund === 'CAS_SOCIAUX') {
+          type = 'Cas Sociaux';
+          caisse = 'Cas Sociaux';
+        } else if (data.fund === 'EXTRA') {
+          type = 'Caisse Extra';
+          caisse = 'Caisse Extra';
+        }
+      }
+      loaded.push({
+        id: docSnap.id,
+        ...data,
+        type: type || data.type,
+        caisse: caisse || data.caisse,
+      });
+    };
+
+    // Chargement initial rapide sans bloquer le rendu
     Promise.allSettled([
       getDocs(collection(db, 'payments')),
       getDocs(collection(db, 'cotisations')),
@@ -933,97 +1030,80 @@ export const AdminPortal: React.FC = () => {
         const cotSnapshot = cSnap.status === 'fulfilled' ? cSnap.value : null;
         const receiptSnapshot = rSnap.status === 'fulfilled' ? rSnap.value : null;
 
-        // Logging et debug des erreurs de lecture demandé par l'utilisateur
-        if (snapshot) {
-          console.log("Données cotisations reçues:", snapshot.docs.length);
-        } else if (cotSnapshot) {
-          console.log("Données cotisations reçues:", cotSnapshot.docs.length);
-        } else {
-          console.log("Données cotisations reçues:", 0);
-        }
-
         const loaded: any[] = [];
         const seenDocIds = new Set<string>();
         const seenSignatures = new Set<string>();
 
-        const processDoc = (docSnap: any) => {
-          if (!docSnap || !docSnap.id) return;
-          // 1. Déduplication par ID unique (doc.id) via Set Firestore
-          if (seenDocIds.has(docSnap.id)) return;
-          seenDocIds.add(docSnap.id);
+        if (snapshot) snapshot.docs.forEach(d => processDoc(d, loaded, seenDocIds, seenSignatures));
+        if (cotSnapshot) cotSnapshot.docs.forEach(d => processDoc(d, loaded, seenDocIds, seenSignatures));
+        if (receiptSnapshot) receiptSnapshot.docs.forEach(d => processDoc(d, loaded, seenDocIds, seenSignatures));
 
-          const data = docSnap.data();
-          if (data.status === 'deleted' || data.isHidden === true || data.status === 'hidden') {
-            return;
-          }
-
-          const mKey = String(data.memberId || data.memberName || data.memberNickname || '').trim().toLowerCase();
-          const amt = Number(data.amount) || Number(data.montant) || 0;
-          const dt = String(data.date || '').trim();
-          const ref = String(data.reference || data.transactionId || data.proofRef || '').trim().toLowerCase();
-
-          // 2. Déduplication stricte : LE SURL n'a STRICTEMENT qu'une seule occurrence de 500 F CFA
-          const isSurl = String(data.memberId).trim() === '7' || mKey.includes('surl') || mKey.includes('ulrich');
-          if (isSurl) {
-            if (seenSignatures.has('surl_locked_entry')) return;
-            seenSignatures.add('surl_locked_entry');
-          }
-
-          if (isDateIn18Sep22OctWindow(dt)) {
-            const dupKey = `${mKey}__${amt}__${dt}`;
-            if (seenSignatures.has(dupKey)) return;
-            seenSignatures.add(dupKey);
-          } else if (ref && ref !== 'sans référence' && ref !== 'n/a') {
-            const refKey = `${mKey}__${amt}__${dt}__${ref}`;
-            if (seenSignatures.has(refKey)) return;
-            seenSignatures.add(refKey);
-          }
-
-          let type = data.type;
-          let caisse = data.caisse;
-          if (!type && !caisse && data.fund) {
-            if (data.fund === 'COTISATION') {
-              type = 'Cotisation Mensuelle';
-              caisse = 'Cotisation Mensuelle';
-            } else if (data.fund === 'ANNIVERSAIRE') {
-              type = 'Anniversaire';
-              caisse = 'Anniversaire';
-            } else if (data.fund === 'LOISIRS') {
-              type = 'Sorties & Loisirs';
-              caisse = 'Sorties & Loisirs';
-            } else if (data.fund === 'AGR') {
-              type = 'Projets AGR';
-              caisse = 'Projets AGR';
-            } else if (data.fund === 'CAS_SOCIAUX') {
-              type = 'Cas Sociaux';
-              caisse = 'Cas Sociaux';
-            } else if (data.fund === 'EXTRA') {
-              type = 'Caisse Extra';
-              caisse = 'Caisse Extra';
-            }
-          }
-          loaded.push({
-            id: docSnap.id,
-            ...data,
-            type: type || data.type,
-            caisse: caisse || data.caisse,
-          });
-        };
-
-        if (snapshot) snapshot.docs.forEach(processDoc);
-        if (cotSnapshot) cotSnapshot.docs.forEach(processDoc);
-        if (receiptSnapshot) receiptSnapshot.docs.forEach(processDoc);
-
-        if (isMounted) {
+        if (isMounted && loaded.length > 0) {
           setFirestorePayments(loaded);
         }
       })
       .catch((error) => {
-        console.warn('Lecture directe paiements/cotisations (cache actif):', error);
+        console.warn('Lecture directe paiements/cotisations:', error);
       });
+
+    // ÉCOUTEUR TEMPS RÉEL FIRESTORE (onSnapshot) SUR LES PAIEMENTS
+    // Synchronise instantanément les validations de Cotisation Mensuelle et met à jour le solde sans rechargement
+    const unsubPayments = onSnapshot(collection(db, 'payments'), (snapshot) => {
+      if (!isMounted) return;
+      setFirestorePayments(prev => {
+        const map = new Map<string, any>(prev.map(p => [p.id, p]));
+        snapshot.docs.forEach(docSnap => {
+          const data = docSnap.data();
+          const mKey = String(data.memberId || data.memberName || data.memberNickname || '').trim().toLowerCase();
+          if (data.status === 'deleted' || data.isHidden === true || data.status === 'hidden' || String(data.memberId).trim() === '10' || mKey.includes('doyen')) {
+            map.delete(docSnap.id);
+            return;
+          }
+          const prevItem = map.get(docSnap.id) || {};
+          map.set(docSnap.id, {
+            ...prevItem,
+            id: docSnap.id,
+            ...data,
+            type: data.type || prevItem.type || (data.fund === 'COTISATION' ? 'Cotisation Mensuelle' : data.fund),
+            caisse: data.caisse || prevItem.caisse || (data.fund === 'COTISATION' ? 'Cotisation Mensuelle' : data.fund),
+          });
+        });
+        return Array.from(map.values());
+      });
+    }, (error) => {
+      console.warn('Écouteur temps réel payments:', error);
+    });
+
+    const unsubReceipts = onSnapshot(collection(db, 'receipts'), (snapshot) => {
+      if (!isMounted) return;
+      setFirestorePayments(prev => {
+        const map = new Map<string, any>(prev.map(p => [p.id, p]));
+        snapshot.docs.forEach(docSnap => {
+          const data = docSnap.data();
+          const mKey = String(data.memberId || data.memberName || data.memberNickname || '').trim().toLowerCase();
+          if (data.status === 'deleted' || data.isHidden === true || data.status === 'hidden' || String(data.memberId).trim() === '10' || mKey.includes('doyen')) {
+            map.delete(docSnap.id);
+            return;
+          }
+          const prevItem = map.get(docSnap.id) || {};
+          map.set(docSnap.id, {
+            ...prevItem,
+            id: docSnap.id,
+            ...data,
+            type: data.type || prevItem.type || (data.fund === 'COTISATION' ? 'Cotisation Mensuelle' : data.fund),
+            caisse: data.caisse || prevItem.caisse || (data.fund === 'COTISATION' ? 'Cotisation Mensuelle' : data.fund),
+          });
+        });
+        return Array.from(map.values());
+      });
+    }, (error) => {
+      console.warn('Écouteur temps réel receipts:', error);
+    });
 
     return () => {
       isMounted = false;
+      unsubPayments();
+      unsubReceipts();
     };
   }, []);
 
@@ -1035,24 +1115,44 @@ export const AdminPortal: React.FC = () => {
 
     const processItem = (d: any) => {
       if (!d || !d.id) return;
-      const pId = d.id;
+      const pId = String(d.id);
+      if (pId.startsWith('tx_')) return;
       if (locallyHiddenPaymentIds.has(pId)) return;
-      // 1. Déduplication par identifiant unique
-      if (seenIds.has(pId)) return;
-
       if (d.isHidden || d.status === 'hidden' || d.status === 'deleted') return;
 
-      // 2. Déduplication des doublons du 18/09 au 22/10 (Nounours, L'Élu de Dieu, etc.)
-      const mKey = String(d.memberId || d.memberName || d.memberNickname || '').trim().toLowerCase();
-      const amt = Number(d.amount) || Number(d.montant) || 0;
-      // 2. Déduplication stricte : LE SURL n'a STRICTEMENT qu'une seule occurrence de 500 F CFA
-      const isSurl = String(d.memberId).trim() === '7' || mKey.includes('surl') || mKey.includes('ulrich');
-      if (isSurl) {
-        if (seenSignatures.has('surl_locked_entry')) return;
-        seenSignatures.add('surl_locked_entry');
+      // Si l'ID a déjà été enregistré, mettre à jour immédiatement si la nouvelle version est validée ou contient un montant corrigé
+      const existing = map.get(pId);
+      if (existing) {
+        const shouldUpdate = (!isPaymentValidated(existing) && isPaymentValidated(d)) || 
+                             ((!existing.amount || Number(existing.amount) === 0) && Number(d.amount) > 0);
+        if (shouldUpdate) {
+          map.set(pId, {
+            ...existing,
+            ...d,
+            amount: Number(d.amount) || Number(existing.amount) || 0,
+            montant: Number(d.montant || d.amount) || Number(existing.montant || existing.amount) || 0,
+            status: isPaymentValidated(d) ? 'valide' : existing.status,
+            isValidated: isPaymentValidated(d) || existing.isValidated,
+            isApproved: isPaymentValidated(d) || existing.isApproved,
+          });
+        }
+        return;
       }
 
+      // Exclusion stricte du faux dépôt DOYEN (+5 000 F CFA)
+      const mKey = String(d.memberId || d.memberName || d.memberNickname || '').trim().toLowerCase();
+      if (String(d.memberId).trim() === '10' || mKey.includes('doyen')) return;
+
+      const amt = Number(d.amount) || Number(d.montant) || 0;
       const dt = String(d.date || '').trim();
+
+      // Déduplication stricte LE SURL uniquement dans la fenêtre du 18/09 au 22/10
+      const isSurl = String(d.memberId).trim() === '7' || mKey.includes('surl') || mKey.includes('ulrich');
+      if (isSurl && isDateIn18Sep22OctWindow(dt)) {
+        if (seenSignatures.has('surl_locked_entry_18sep22oct')) return;
+        seenSignatures.add('surl_locked_entry_18sep22oct');
+      }
+
       const ref = String(d.reference || d.transactionId || d.proofRef || '').trim().toLowerCase();
 
       if (isDateIn18Sep22OctWindow(dt)) {
@@ -1126,36 +1226,16 @@ export const AdminPortal: React.FC = () => {
   // Recalcul instantané et dynamique des soldes Trésorier (tenant compte des entrées et des décaissements validés)
   const treasuryBalances = useMemo(() => calculateBalances(payments, consolidatedWithdrawals), [payments, consolidatedWithdrawals]);
 
-  // Soldes en direct par sous-caisse avec valeur de secours explicite pour empêcher les chutes à 0 F CFA
+  // Soldes en direct par sous-caisse calculés strictement depuis les transactions validées et décaissements
   const liveFundBalances = useMemo<Record<FundType, number>>(() => ({
-    COTISATION: 27000,
-    ANNIVERSAIRE: treasuryBalances.anniversaire > 0 ? treasuryBalances.anniversaire : (fundBalances.ANNIVERSAIRE || 0),
-    LOISIRS: treasuryBalances.sorties > 0 ? treasuryBalances.sorties : (fundBalances.LOISIRS || 0),
-    AGR: treasuryBalances.agr > 0 ? treasuryBalances.agr : (fundBalances.AGR || 0),
-    CAS_SOCIAUX: treasuryBalances.casSociaux > 0 ? treasuryBalances.casSociaux : (fundBalances.CAS_SOCIAUX || 0),
-    SOIREE_ROUAMA: (treasuryBalances as any).soiree > 0 ? (treasuryBalances as any).soiree : (fundBalances.SOIREE_ROUAMA || 0),
-    EXTRA: 31000,
-  }), [treasuryBalances, fundBalances]);
-
-  // Vérificateur unifié de statut validé (insensible à la casse/format)
-  const isPaymentValidated = (p: any) => {
-    if (!p) return false;
-    if (p.isHidden || p.status === 'hidden' || p.status === 'deleted' || p.status === 'REJECTED' || p.status === 'rejected') {
-      return false;
-    }
-    const s = String(p.status || '').toLowerCase().trim();
-    return (
-      p.status === 'validated' ||
-      p.status === 'Validé' ||
-      p.status === 'approved' ||
-      p.status === 'APPROVED' ||
-      p.isValidated === true ||
-      s === 'validated' ||
-      s === 'validé' ||
-      s === 'valide' ||
-      s === 'approved'
-    );
-  };
+    COTISATION: treasuryBalances.cotisations,
+    ANNIVERSAIRE: treasuryBalances.anniversaire,
+    SOIREE_ROUAMA: (treasuryBalances as any).soiree || 0,
+    LOISIRS: treasuryBalances.sorties,
+    AGR: treasuryBalances.agr,
+    CAS_SOCIAUX: treasuryBalances.casSociaux,
+    EXTRA: treasuryBalances.extra,
+  }), [treasuryBalances]);
 
   // 3. FILTRAGE DES VUES (MASQUAGE EFFECTIF) :
   // Dans le tableau "Validation des Reçus de Dépôt" (Trésorier) :
@@ -1338,6 +1418,13 @@ export const AdminPortal: React.FC = () => {
     return extraCaisseEntries.filter(p => isExtraEntryEditable(p, nowTimestamp));
   }, [extraCaisseEntries, nowTimestamp]);
 
+  // Liste exhaustive et certifiée de TOUTES les entrées en Caisse Extra (Fond Carba 33 000 F, Amendes 8 000 F et entrées manuelles)
+  const allExtraCaisseEntries = useMemo(() => {
+    return (payments || [])
+      .filter(p => isPaymentValidated(p) && isExtraCaisseEntry(p))
+      .sort((a, b) => getEntryCreatedAtMs(b) - getEntryCreatedAtMs(a));
+  }, [payments, nowTimestamp]);
+
   // Ventilation Caisse Projet (AGR) : Apports membres vs Bénéfices projets
   const agrMemberApports = useMemo(() => {
     return (payments || [])
@@ -1362,6 +1449,7 @@ export const AdminPortal: React.FC = () => {
   }, [payments]);
 
   // Filtrage multicritères de l'historique général (par Caisse et par Membre)
+  // Intègre formellement les cotisations, les entrées en Caisse Extra, les événements et les projets
   const filteredGeneralPayments = useMemo(() => {
     return (payments || [])
       .filter(p => isPaymentValidated(p))
@@ -2428,50 +2516,30 @@ export const AdminPortal: React.FC = () => {
     window.open(src, '_blank', 'noopener,noreferrer');
   };
 
-  // Clé persistante pour conserver la dernière valeur valide connue du solde total
-  const LAST_KNOWN_TOTAL_KEY = 'erouama_last_known_treasury_total_v1';
-
-  // Calcul du solde total de trésorerie avec valeur de secours explicite (fallback) :
-  // Si les données Firestore mettent du temps à répondre ou rencontrent une exception,
-  // afficher la dernière valeur valide connue au lieu de basculer l'affichage à 0 F CFA.
-  const totalFundBalance = useMemo(() => {
-    // 1. Valeur calculée dynamiquement si supérieure à 0
-    if (typeof treasuryBalances.total === 'number' && treasuryBalances.total > 0) {
-      try {
-        localStorage.setItem(LAST_KNOWN_TOTAL_KEY, String(treasuryBalances.total));
-      } catch {}
-      return treasuryBalances.total;
-    }
-
-    // 2. Somme dynamique des sous-caisses consolidées
-    const sumLive = Object.values(liveFundBalances).reduce((acc, v) => acc + (Number(v) || 0), 0);
-    if (sumLive > 0) {
-      try {
-        localStorage.setItem(LAST_KNOWN_TOTAL_KEY, String(sumLive));
-      } catch {}
-      return sumLive;
-    }
-
-    // 3. Somme des caisses de l'état applicatif central
-    const sumFundBalances = Object.values(fundBalances || {}).reduce((acc, v) => acc + (Number(v) || 0), 0);
-    if (sumFundBalances > 0) {
-      try {
-        localStorage.setItem(LAST_KNOWN_TOTAL_KEY, String(sumFundBalances));
-      } catch {}
-      return sumFundBalances;
-    }
-
-    // 4. Dernière valeur valide connue dans le cache local (localStorage)
+  // Nettoyage des anciennes clés localStorage pour éliminer toute valeur résiduelle ou obsolète
+  useEffect(() => {
     try {
-      const stored = localStorage.getItem(LAST_KNOWN_TOTAL_KEY);
-      if (stored && Number(stored) > 0) {
-        return Number(stored);
-      }
+      localStorage.removeItem('erouama_last_known_treasury_total_v1');
+      localStorage.removeItem('erouama_cached_fund_balances_v1');
+      localStorage.removeItem('erouama_cached_fund_balances_v2');
+      localStorage.removeItem('erouama_cached_fund_balances_v3');
     } catch {}
+  }, []);
 
-    // 5. Défaut
-    return treasuryBalances.total || 0;
-  }, [treasuryBalances, liveFundBalances, fundBalances]);
+  // Formule d'agrégation stricte du Solde Caisse Total :
+  // Exactement égal à la somme des 6 sous-soldes réels
+  // (Cotisation Mensuelle + Événements Fixes + Sorties & Loisirs + Projets AGR + Cas Sociaux + Caisse Extra)
+  const totalFundBalance = useMemo(() => {
+    return (
+      (Number(liveFundBalances.COTISATION) || 0) +
+      (Number(liveFundBalances.ANNIVERSAIRE) || 0) +
+      (Number(liveFundBalances.SOIREE_ROUAMA) || 0) +
+      (Number(liveFundBalances.LOISIRS) || 0) +
+      (Number(liveFundBalances.AGR) || 0) +
+      (Number(liveFundBalances.CAS_SOCIAUX) || 0) +
+      (Number(liveFundBalances.EXTRA) || 0)
+    );
+  }, [liveFundBalances]);
 
   // Modal and state for receipt rejection
   const [rejectModalDeclaration, setRejectModalDeclaration] = useState<any | null>(null);
@@ -2539,6 +2607,25 @@ export const AdminPortal: React.FC = () => {
 
       // 2. Synchronisation dans 'receipts'
       await setDoc(doc(db, 'receipts', targetId), validationPayload, { merge: true });
+
+      // Mise à jour réactive immédiate du state local dans AdminPortal pour synchronisation instantanée
+      const validatedDeclObj = {
+        ...decl,
+        id: targetId,
+        type: normalizedType || decl.type || 'Cotisation Mensuelle',
+        caisse: normalizedCaisse || decl.caisse || 'Cotisation Mensuelle',
+        ...validationPayload,
+        status: 'valide',
+        isValidated: true,
+        isApproved: true,
+      };
+      setFirestorePayments(prev => {
+        const exists = prev.some(p => p.id === targetId);
+        if (exists) {
+          return prev.map(p => p.id === targetId ? { ...p, ...validatedDeclObj } : p);
+        }
+        return [validatedDeclObj, ...prev];
+      });
 
       // 3. Traitement applicatif (transactions, alerte Cerveau, cotisations)
       await approvePayment(targetId);
@@ -5539,7 +5626,7 @@ export const AdminPortal: React.FC = () => {
             });
 
             const computedMonthly = membersDues.reduce((sum, item) => sum + item.detail.totalPaid, 0);
-            const totalMonthlyCollected = computedMonthly > 0 ? computedMonthly : 27000;
+            const totalMonthlyCollected = computedMonthly > 0 ? computedMonthly : 33000;
             const totalMonthlyArrears = membersDues.reduce((sum, item) => sum + item.dueAmount, 0);
             const upToDateCount = membersDues.filter(item => item.status === 'A_JOUR' || item.status === 'EN_AVANCE').length;
             const lateCount = membersDues.filter(item => item.status === 'RETARD').length;
@@ -7480,7 +7567,7 @@ export const AdminPortal: React.FC = () => {
                         </span>
                       </div>
                       <p className="text-xs text-slate-400 mt-0.5">
-                        Tous les encaissements validés (Cotisations, Événements, Cas Sociaux, AGR & Caisse Extra)
+                        Tous les encaissements validés (Cotisations, Caisse Extra, Événements Fixes, Sorties, Cas Sociaux & AGR)
                       </p>
                     </div>
                   </div>
@@ -7498,13 +7585,13 @@ export const AdminPortal: React.FC = () => {
                       >
                         <option value="ALL">🏛️ Toutes les Caisses</option>
                         <option value="COTISATION">📅 Cotisation Mensuelle</option>
+                        <option value="EXTRA">⭐ Caisse Extra (Fond Carba & Amendes)</option>
                         <option value="EVENEMENTS_ORG">🎭 Événements Fixes (ORG)</option>
                         <option value="ANNIVERSAIRE">&nbsp;&nbsp;↳ 🎉 Célébration 21 Mars</option>
                         <option value="SOIREE_ROUAMA">&nbsp;&nbsp;↳ 🌙 Soirée ROUAMA</option>
                         <option value="LOISIRS">🏖️ Sorties & Loisirs</option>
                         <option value="AGR">🌱 Projets AGR</option>
                         <option value="CAS_SOCIAUX">🤝 Cas Sociaux & Entraide</option>
-                        <option value="EXTRA">⭐ Caisse Extra</option>
                       </select>
                     </div>
 
@@ -7650,6 +7737,167 @@ export const AdminPortal: React.FC = () => {
                               </td>
                             </tr>
                           ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+
+              {/* Bloc Dédié Entrées en Caisse Extra (Fonds divers, Amendes & Entrées manuelles) */}
+              <div className="bg-slate-900 rounded-[2.5rem] p-6 sm:p-8 border border-amber-500/30 shadow-xl space-y-6">
+                <div className="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-4 pb-4 border-b border-slate-800">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-2xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-400">
+                      <Sparkles className="w-5 h-5 text-amber-400" />
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <h2 className="text-xl font-black text-white">
+                          Bloc des Entrées en Caisse Extra
+                        </h2>
+                        <span className="bg-amber-500/20 text-amber-300 text-xs font-black px-3 py-1 rounded-full border border-amber-500/30">
+                          {allExtraCaisseEntries.length} entrée{allExtraCaisseEntries.length > 1 ? 's' : ''}
+                        </span>
+                        <span className="bg-emerald-500/20 text-emerald-300 text-xs font-black px-3 py-1 rounded-full border border-emerald-500/30">
+                          Total Entrées : +{(treasuryBalances.rawExtra || 41000).toLocaleString('fr-FR')} F CFA
+                        </span>
+                        <span className="bg-slate-800 text-amber-300 text-xs font-black px-3 py-1 rounded-full border border-amber-500/30">
+                          Solde Net : {(treasuryBalances.extra || 31000).toLocaleString('fr-FR')} F CFA
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-400 mt-0.5">
+                        Toutes les entrées certifiées et validées de la Caisse Extra (Fond Carba 33 000 F, Amendes 8 000 F et ajouts manuels)
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Bouton d'action directe pour faire une entrée Caisse Extra */}
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setManualEntryDestination('EXTRA');
+                        setExtraDepositReason('');
+                        setExtraDepositAmount('');
+                        setManualEntrySelectedProjectId('');
+                        setManualEntryCustomProjectTitle('');
+                        setExtraModalError(null);
+                        setExtraModalSuccess(null);
+                        setExtraModalTab('NEW');
+                        setShowExtraDepositModal(true);
+                      }}
+                      className="px-4 py-2.5 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 font-black rounded-xl text-xs shadow-lg shadow-amber-500/20 flex items-center gap-2 cursor-pointer transition-all active:scale-95"
+                      title="Enregistrer une nouvelle entrée manuelle en Caisse Extra"
+                    >
+                      <PlusCircle className="w-4 h-4" />
+                      <span>+ Entrée en Caisse Extra</span>
+                    </button>
+                  </div>
+                </div>
+
+                {allExtraCaisseEntries.length === 0 ? (
+                  <div className="text-center py-10 bg-slate-950 rounded-2xl border border-dashed border-slate-800 text-slate-500 text-sm">
+                    Aucune entrée enregistrée en Caisse Extra pour le moment.
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-sm text-slate-300">
+                      <thead>
+                        <tr className="border-b border-slate-800 text-xs font-black text-slate-400 uppercase tracking-wider">
+                          <th className="py-3 px-4">Motif / Intitulé de l'Entrée</th>
+                          <th className="py-3 px-4">Date</th>
+                          <th className="py-3 px-4">Origine / Auteur</th>
+                          <th className="py-3 px-4">Montant (F CFA)</th>
+                          <th className="py-3 px-4">Référence / Statut</th>
+                          <th className="py-3 px-4 text-right">Actions / Contrôle (1h)</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y border-slate-800/60 font-medium">
+                        {allExtraCaisseEntries.map(d => {
+                          const isEditable = isExtraEntryEditable(d);
+                          const isBaseline = d.id === 'extra_amende_indiscipline' || d.id === 'extra_fond_carba';
+                          return (
+                            <tr key={d.id} className="hover:bg-slate-800/40 transition-colors">
+                              <td className="py-3 px-4">
+                                <div className="font-extrabold text-white flex items-center gap-2">
+                                  <span>{d.reason || d.motif || d.reference || d.description || 'Entrée Caisse Extra'}</span>
+                                  <span className="text-[9px] px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 font-black border border-amber-500/30">
+                                    EXTRA
+                                  </span>
+                                </div>
+                              </td>
+                              <td className="py-3 px-4 text-xs text-slate-400">{d.date || '01/10/2026'}</td>
+                              <td className="py-3 px-4 font-bold text-slate-300">
+                                {d.memberNickname || d.memberName || 'Trésorerie E-ROUAMA'}
+                              </td>
+                              <td className="py-3 px-4 font-black text-amber-400 text-base">
+                                +{(Number(d.amount) || Number(d.montant) || 0).toLocaleString('fr-FR')} F CFA
+                              </td>
+                              <td className="py-3 px-4 text-xs">
+                                {isBaseline ? (
+                                  <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-black bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                                    <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+                                    <span>Fonds certifié</span>
+                                  </span>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setPreviewReceiptImgError(false);
+                                      setPreviewDeclaration(d);
+                                    }}
+                                    className="font-mono text-xs text-amber-300 underline hover:text-amber-200 flex items-center gap-1 max-w-[200px] truncate cursor-pointer"
+                                    title="Voir le reçu"
+                                  >
+                                    <Eye className="w-3.5 h-3.5 shrink-0" />
+                                    <span className="truncate">{d.reference || 'Reçu'}</span>
+                                  </button>
+                                )}
+                              </td>
+                              <td className="py-3 px-4 text-right">
+                                {isEditable ? (
+                                  <div className="flex items-center justify-end gap-1.5 flex-wrap">
+                                    <span
+                                      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-black bg-amber-500/20 text-amber-300 border border-amber-500/40 animate-pulse whitespace-nowrap"
+                                      title="Délai de sécurité de 1 heure pour modifier ou annuler cette entrée"
+                                    >
+                                      <Clock className="w-3 h-3 text-amber-400" />
+                                      <span>{getExtraEntryRemainingTimeStr(d)}</span>
+                                    </span>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleOpenEditExtraModal(d)}
+                                      className="px-2.5 py-1 bg-amber-500/20 hover:bg-amber-500/35 text-amber-300 border border-amber-500/40 rounded-xl text-xs font-black flex items-center gap-1 transition-all active:scale-95 cursor-pointer"
+                                      title="Modifier le montant ou le motif dans la fenêtre d'1h"
+                                    >
+                                      <Edit3 className="w-3.5 h-3.5" />
+                                      <span>Modifier</span>
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleOpenCancelExtraModal(d)}
+                                      className="px-2.5 py-1 bg-rose-500/20 hover:bg-rose-500/35 text-rose-300 border border-rose-500/40 rounded-xl text-xs font-black flex items-center gap-1 transition-all active:scale-95 cursor-pointer"
+                                      title="Annuler cette entrée et déduire son montant"
+                                    >
+                                      <Trash2 className="w-3.5 h-3.5" />
+                                      <span>Annuler</span>
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <div className="flex items-center justify-end">
+                                    <span
+                                      className="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl text-[10px] font-bold bg-slate-800 text-slate-400 border border-slate-700/60"
+                                      title="Cette entrée est définitive et certifiée"
+                                    >
+                                      <Lock className="w-3 h-3 text-slate-500" />
+                                      <span>Définitif</span>
+                                    </span>
+                                  </div>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })}
                       </tbody>
                     </table>
                   </div>
