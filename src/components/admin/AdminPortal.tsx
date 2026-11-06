@@ -1226,16 +1226,105 @@ export const AdminPortal: React.FC = () => {
   // Recalcul instantané et dynamique des soldes Trésorier (tenant compte des entrées et des décaissements validés)
   const treasuryBalances = useMemo(() => calculateBalances(payments, consolidatedWithdrawals), [payments, consolidatedWithdrawals]);
 
-  // Soldes en direct par sous-caisse calculés strictement depuis les transactions validées et décaissements
-  const liveFundBalances = useMemo<Record<FundType, number>>(() => ({
-    COTISATION: treasuryBalances.cotisations,
-    ANNIVERSAIRE: treasuryBalances.anniversaire,
-    SOIREE_ROUAMA: (treasuryBalances as any).soiree || 0,
-    LOISIRS: treasuryBalances.sorties,
-    AGR: treasuryBalances.agr,
-    CAS_SOCIAUX: treasuryBalances.casSociaux,
-    EXTRA: treasuryBalances.extra,
-  }), [treasuryBalances]);
+  // =========================================================================
+  // RÉGULARISATION / CORRECTION MANUELLE DIRECTE DES SOLDES DE TRÉSORERIE
+  // =========================================================================
+  interface TreasuryRegularizationItem {
+    amount: number;
+    note: string;
+    author: string;
+    authorRole?: string;
+    date: string;
+    timestamp: number;
+    previousAmount?: number;
+  }
+
+  const [treasuryRegularizations, setTreasuryRegularizations] = useState<Record<string, TreasuryRegularizationItem>>(() => {
+    try {
+      const raw = localStorage.getItem('erouama_treasury_regularizations');
+      return raw ? JSON.parse(raw) : {};
+    } catch {
+      return {};
+    }
+  });
+
+  // Écoute en direct des régularisations enregistrées dans doc(db, 'treasury', 'balances')
+  useEffect(() => {
+    const unsub = onSnapshot(doc(db, 'treasury', 'balances'), (docSnap) => {
+      if (docSnap.exists()) {
+        const d = docSnap.data();
+        if (d && d.regularizations) {
+          setTreasuryRegularizations(d.regularizations);
+          try {
+            localStorage.setItem('erouama_treasury_regularizations', JSON.stringify(d.regularizations));
+          } catch {}
+        }
+      }
+    }, (err) => {
+      console.warn('Erreur écoute regularizations doc(treasury, balances):', err);
+    });
+    return () => unsub();
+  }, []);
+
+  // Soldes en direct par sous-caisse calculés strictement depuis les transactions validées et décaissements,
+  // intégrant toute régularisation manuelle enregistrée par le Trésorier tout en préservant l'automatisme pour les opérations futures
+  const liveFundBalances = useMemo<Record<FundType, number>>(() => {
+    const base: Record<FundType, number> = {
+      COTISATION: treasuryBalances.cotisations,
+      ANNIVERSAIRE: treasuryBalances.anniversaire,
+      SOIREE_ROUAMA: (treasuryBalances as any).soiree || 0,
+      LOISIRS: treasuryBalances.sorties,
+      AGR: treasuryBalances.agr,
+      CAS_SOCIAUX: treasuryBalances.casSociaux,
+      EXTRA: treasuryBalances.extra,
+    };
+
+    const result = { ...base };
+    const fundKeys: FundType[] = ['COTISATION', 'ANNIVERSAIRE', 'SOIREE_ROUAMA', 'LOISIRS', 'AGR', 'CAS_SOCIAUX', 'EXTRA'];
+
+    fundKeys.forEach(k => {
+      const reg = treasuryRegularizations[k];
+      if (reg && typeof reg.amount === 'number') {
+        const regTs = reg.timestamp || 0;
+        // Paiements validés strictement postérieurs à la régularisation
+        const subsequentInflows = (payments || []).filter(p => {
+          if (!isPaymentValidated(p)) return false;
+          const pFund = String(p.fund || '').toUpperCase().trim();
+          const pType = String(p.type || '').toUpperCase().trim();
+          const pCaisse = String(p.caisse || '').toUpperCase().trim();
+          const match = pFund === k ||
+            (k === 'COTISATION' && (pType.includes('COTIS') || pCaisse.includes('COTIS'))) ||
+            (k === 'EXTRA' && (pType.includes('EXTRA') || pCaisse.includes('EXTRA'))) ||
+            (k === 'ANNIVERSAIRE' && (pType.includes('ANNIV') || pType.includes('21 MARS') || pCaisse.includes('ANNIV'))) ||
+            (k === 'SOIREE_ROUAMA' && (pType.includes('SOIRÉE') || pType.includes('SOIREE'))) ||
+            (k === 'LOISIRS' && (pType.includes('LOISIR') || pType.includes('SORTIE'))) ||
+            (k === 'AGR' && (pType.includes('AGR') || pType.includes('PROJET'))) ||
+            (k === 'CAS_SOCIAUX' && (pType.includes('CAS') || pType.includes('SOCIAL') || pType.includes('ENTRAIDE')));
+          if (!match) return false;
+          const pTs = (p as any).createdAt || (p as any).timestamp || (p.date ? new Date(p.date).getTime() : 0);
+          return pTs > regTs;
+        }).reduce((acc, p) => acc + (Number(p.amount) || Number(p.montant) || 0), 0);
+
+        // Décaissements approuvés strictement postérieurs à la régularisation
+        const subsequentOutflows = (consolidatedWithdrawals || []).filter(w => {
+          const s = String(w.status || '').toLowerCase().trim();
+          const isApp = s.includes('approuv') || s.includes('valid') || (w.status as any) === 'APPROVED' || (w.status as any) === 'approved';
+          if (!isApp) return false;
+          const wFund = String(w.fund || (w as any).caisseSource || '').toUpperCase().trim();
+          const match = wFund === k ||
+            (k === 'EXTRA' && wFund.includes('EXTRA')) ||
+            (k === 'COTISATION' && wFund.includes('COTIS'));
+          if (!match) return false;
+          const wTs = (w as any).createdAt || (w as any).timestamp || (w.date ? new Date(w.date).getTime() : 0);
+          return wTs > regTs;
+        }).reduce((acc, w) => acc + (Number(w.amount) || Number((w as any).montant) || 0), 0);
+
+        result[k] = Math.max(0, reg.amount + subsequentInflows - subsequentOutflows);
+      }
+    });
+
+    return result;
+  }, [treasuryBalances, treasuryRegularizations, payments, consolidatedWithdrawals]);
 
   // 3. FILTRAGE DES VUES (MASQUAGE EFFECTIF) :
   // Dans le tableau "Validation des Reçus de Dépôt" (Trésorier) :
@@ -1333,6 +1422,213 @@ export const AdminPortal: React.FC = () => {
     }, 4000);
     return () => clearInterval(timer);
   }, []);
+
+  // =========================================================================
+  // GESTION DE LA RÉGULARISATION MANUELLE DES SOLDES (TRÉSORIER)
+  // =========================================================================
+  const [showRegularizeModal, setShowRegularizeModal] = useState<boolean>(false);
+  const [regularizeTargetKey, setRegularizeTargetKey] = useState<string>('COTISATION');
+  const [regularizeAmountInput, setRegularizeAmountInput] = useState<string>('');
+  const [regularizeNoteInput, setRegularizeNoteInput] = useState<string>('');
+  const [isSubmittingRegularize, setIsSubmittingRegularize] = useState<boolean>(false);
+  const [regularizeError, setRegularizeError] = useState<string | null>(null);
+  const [regularizeSuccess, setRegularizeSuccess] = useState<string | null>(null);
+
+  const REGULARIZATION_TARGET_OPTIONS = [
+    { key: 'TOTAL', label: '💰 Solde Caisse Total (Trésorerie Globale)', color: 'text-emerald-400' },
+    { key: 'COTISATION', label: '🪙 Cotisation Mensuelle (Statutaire)', color: 'text-emerald-400' },
+    { key: 'EXTRA', label: '⭐ Caisse Extra (Fond Carba & Amendes)', color: 'text-amber-400' },
+    { key: 'EVENEMENTS_FIXES', label: '🎉 Événements Fixes (21 Mars & Soirée)', color: 'text-amber-400' },
+    { key: 'LOISIRS', label: '🏖️ Sorties & Loisirs', color: 'text-blue-400' },
+    { key: 'AGR', label: '🌱 Projets AGR (Activités Revenus)', color: 'text-purple-400' },
+    { key: 'CAS_SOCIAUX', label: '🤝 Cas Sociaux & Entraide', color: 'text-rose-400' },
+  ];
+
+  const handleOpenRegularizeModal = (targetKey: string = 'COTISATION') => {
+    setRegularizeTargetKey(targetKey);
+    let cur = 0;
+    if (targetKey === 'TOTAL') {
+      cur = totalFundBalance;
+    } else if (targetKey === 'EVENEMENTS_FIXES') {
+      cur = (liveFundBalances.ANNIVERSAIRE || 0) + (liveFundBalances.SOIREE_ROUAMA || 0);
+    } else {
+      cur = liveFundBalances[targetKey as FundType] || 0;
+    }
+    setRegularizeAmountInput(String(cur));
+    const effectiveKey = targetKey === 'EVENEMENTS_FIXES' ? 'ANNIVERSAIRE' : targetKey;
+    setRegularizeNoteInput(treasuryRegularizations[effectiveKey]?.note || '');
+    setRegularizeError(null);
+    setRegularizeSuccess(null);
+    setShowRegularizeModal(true);
+  };
+
+  const handleSelectRegularizeTarget = (newKey: string) => {
+    setRegularizeTargetKey(newKey);
+    let cur = 0;
+    if (newKey === 'TOTAL') {
+      cur = totalFundBalance;
+    } else if (newKey === 'EVENEMENTS_FIXES') {
+      cur = (liveFundBalances.ANNIVERSAIRE || 0) + (liveFundBalances.SOIREE_ROUAMA || 0);
+    } else {
+      cur = liveFundBalances[newKey as FundType] || 0;
+    }
+    setRegularizeAmountInput(String(cur));
+    const effectiveKey = newKey === 'EVENEMENTS_FIXES' ? 'ANNIVERSAIRE' : newKey;
+    setRegularizeNoteInput(treasuryRegularizations[effectiveKey]?.note || '');
+    setRegularizeError(null);
+    setRegularizeSuccess(null);
+  };
+
+  const handleSaveRegularization = async () => {
+    setRegularizeError(null);
+    setRegularizeSuccess(null);
+    const parsedAmount = Number(regularizeAmountInput);
+    if (isNaN(parsedAmount) || parsedAmount < 0) {
+      setRegularizeError('Veuillez saisir un montant valide (≥ 0 F CFA).');
+      return;
+    }
+
+    const note = regularizeNoteInput.trim() || 'Régularisation manuelle par le Trésorier Général';
+    setIsSubmittingRegularize(true);
+
+    try {
+      let currentAmt = 0;
+      if (regularizeTargetKey === 'TOTAL') {
+        currentAmt = totalFundBalance;
+      } else if (regularizeTargetKey === 'EVENEMENTS_FIXES') {
+        currentAmt = (liveFundBalances.ANNIVERSAIRE || 0) + (liveFundBalances.SOIREE_ROUAMA || 0);
+      } else {
+        currentAmt = liveFundBalances[regularizeTargetKey as FundType] || 0;
+      }
+
+      const effectiveKey = regularizeTargetKey === 'EVENEMENTS_FIXES' ? 'ANNIVERSAIRE' : regularizeTargetKey;
+      const authorName = (currentUser as any)?.displayName || (currentUser as any)?.name || 'Trésorier Général';
+
+      const regItem: TreasuryRegularizationItem = {
+        amount: parsedAmount,
+        note,
+        author: authorName,
+        authorRole: 'Trésorier Général',
+        date: new Date().toISOString(),
+        timestamp: Date.now(),
+        previousAmount: currentAmt,
+      };
+
+      const nextRegs = {
+        ...treasuryRegularizations,
+        [effectiveKey]: regItem,
+      };
+
+      // 1. Mise à jour immédiate réactive locale et cache
+      setTreasuryRegularizations(nextRegs);
+      try {
+        localStorage.setItem('erouama_treasury_regularizations', JSON.stringify(nextRegs));
+      } catch {}
+
+      // 2. Écriture Firestore doc(db, 'treasury', 'balances')
+      try {
+        await setDoc(doc(db, 'treasury', 'balances'), {
+          regularizations: nextRegs,
+          [effectiveKey]: parsedAmount,
+          updatedAt: new Date().toISOString(),
+        }, { merge: true });
+      } catch (err) {
+        console.warn('Erreur écriture doc(treasury, balances):', err);
+      }
+
+      // 3. Écriture dans doc(db, 'caisses', fundKey) si sous-caisse
+      if (effectiveKey !== 'TOTAL') {
+        try {
+          await setDoc(doc(db, 'caisses', effectiveKey.toLowerCase()), {
+            solde: parsedAmount,
+            balance: parsedAmount,
+            total: parsedAmount,
+            lastRegularization: regItem,
+            updatedAt: new Date().toISOString(),
+          }, { merge: true });
+        } catch (err) {
+          console.warn('Erreur écriture doc(caisses, fund):', err);
+        }
+      }
+
+      // 4. Trace d'audit collection(db, 'treasury_regularizations')
+      try {
+        await setDoc(doc(db, 'treasury_regularizations', `reg_${effectiveKey}_${Date.now()}`), {
+          target: effectiveKey,
+          amount: parsedAmount,
+          previousAmount: currentAmt,
+          diff: parsedAmount - currentAmt,
+          note,
+          author: authorName,
+          date: new Date().toISOString(),
+          timestamp: Date.now(),
+        });
+      } catch (err) {
+        console.warn('Erreur trace audit treasury_regularizations:', err);
+      }
+
+      // 5. Audit miroir transactions (sans duplication de paiement membre)
+      try {
+        await setDoc(doc(db, 'transactions', `tx_reg_${effectiveKey}_${Date.now()}`), {
+          id: `tx_reg_${effectiveKey}_${Date.now()}`,
+          type: 'REGULARISATION',
+          caisse: effectiveKey === 'TOTAL' ? 'Solde Caisse Total' : (FUND_LABELS[effectiveKey as FundType] || effectiveKey),
+          fund: effectiveKey === 'TOTAL' ? 'COTISATION' : effectiveKey,
+          amount: parsedAmount - currentAmt,
+          note: `[RÉGULARISATION] ${note} (Solde fixé à ${parsedAmount.toLocaleString('fr-FR')} F CFA)`,
+          author: authorName,
+          date: new Date().toISOString(),
+          status: 'validated',
+          isValidated: true,
+          isAuditMirror: true,
+        });
+      } catch (err) {
+        console.warn('Erreur transaction audit:', err);
+      }
+
+      setRegularizeSuccess(`Solde régularisé avec succès à ${parsedAmount.toLocaleString('fr-FR')} F CFA !`);
+      setTimeout(() => {
+        setShowRegularizeModal(false);
+        setRegularizeSuccess(null);
+      }, 1200);
+    } catch (e: any) {
+      console.error('Erreur enregistrement régularisation:', e);
+      setRegularizeError(e?.message || 'Erreur lors de la régularisation.');
+    } finally {
+      setIsSubmittingRegularize(false);
+    }
+  };
+
+  const handleResetRegularization = async (targetKey: string) => {
+    const effectiveKey = targetKey === 'EVENEMENTS_FIXES' ? 'ANNIVERSAIRE' : targetKey;
+    setIsSubmittingRegularize(true);
+    setRegularizeError(null);
+    setRegularizeSuccess(null);
+    try {
+      const nextRegs = { ...treasuryRegularizations };
+      delete nextRegs[effectiveKey];
+      setTreasuryRegularizations(nextRegs);
+      try {
+        localStorage.setItem('erouama_treasury_regularizations', JSON.stringify(nextRegs));
+      } catch {}
+
+      await setDoc(doc(db, 'treasury', 'balances'), {
+        regularizations: nextRegs,
+        updatedAt: new Date().toISOString(),
+      }, { merge: true });
+
+      setRegularizeSuccess(`Régularisation réinitialisée : retour au calcul 100% automatique.`);
+      setTimeout(() => {
+        setShowRegularizeModal(false);
+        setRegularizeSuccess(null);
+      }, 1200);
+    } catch (e: any) {
+      console.error('Erreur réinitialisation régularisation:', e);
+      setRegularizeError(e?.message || 'Erreur lors de la réinitialisation.');
+    } finally {
+      setIsSubmittingRegularize(false);
+    }
+  };
 
   // Détection des entrées Caisse Extra
   const isExtraCaisseEntry = (p: any): boolean => {
@@ -2527,9 +2823,30 @@ export const AdminPortal: React.FC = () => {
   }, []);
 
   // Formule d'agrégation stricte du Solde Caisse Total :
-  // Exactement égal à la somme des 6 sous-soldes réels
+  // Si une régularisation manuelle globale a été enregistrée sur le TOTAL, on applique la base régularisée + mouvements ultérieurs.
+  // Sinon, exactement égal à la somme des 6 sous-soldes réels
   // (Cotisation Mensuelle + Événements Fixes + Sorties & Loisirs + Projets AGR + Cas Sociaux + Caisse Extra)
   const totalFundBalance = useMemo(() => {
+    const totalReg = treasuryRegularizations['TOTAL'];
+    if (totalReg && typeof totalReg.amount === 'number') {
+      const regTs = totalReg.timestamp || 0;
+      const subsequentInflows = (payments || []).filter(p => {
+        if (!isPaymentValidated(p)) return false;
+        const pTs = (p as any).createdAt || (p as any).timestamp || (p.date ? new Date(p.date).getTime() : 0);
+        return pTs > regTs;
+      }).reduce((acc, p) => acc + (Number(p.amount) || Number(p.montant) || 0), 0);
+
+      const subsequentOutflows = (consolidatedWithdrawals || []).filter(w => {
+        const s = String(w.status || '').toLowerCase().trim();
+        const isApp = s.includes('approuv') || s.includes('valid') || (w.status as any) === 'APPROVED' || (w.status as any) === 'approved';
+        if (!isApp) return false;
+        const wTs = (w as any).createdAt || (w as any).timestamp || (w.date ? new Date(w.date).getTime() : 0);
+        return wTs > regTs;
+      }).reduce((acc, w) => acc + (Number(w.amount) || Number((w as any).montant) || 0), 0);
+
+      return Math.max(0, totalReg.amount + subsequentInflows - subsequentOutflows);
+    }
+
     return (
       (Number(liveFundBalances.COTISATION) || 0) +
       (Number(liveFundBalances.ANNIVERSAIRE) || 0) +
@@ -2539,7 +2856,7 @@ export const AdminPortal: React.FC = () => {
       (Number(liveFundBalances.CAS_SOCIAUX) || 0) +
       (Number(liveFundBalances.EXTRA) || 0)
     );
-  }, [liveFundBalances]);
+  }, [liveFundBalances, treasuryRegularizations, payments, consolidatedWithdrawals]);
 
   // Modal and state for receipt rejection
   const [rejectModalDeclaration, setRejectModalDeclaration] = useState<any | null>(null);
@@ -5145,9 +5462,23 @@ export const AdminPortal: React.FC = () => {
                 <div className="flex items-center gap-2 text-xs font-black uppercase tracking-wider text-emerald-400">
                   <DollarSign className="w-4 h-4" />
                   <span>SOLDE CAISSE TOTAL (F CFA)</span>
+                  <button
+                    type="button"
+                    onClick={() => handleOpenRegularizeModal('TOTAL')}
+                    className="ml-2 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-emerald-500/10 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/30 hover:border-emerald-400 text-[11px] font-bold transition-all cursor-pointer active:scale-95 shadow-sm"
+                    title="Régulariser ou corriger manuellement le Solde Caisse Total"
+                  >
+                    <Edit3 className="w-3 h-3 text-emerald-400" />
+                    <span>Régulariser le Solde Total</span>
+                  </button>
                 </div>
-                <div className="text-3xl sm:text-5xl font-black text-emerald-400 tracking-tight mt-2">
-                  {totalFundBalance.toLocaleString('fr-FR')} F CFA
+                <div className="text-3xl sm:text-5xl font-black text-emerald-400 tracking-tight mt-2 flex items-baseline gap-3 flex-wrap">
+                  <span>{totalFundBalance.toLocaleString('fr-FR')} F CFA</span>
+                  {treasuryRegularizations['TOTAL'] && (
+                    <span className="text-[11px] font-bold px-2.5 py-1 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40 inline-flex items-center gap-1" title={treasuryRegularizations['TOTAL'].note}>
+                      ⚖️ Régularisé : {treasuryRegularizations['TOTAL'].note}
+                    </span>
+                  )}
                 </div>
                 <p className="text-xs text-slate-400 font-medium mt-1">
                   Trésorerie Globale consolidée de l'Association Fraternelle E-ROUAMA 2026
@@ -5223,95 +5554,202 @@ export const AdminPortal: React.FC = () => {
 
             {/* Cartes / Blocs Secondaires : Décomposition des Sous-Soldes de Caisse */}
             <div>
-              <h3 className="text-xs font-black text-slate-400 uppercase tracking-wider mb-3 flex items-center gap-2">
-                <PieChart className="w-4 h-4 text-amber-400" />
-                <span>Décomposition des Sous-Soldes de Caisse</span>
-              </h3>
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-xs font-black text-slate-400 uppercase tracking-wider flex items-center gap-2">
+                  <PieChart className="w-4 h-4 text-amber-400" />
+                  <span>Décomposition des Sous-Soldes de Caisse</span>
+                </h3>
+                <span className="text-[11px] text-slate-500 font-medium">
+                  Cliquez sur l'icône <span className="text-amber-400 font-bold">✏️</span> pour régulariser manuellement un sous-solde
+                </span>
+              </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3">
                 {/* Sous-Solde 1 : Cotisation Mensuelle */}
-                <div className="bg-slate-950 border border-slate-800/80 rounded-2xl p-4 space-y-1 hover:border-emerald-500/40 transition-all">
-                  <span className="text-[11px] font-bold text-slate-400 block truncate">
-                    Cotisation Mensuelle
-                  </span>
+                <div className="bg-slate-950 border border-slate-800/80 rounded-2xl p-4 space-y-1 hover:border-emerald-500/40 transition-all relative group">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-bold text-slate-400 block truncate">
+                      Cotisation Mensuelle
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => handleOpenRegularizeModal('COTISATION')}
+                      className="p-1 rounded-lg bg-slate-900 hover:bg-emerald-500/20 text-slate-400 hover:text-emerald-300 border border-slate-800 hover:border-emerald-500/40 transition-all cursor-pointer"
+                      title="Régulariser manuellement la Caisse de Cotisation Mensuelle"
+                    >
+                      <Edit3 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
                   <p className="text-xl font-black text-emerald-400">
                     {(liveFundBalances.COTISATION || 0).toLocaleString('fr-FR')} <span className="text-xs font-bold text-slate-400">F CFA</span>
                   </p>
-                  <span className="text-[10px] text-slate-500 block font-medium">Cotisations statutaires</span>
+                  <div className="flex items-center justify-between text-[10px]">
+                    <span className="text-slate-500 font-medium truncate">Cotisations statutaires</span>
+                    {treasuryRegularizations['COTISATION'] && (
+                      <span className="text-amber-400 font-bold ml-1 shrink-0" title={treasuryRegularizations['COTISATION'].note}>
+                        ⚖️ Régularisé
+                      </span>
+                    )}
+                  </div>
                 </div>
 
                 {/* Sous-Solde 2 : Événements Fixes (ORG) */}
-                <div className="bg-slate-950 border border-slate-800/80 rounded-2xl p-4 space-y-1 hover:border-amber-500/40 transition-all">
+                <div className="bg-slate-950 border border-slate-800/80 rounded-2xl p-4 space-y-1 hover:border-amber-500/40 transition-all relative group">
                   <div className="flex items-center justify-between">
                     <span className="text-[11px] font-bold text-slate-400 block truncate">
                       Événements Fixes (ORG)
                     </span>
-                    <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 font-bold border border-amber-500/30">
-                      Cumulé
-                    </span>
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 font-bold border border-amber-500/30">
+                        Cumulé
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => handleOpenRegularizeModal('EVENEMENTS_FIXES')}
+                        className="p-1 rounded-lg bg-slate-900 hover:bg-amber-500/20 text-slate-400 hover:text-amber-300 border border-slate-800 hover:border-amber-500/40 transition-all cursor-pointer"
+                        title="Régulariser manuellement les Événements Fixes"
+                      >
+                        <Edit3 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
                   </div>
                   <p className="text-xl font-black text-amber-400">
                     {((liveFundBalances.ANNIVERSAIRE || 0) + (liveFundBalances.SOIREE_ROUAMA || 0)).toLocaleString('fr-FR')} <span className="text-xs font-bold text-slate-400">F CFA</span>
                   </p>
-                  <span className="text-[10px] text-amber-300/80 block font-medium truncate" title={`21 Mars: ${(liveFundBalances.ANNIVERSAIRE || 0).toLocaleString('fr-FR')} F • Soirée: ${(liveFundBalances.SOIREE_ROUAMA || 0).toLocaleString('fr-FR')} F`}>
-                    21 Mars: {(liveFundBalances.ANNIVERSAIRE || 0).toLocaleString('fr-FR')} F • Soirée: {(liveFundBalances.SOIREE_ROUAMA || 0).toLocaleString('fr-FR')} F
-                  </span>
+                  <div className="flex items-center justify-between text-[10px]">
+                    <span className="text-amber-300/80 font-medium truncate" title={`21 Mars: ${(liveFundBalances.ANNIVERSAIRE || 0).toLocaleString('fr-FR')} F • Soirée: ${(liveFundBalances.SOIREE_ROUAMA || 0).toLocaleString('fr-FR')} F`}>
+                      21 Mars: {(liveFundBalances.ANNIVERSAIRE || 0).toLocaleString('fr-FR')} F • Soirée: {(liveFundBalances.SOIREE_ROUAMA || 0).toLocaleString('fr-FR')} F
+                    </span>
+                    {(treasuryRegularizations['ANNIVERSAIRE'] || treasuryRegularizations['SOIREE_ROUAMA']) && (
+                      <span className="text-amber-400 font-bold ml-1 shrink-0">
+                        ⚖️ Régularisé
+                      </span>
+                    )}
+                  </div>
                 </div>
 
                 {/* Sous-Solde 3 : Sorties & Loisirs */}
-                <div className="bg-slate-950 border border-slate-800/80 rounded-2xl p-4 space-y-1 hover:border-blue-500/40 transition-all">
-                  <span className="text-[11px] font-bold text-slate-400 block truncate">
-                    Sorties & Loisirs
-                  </span>
+                <div className="bg-slate-950 border border-slate-800/80 rounded-2xl p-4 space-y-1 hover:border-blue-500/40 transition-all relative group">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-bold text-slate-400 block truncate">
+                      Sorties & Loisirs
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => handleOpenRegularizeModal('LOISIRS')}
+                      className="p-1 rounded-lg bg-slate-900 hover:bg-blue-500/20 text-slate-400 hover:text-blue-300 border border-slate-800 hover:border-blue-500/40 transition-all cursor-pointer"
+                      title="Régulariser manuellement Sorties & Loisirs"
+                    >
+                      <Edit3 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
                   <p className="text-xl font-black text-blue-400">
                     {(liveFundBalances.LOISIRS || 0).toLocaleString('fr-FR')} <span className="text-xs font-bold text-slate-400">F CFA</span>
                   </p>
-                  <span className="text-[10px] text-slate-500 block font-medium">Activités récréatives</span>
+                  <div className="flex items-center justify-between text-[10px]">
+                    <span className="text-slate-500 font-medium truncate">Activités récréatives</span>
+                    {treasuryRegularizations['LOISIRS'] && (
+                      <span className="text-amber-400 font-bold ml-1 shrink-0">
+                        ⚖️ Régularisé
+                      </span>
+                    )}
+                  </div>
                 </div>
 
                 {/* Sous-Solde 4 : Projets AGR (Montant cumulé global : Apports + Bénéfices - Décaissements) */}
-                <div className="bg-slate-950 border border-slate-800/80 rounded-2xl p-4 space-y-1 hover:border-purple-500/40 transition-all">
+                <div className="bg-slate-950 border border-slate-800/80 rounded-2xl p-4 space-y-1 hover:border-purple-500/40 transition-all relative group">
                   <div className="flex items-center justify-between">
                     <span className="text-[11px] font-bold text-slate-400 block truncate">
                       Projets AGR
                     </span>
-                    <span className="text-[9px] px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-300 font-bold border border-purple-500/30">
-                      Cumulé
-                    </span>
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[9px] px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-300 font-bold border border-purple-500/30">
+                        Cumulé
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => handleOpenRegularizeModal('AGR')}
+                        className="p-1 rounded-lg bg-slate-900 hover:bg-purple-500/20 text-slate-400 hover:text-purple-300 border border-slate-800 hover:border-purple-500/40 transition-all cursor-pointer"
+                        title="Régulariser manuellement Projets AGR"
+                      >
+                        <Edit3 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
                   </div>
                   <p className="text-xl font-black text-purple-400">
                     {(liveFundBalances.AGR || 0).toLocaleString('fr-FR')} <span className="text-xs font-bold text-slate-400">F CFA</span>
                   </p>
-                  <span className="text-[10px] text-purple-300/80 block font-medium truncate" title={`Apports membres: ${agrTotalApports.toLocaleString('fr-FR')} F • Bénéfices: ${agrTotalBenefices.toLocaleString('fr-FR')} F`}>
-                    Apports: {agrTotalApports.toLocaleString('fr-FR')} F • Bénéfices: {agrTotalBenefices.toLocaleString('fr-FR')} F
-                  </span>
+                  <div className="flex items-center justify-between text-[10px]">
+                    <span className="text-purple-300/80 font-medium truncate" title={`Apports: ${agrTotalApports.toLocaleString('fr-FR')} F • Bénéfices: ${agrTotalBenefices.toLocaleString('fr-FR')} F`}>
+                      Apports: {agrTotalApports.toLocaleString('fr-FR')} F • Bénéfices: {agrTotalBenefices.toLocaleString('fr-FR')} F
+                    </span>
+                    {treasuryRegularizations['AGR'] && (
+                      <span className="text-amber-400 font-bold ml-1 shrink-0">
+                        ⚖️ Régularisé
+                      </span>
+                    )}
+                  </div>
                 </div>
 
                 {/* Sous-Solde 5 : Cas Sociaux & Entraide */}
-                <div className="bg-slate-950 border border-slate-800/80 rounded-2xl p-4 space-y-1 hover:border-rose-500/40 transition-all">
-                  <span className="text-[11px] font-bold text-slate-400 block truncate">
-                    Cas Sociaux & Entraide
-                  </span>
+                <div className="bg-slate-950 border border-slate-800/80 rounded-2xl p-4 space-y-1 hover:border-rose-500/40 transition-all relative group">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-bold text-slate-400 block truncate">
+                      Cas Sociaux & Entraide
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => handleOpenRegularizeModal('CAS_SOCIAUX')}
+                      className="p-1 rounded-lg bg-slate-900 hover:bg-rose-500/20 text-slate-400 hover:text-rose-300 border border-slate-800 hover:border-rose-500/40 transition-all cursor-pointer"
+                      title="Régulariser manuellement Cas Sociaux & Entraide"
+                    >
+                      <Edit3 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
                   <p className="text-xl font-black text-rose-400">
                     {(liveFundBalances.CAS_SOCIAUX || 0).toLocaleString('fr-FR')} <span className="text-xs font-bold text-slate-400">F CFA</span>
                   </p>
-                  <span className="text-[10px] text-slate-500 block font-medium">Mariage, Naissances, Décès</span>
+                  <div className="flex items-center justify-between text-[10px]">
+                    <span className="text-slate-500 font-medium truncate">Mariage, Naissances, Décès</span>
+                    {treasuryRegularizations['CAS_SOCIAUX'] && (
+                      <span className="text-amber-400 font-bold ml-1 shrink-0">
+                        ⚖️ Régularisé
+                      </span>
+                    )}
+                  </div>
                 </div>
 
                 {/* Sous-Solde 6 : Caisse Extra (Harmonisée de manière neutre avec les autres cartes) */}
-                <div className="bg-slate-950 border border-slate-800/80 rounded-2xl p-4 space-y-1 hover:border-amber-500/40 transition-all">
+                <div className="bg-slate-950 border border-slate-800/80 rounded-2xl p-4 space-y-1 hover:border-amber-500/40 transition-all relative group">
                   <div className="flex items-center justify-between">
                     <span className="text-[11px] font-bold text-slate-400 block truncate">
                       Caisse Extra
                     </span>
-                    <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 font-bold border border-amber-500/30">
-                      Divers
-                    </span>
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 font-bold border border-amber-500/30">
+                        Divers
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => handleOpenRegularizeModal('EXTRA')}
+                        className="p-1 rounded-lg bg-slate-900 hover:bg-amber-500/20 text-slate-400 hover:text-amber-300 border border-slate-800 hover:border-amber-500/40 transition-all cursor-pointer"
+                        title="Régulariser manuellement la Caisse Extra"
+                      >
+                        <Edit3 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
                   </div>
                   <p className="text-xl font-black text-amber-400">
                     {(liveFundBalances.EXTRA || 0).toLocaleString('fr-FR')} <span className="text-xs font-bold text-slate-400">F CFA</span>
                   </p>
-                  <span className="text-[10px] text-slate-500 block font-medium">Fonds divers & amendes</span>
+                  <div className="flex items-center justify-between text-[10px]">
+                    <span className="text-slate-500 font-medium truncate">Fonds divers & amendes</span>
+                    {treasuryRegularizations['EXTRA'] && (
+                      <span className="text-amber-400 font-bold ml-1 shrink-0">
+                        ⚖️ Régularisé
+                      </span>
+                    )}
+                  </div>
                 </div>
               </div>
             </div>
@@ -15497,6 +15935,296 @@ export const AdminPortal: React.FC = () => {
                 </div>
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================= */}
+      {/* MODAL TRÉSORIER : RÉGULARISATION / CORRECTION MANUELLE DES SOLDES */}
+      {/* ========================================================= */}
+      {showRegularizeModal && (
+        <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-3 sm:p-6 overflow-y-auto animate-fadeIn">
+          <div className="bg-slate-900 border-2 border-emerald-500/70 rounded-3xl max-w-xl w-full flex flex-col shadow-2xl my-auto overflow-hidden">
+            {/* Header */}
+            <div className="p-4 sm:p-5 border-b border-slate-800 flex items-center justify-between gap-3 bg-slate-950">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center text-emerald-400 font-bold">
+                  <Sliders className="w-5 h-5 text-emerald-400" />
+                </div>
+                <div>
+                  <h3 className="text-base font-black text-white flex items-center gap-2">
+                    <span>Régularisation Manuelle des Soldes</span>
+                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                      Contrôle Trésorier
+                    </span>
+                  </h3>
+                  <p className="text-xs text-slate-400 font-mono">
+                    Ajustement direct en cas d'erreur ou d'entrée fictive • Maintien de l'automatisme futur
+                  </p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                disabled={isSubmittingRegularize}
+                onClick={() => {
+                  setShowRegularizeModal(false);
+                  setRegularizeError(null);
+                  setRegularizeSuccess(null);
+                }}
+                className="text-slate-400 hover:text-white p-2 rounded-xl hover:bg-slate-800 transition-colors cursor-pointer disabled:opacity-50"
+                title="Fermer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="p-5 sm:p-6 space-y-5 bg-slate-900 text-slate-200">
+              {/* Explication / Note informative */}
+              <div className="p-3.5 rounded-2xl bg-slate-950 border border-emerald-500/30 flex items-start gap-3">
+                <Info className="w-5 h-5 text-emerald-400 shrink-0 mt-0.5" />
+                <div className="text-xs text-slate-300 space-y-1">
+                  <p className="font-semibold text-emerald-300">
+                    Contrôle absolu du Trésorier Général
+                  </p>
+                  <p className="text-slate-400 leading-relaxed">
+                    Saisissez le montant exact vérifié. Cette valeur devient la nouvelle base de référence dans la base de données avec trace d'audit. Les futures cotisations et décaissements validés s'ajouteront ou se déduiront automatiquement à partir de ce nouveau point d'ancrage.
+                  </p>
+                </div>
+              </div>
+
+              {/* Sélecteur de caisse à régulariser */}
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold uppercase tracking-wider text-slate-400 block">
+                  1. Caisse ou Solde à régulariser
+                </label>
+                <select
+                  value={regularizeTargetKey}
+                  onChange={(e) => handleSelectRegularizeTarget(e.target.value)}
+                  disabled={isSubmittingRegularize}
+                  className="w-full bg-slate-950 border border-slate-700 rounded-2xl px-4 py-3 text-sm font-bold text-white focus:outline-none focus:border-emerald-400 cursor-pointer"
+                >
+                  {REGULARIZATION_TARGET_OPTIONS.map((opt) => (
+                    <option key={opt.key} value={opt.key} className="bg-slate-900 text-white">
+                      {opt.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* État actuel & Montant calculé */}
+              {(() => {
+                const effectiveKey = regularizeTargetKey === 'EVENEMENTS_FIXES' ? 'ANNIVERSAIRE' : regularizeTargetKey;
+                const activeReg = treasuryRegularizations[effectiveKey];
+                let currentAmt = 0;
+                if (regularizeTargetKey === 'TOTAL') {
+                  currentAmt = totalFundBalance;
+                } else if (regularizeTargetKey === 'EVENEMENTS_FIXES') {
+                  currentAmt = (liveFundBalances.ANNIVERSAIRE || 0) + (liveFundBalances.SOIREE_ROUAMA || 0);
+                } else {
+                  currentAmt = liveFundBalances[regularizeTargetKey as FundType] || 0;
+                }
+                const inputNum = Number(regularizeAmountInput) || 0;
+                const diffAmt = inputNum - currentAmt;
+
+                return (
+                  <>
+                    {/* Badge si déjà régularisé */}
+                    {activeReg && (
+                      <div className="p-3 rounded-2xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-between text-xs">
+                        <div className="space-y-0.5">
+                          <span className="font-bold text-amber-300 flex items-center gap-1.5">
+                            ⚖️ Régularisation actuellement active
+                          </span>
+                          <p className="text-slate-400 text-[11px]">
+                            {activeReg.note} • Fixé à {activeReg.amount.toLocaleString('fr-FR')} F CFA le {new Date(activeReg.date).toLocaleDateString('fr-FR')}
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => handleResetRegularization(regularizeTargetKey)}
+                          disabled={isSubmittingRegularize}
+                          className="px-3 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-amber-300 border border-amber-500/40 text-[11px] font-bold transition-all cursor-pointer hover:border-amber-400 shrink-0"
+                          title="Effacer la régularisation et revenir au calcul 100% automatique"
+                        >
+                          Rétablir calcul auto
+                        </button>
+                      </div>
+                    )}
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div className="bg-slate-950 border border-slate-800 rounded-2xl p-3.5 space-y-1">
+                        <span className="text-[11px] font-semibold text-slate-400 block uppercase">Solde Actuel Affiché</span>
+                        <p className="text-xl font-black text-slate-200">
+                          {currentAmt.toLocaleString('fr-FR')} <span className="text-xs font-bold text-slate-400">F CFA</span>
+                        </p>
+                      </div>
+
+                      <div className="bg-slate-950 border border-slate-800 rounded-2xl p-3.5 space-y-1">
+                        <span className="text-[11px] font-semibold text-slate-400 block uppercase">Écart de Régularisation</span>
+                        <p className={`text-xl font-black ${diffAmt === 0 ? 'text-slate-400' : diffAmt > 0 ? 'text-emerald-400' : 'text-amber-400'}`}>
+                          {diffAmt === 0 ? '0 F CFA' : `${diffAmt > 0 ? '+' : ''}${diffAmt.toLocaleString('fr-FR')} F CFA`}
+                        </p>
+                        <span className="text-[10px] text-slate-500 block">
+                          {diffAmt === 0 ? 'Aucun ajustement' : diffAmt > 0 ? 'Correction à la hausse' : 'Correction à la baisse (retrait d\'erreurs)'}
+                        </span>
+                      </div>
+                    </div>
+                  </>
+                );
+              })()}
+
+              {/* Saisie du nouveau montant exact */}
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-bold uppercase tracking-wider text-slate-400 block">
+                    2. Nouveau Montant Exact Corrigé (F CFA)
+                  </label>
+                  {/* Suggestions rapides selon la caisse sélectionnée */}
+                  <div className="flex items-center gap-1.5 text-[11px]">
+                    <span className="text-slate-500">Repères :</span>
+                    {regularizeTargetKey === 'COTISATION' && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setRegularizeAmountInput('33000');
+                          setRegularizeNoteInput('Base certifiée (27 000 F départ + 3 vrais dépôts récents)');
+                        }}
+                        className="px-2 py-0.5 rounded-lg bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/25 font-bold cursor-pointer transition-all"
+                      >
+                        33 000 F (Base certifiée)
+                      </button>
+                    )}
+                    {regularizeTargetKey === 'EXTRA' && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setRegularizeAmountInput('31000');
+                          setRegularizeNoteInput('Solde net de référence (Fond Carba 33 000 F + Amendes 8 000 F - Remboursement 10 000 F)');
+                        }}
+                        className="px-2 py-0.5 rounded-lg bg-amber-500/15 text-amber-300 border border-amber-500/30 hover:bg-amber-500/25 font-bold cursor-pointer transition-all"
+                      >
+                        31 000 F (Réf. Caisse Extra)
+                      </button>
+                    )}
+                    {regularizeTargetKey === 'TOTAL' && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setRegularizeAmountInput('64000');
+                          setRegularizeNoteInput('Solde net exact consolidé (33 000 F Cotisations + 31 000 F Caisse Extra)');
+                        }}
+                        className="px-2 py-0.5 rounded-lg bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/25 font-bold cursor-pointer transition-all"
+                      >
+                        64 000 F (Total certifié)
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                <div className="relative">
+                  <input
+                    type="number"
+                    min="0"
+                    step="100"
+                    placeholder="Ex: 33000"
+                    value={regularizeAmountInput}
+                    onChange={(e) => setRegularizeAmountInput(e.target.value)}
+                    disabled={isSubmittingRegularize}
+                    className="w-full bg-slate-950 border border-slate-700 rounded-2xl px-4 py-3 text-lg font-black text-emerald-400 focus:outline-none focus:border-emerald-400 placeholder:text-slate-600"
+                  />
+                  <span className="absolute right-4 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-500">
+                    F CFA
+                  </span>
+                </div>
+              </div>
+
+              {/* Justification / Note de régularisation */}
+              <div className="space-y-1.5">
+                <label className="text-xs font-bold uppercase tracking-wider text-slate-400 block">
+                  3. Motif & Justification de la Régularisation
+                </label>
+                <input
+                  type="text"
+                  placeholder="Ex: Correction et retrait des entrées fictives non validées"
+                  value={regularizeNoteInput}
+                  onChange={(e) => setRegularizeNoteInput(e.target.value)}
+                  disabled={isSubmittingRegularize}
+                  className="w-full bg-slate-950 border border-slate-700 rounded-2xl px-4 py-3 text-sm text-white focus:outline-none focus:border-emerald-400 placeholder:text-slate-600"
+                />
+
+                {/* Puces de suggestion de motifs */}
+                <div className="flex flex-wrap gap-1.5 pt-1">
+                  {[
+                    'Correction dépôts erronés / fictifs',
+                    'Alignement base certifiée officielle',
+                    'Contrôle physique de la caisse',
+                    'Arrêt des comptes trésorerie',
+                  ].map((m) => (
+                    <button
+                      key={m}
+                      type="button"
+                      onClick={() => setRegularizeNoteInput(m)}
+                      disabled={isSubmittingRegularize}
+                      className="text-[11px] px-2.5 py-1 rounded-xl bg-slate-950 hover:bg-slate-800 text-slate-400 hover:text-white border border-slate-800 transition-all cursor-pointer"
+                    >
+                      {m}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Messages d'erreur ou succès */}
+              {regularizeError && (
+                <div className="p-3.5 rounded-2xl bg-rose-500/15 border border-rose-500/40 text-rose-300 text-xs flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 shrink-0 text-rose-400" />
+                  <span>{regularizeError}</span>
+                </div>
+              )}
+
+              {regularizeSuccess && (
+                <div className="p-3.5 rounded-2xl bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 text-xs flex items-center gap-2">
+                  <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-400" />
+                  <span>{regularizeSuccess}</span>
+                </div>
+              )}
+            </div>
+
+            {/* Modal Footer */}
+            <div className="p-4 sm:p-5 border-t border-slate-800 bg-slate-950 flex items-center justify-between gap-3">
+              <button
+                type="button"
+                disabled={isSubmittingRegularize}
+                onClick={() => {
+                  setShowRegularizeModal(false);
+                  setRegularizeError(null);
+                  setRegularizeSuccess(null);
+                }}
+                className="px-4 py-2.5 rounded-2xl bg-slate-900 hover:bg-slate-800 text-slate-300 font-bold text-xs transition-all cursor-pointer disabled:opacity-50"
+              >
+                Annuler
+              </button>
+
+              <button
+                type="button"
+                disabled={isSubmittingRegularize}
+                onClick={handleSaveRegularization}
+                className="px-6 py-2.5 rounded-2xl bg-gradient-to-r from-emerald-500 to-emerald-600 hover:from-emerald-400 hover:to-emerald-500 text-slate-950 font-black text-xs sm:text-sm shadow-xl flex items-center gap-2 cursor-pointer transition-all active:scale-95 disabled:opacity-50"
+              >
+                {isSubmittingRegularize ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin text-slate-950" />
+                    <span>Enregistrement...</span>
+                  </>
+                ) : (
+                  <>
+                    <Save className="w-4 h-4 text-slate-950" />
+                    <span>Valider la Régularisation</span>
+                  </>
+                )}
+              </button>
+            </div>
           </div>
         </div>
       )}

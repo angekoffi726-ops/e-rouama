@@ -1114,6 +1114,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         EXTRA: Math.max(31000, Math.max(0, extra - withdrawnPerFund.EXTRA)),
       };
 
+      // Prise en compte immédiate des régularisations manuelles enregistrées par le Trésorier
+      const activeRegs = (treasuryBalances as any)?.regularizations || {};
+      (Object.keys(computed) as FundType[]).forEach(k => {
+        if (activeRegs[k] && typeof activeRegs[k].amount === 'number') {
+          computed[k] = activeRegs[k].amount;
+        }
+      });
+
       // RÈGLE ABSOLUE : Si aucune déclaration n'a pu être chargée (ex: quota dépassé, offline ou erreur)
       // et qu'aucun solde treasury n'est défini, NE JAMAIS réinitialiser les soldes à 0 F CFA !
       if (allDecls.length === 0 && Object.values(treasuryBalances).every(v => !v || v === 0)) {
