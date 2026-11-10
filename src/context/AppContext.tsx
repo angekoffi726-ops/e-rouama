@@ -1357,6 +1357,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
     };
 
+    // Cache partagé en mémoire pour consolider les documents de navette (info_requests + navettes)
+    const navetteDocsMap = new Map<string, InfoRequest>();
+    const updateNavetteState = () => {
+      const loaded = Array.from(navetteDocsMap.values());
+      // Tri purement côté client par createdAt décroissant sans nécessiter d'index composite Firestore
+      loaded.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+      setInfoRequests(loaded);
+    };
+
     // Chargeur Navette (demandes d'information & navettes inter-admins)
     const loadNavette = async () => {
       try {
@@ -1364,16 +1373,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           getDocs(collection(db, 'info_requests')),
           getDocs(collection(db, 'navettes')),
         ]);
-        const map = new Map<string, InfoRequest>();
         if (infoReqsSnap.status === 'fulfilled') {
-          infoReqsSnap.value.forEach((d) => map.set(d.id, { id: d.id, ...(d.data() as any) }));
+          infoReqsSnap.value.forEach((d) => navetteDocsMap.set(d.id, { id: d.id, ...(d.data() as any) }));
         }
         if (navettesSnap.status === 'fulfilled') {
-          navettesSnap.value.forEach((d) => map.set(d.id, { id: d.id, ...(d.data() as any) }));
+          navettesSnap.value.forEach((d) => navetteDocsMap.set(d.id, { id: d.id, ...(d.data() as any) }));
         }
-        const loaded = Array.from(map.values());
-        loaded.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
-        setInfoRequests(loaded);
+        updateNavetteState();
       } catch (err) {
         console.warn('Erreur chargement Navette (cache actif):', err);
       }
@@ -1754,18 +1760,23 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       console.warn('Erreur écouteur temps réel Gbairai:', err);
     });
 
-    const unsubNavette = onSnapshot(collection(db, 'info_requests'), (snapshot) => {
-      const map = new Map<string, InfoRequest>();
+    // Écouteur temps réel pour les navettes et demandes d'information (écoute simultanée et consolidée de info_requests et navettes)
+    const unsubInfoRequests = onSnapshot(collection(db, 'info_requests'), (snapshot) => {
       snapshot.forEach((d) => {
-        map.set(d.id, { id: d.id, ...(d.data() as any) });
+        navetteDocsMap.set(d.id, { id: d.id, ...(d.data() as any) });
       });
-      const loaded = Array.from(map.values());
-      loaded.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
-      if (loaded.length > 0) {
-        setInfoRequests(loaded);
-      }
+      updateNavetteState();
     }, (err) => {
       console.warn('Erreur écouteur temps réel info_requests:', err);
+    });
+
+    const unsubNavettesCol = onSnapshot(collection(db, 'navettes'), (snapshot) => {
+      snapshot.forEach((d) => {
+        navetteDocsMap.set(d.id, { id: d.id, ...(d.data() as any) });
+      });
+      updateNavetteState();
+    }, (err) => {
+      console.warn('Erreur écouteur temps réel navettes:', err);
     });
 
     // Écouteur temps réel pour les logs d'activité/connexions administratives
@@ -1825,7 +1836,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     return () => {
       if (unsubGbairai) unsubGbairai();
-      if (unsubNavette) unsubNavette();
+      if (unsubInfoRequests) unsubInfoRequests();
+      if (unsubNavettesCol) unsubNavettesCol();
       if (unsubAdminLogs) unsubAdminLogs();
       if (unsubReligiousEvents) unsubReligiousEvents();
       if (unsubTreasuryBalances) unsubTreasuryBalances();

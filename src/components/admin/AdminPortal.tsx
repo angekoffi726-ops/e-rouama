@@ -14,7 +14,7 @@ import { computeBilanData, extractBilanPeriodParams } from '../../utils/bilanCal
 import { RbacWarningBanner } from './RbacWarningBanner';
 import { CerveauMembersCredentialsViewer } from './CerveauMembersCredentialsViewer';
 import { SuiviProgrammeConsole } from './SuiviProgrammeConsole';
-import { InfoRequestsModule, isRoleEligibleForInfoModule, normalizeToEligibleDeptKey } from './InfoRequestsModule';
+import { InfoRequestsModule, isRoleEligibleForInfoModule, normalizeToEligibleDeptKey, isDeptMatch } from './InfoRequestsModule';
 import { EmailRecipientSelector } from '../common/EmailRecipientSelector';
 import {
   Shield,
@@ -622,7 +622,7 @@ export const AdminPortal: React.FC = () => {
     if (!isRoleEligibleForInfoModule(activeRole)) return 0;
     const normalizedKey = normalizeToEligibleDeptKey(activeRole);
     return (infoRequests || []).filter(
-      r => normalizeToEligibleDeptKey(r.recipientRole) === normalizedKey && !r.isRead
+      r => (isDeptMatch(r.recipientRole, normalizedKey) || isDeptMatch(r.recipientRoleLabel, normalizedKey)) && !r.isRead
     ).length;
   }, [infoRequests, activeRole]);
 

@@ -85,7 +85,19 @@ export const ELIGIBLE_ADMIN_DEPARTMENTS: EligibleDeptConfig[] = [
     name: 'Commission Projets (AGR)',
     shortName: 'Respo Projet',
     icon: '🚀',
-    roleAliases: ['PROJET', 'PROJETS', 'RESP_PROJET', 'RESPO_PROJET', 'COMMISSION_PROJET', 'COMMISSION_PROJETS'],
+    roleAliases: [
+      'PROJET',
+      'PROJETS',
+      'RESP_PROJET',
+      'RESPO_PROJET',
+      'COMMISSION_PROJET',
+      'COMMISSION_PROJETS',
+      'COMMISSION_PROJETS_AGR',
+      'COMMISSION_PROJETS_(AGR)',
+      'PROJETS_AGR',
+      'PROJET_AGR',
+      'AGR',
+    ],
     badgeBg: 'bg-purple-500/10',
     badgeText: 'text-purple-400',
     borderColor: 'border-purple-500/30',
@@ -107,7 +119,7 @@ export const ELIGIBLE_ADMIN_DEPARTMENTS: EligibleDeptConfig[] = [
     name: 'Département Spiritualité',
     shortName: 'Spiritualité',
     icon: '🕊️',
-    roleAliases: ['SPIRITUALITE', 'SPIRITUEL', 'DEPARTEMENT_SPIRITUALITE'],
+    roleAliases: ['SPIRITUALITE', 'SPIRITUEL', 'DEPARTEMENT_SPIRITUALITE', 'PRIERE'],
     badgeBg: 'bg-sky-500/10',
     badgeText: 'text-sky-400',
     borderColor: 'border-sky-500/30',
@@ -151,7 +163,26 @@ export const isRoleEligibleForInfoModule = (role?: string): boolean => {
   ) {
     return false;
   }
-  return ELIGIBLE_ADMIN_DEPARTMENTS.some(d => d.key === clean || d.roleAliases.includes(clean));
+  if (ELIGIBLE_ADMIN_DEPARTMENTS.some(d => d.key === clean || d.roleAliases.includes(clean))) {
+    return true;
+  }
+  // Correspondance sémantique de secours pour tout libellé de commission
+  if (
+    clean.includes('PROJET') ||
+    clean.includes('AGR') ||
+    clean.includes('COM') ||
+    clean.includes('BIC') ||
+    clean.includes('SECRETAR') ||
+    clean.includes('TRESOR') ||
+    clean.includes('ORGANIS') ||
+    clean.includes('SPIRIT') ||
+    clean.includes('SDP') ||
+    clean.includes('SUIVI') ||
+    clean.includes('PAYOR')
+  ) {
+    return true;
+  }
+  return false;
 };
 
 // Normalise un rôle vers la clé standard d'un département éligible
@@ -159,7 +190,16 @@ export const normalizeToEligibleDeptKey = (role?: string): string => {
   if (!role) return 'SECRETARIAT';
   const clean = role.trim().toUpperCase().replace(/[\s-]/g, '_');
   const found = ELIGIBLE_ADMIN_DEPARTMENTS.find(d => d.key === clean || d.roleAliases.includes(clean));
-  return found ? found.key : clean;
+  if (found) return found.key;
+  if (clean.includes('PROJET') || clean.includes('AGR')) return 'PROJET';
+  if (clean.includes('COM') || clean.includes('BIC')) return 'COMMUNICATION';
+  if (clean.includes('SECRETAR') || clean.includes('SECRETAIRE')) return 'SECRETARIAT';
+  if (clean.includes('TRESOR') || clean.includes('FINANCE')) return 'TRESORIER';
+  if (clean.includes('ORGANIS')) return 'ORGANISATION';
+  if (clean.includes('SPIRIT') || clean.includes('PRIERE')) return 'SPIRITUALITE';
+  if (clean.includes('SDP') || clean.includes('SUIVI')) return 'SDP';
+  if (clean.includes('PAYOR')) return 'PAYOR';
+  return clean;
 };
 
 // Trouve la configuration d'un département
@@ -167,7 +207,7 @@ export const getEligibleDeptConfig = (roleKeyOrName?: string): EligibleDeptConfi
   if (!roleKeyOrName) return undefined;
   const clean = roleKeyOrName.trim().toUpperCase().replace(/[\s-]/g, '_');
   return ELIGIBLE_ADMIN_DEPARTMENTS.find(
-    d => d.key === clean || d.name.toUpperCase() === clean || d.roleAliases.includes(clean)
+    d => d.key === clean || d.name.toUpperCase().replace(/[\s-]/g, '_') === clean || d.roleAliases.includes(clean)
   );
 };
 
@@ -670,11 +710,11 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
 
         {/* BARRE D'ONGLETS / VUES */}
         <div className="mt-6 pt-5 border-t border-slate-800/80 flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-2 bg-slate-950 p-1.5 rounded-2xl border border-slate-800 flex-wrap">
+          <div className="flex items-center gap-1.5 sm:gap-2 bg-slate-950 p-1.5 rounded-2xl border border-slate-800 w-full sm:w-auto overflow-x-auto touch-pan-x no-scrollbar">
             <button
               type="button"
               onClick={() => handleSelectView('ALL')}
-              className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-black transition-all cursor-pointer ${
+              className={`flex items-center gap-2 px-3 sm:px-3.5 py-2 rounded-xl text-xs font-black transition-all cursor-pointer whitespace-nowrap shrink-0 ${
                 activeView === 'ALL'
                   ? 'bg-indigo-600 text-white shadow-md'
                   : 'text-slate-400 hover:text-white hover:bg-slate-900'
@@ -687,7 +727,7 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
             <button
               type="button"
               onClick={() => handleSelectView('RECEIVED')}
-              className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-black transition-all cursor-pointer ${
+              className={`flex items-center gap-2 px-3 sm:px-3.5 py-2 rounded-xl text-xs font-black transition-all cursor-pointer whitespace-nowrap shrink-0 ${
                 activeView === 'RECEIVED'
                   ? 'bg-indigo-600 text-white shadow-md'
                   : 'text-slate-400 hover:text-white hover:bg-slate-900'
@@ -705,7 +745,7 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
             <button
               type="button"
               onClick={() => handleSelectView('SENT')}
-              className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-black transition-all cursor-pointer ${
+              className={`flex items-center gap-2 px-3 sm:px-3.5 py-2 rounded-xl text-xs font-black transition-all cursor-pointer whitespace-nowrap shrink-0 ${
                 activeView === 'SENT'
                   ? 'bg-indigo-600 text-white shadow-md'
                   : 'text-slate-400 hover:text-white hover:bg-slate-900'
@@ -716,22 +756,22 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
             </button>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 w-full sm:w-auto justify-between sm:justify-end">
             <button
               type="button"
               onClick={() => refreshNavette()}
               disabled={isRefreshingData}
-              className="flex items-center gap-2 px-3.5 py-2.5 rounded-2xl text-xs font-bold bg-slate-900 hover:bg-slate-800 text-indigo-300 border border-indigo-500/30 hover:border-indigo-400 transition-all cursor-pointer disabled:opacity-50"
+              className="flex items-center gap-1.5 sm:gap-2 px-3 sm:px-3.5 py-2.5 rounded-2xl text-xs font-bold bg-slate-900 hover:bg-slate-800 text-indigo-300 border border-indigo-500/30 hover:border-indigo-400 transition-all cursor-pointer disabled:opacity-50 shrink-0"
               title="Actualiser ponctuellement les navettes d'échange sans boucle temps réel"
             >
               <RefreshCw className={`w-3.5 h-3.5 text-indigo-400 ${isRefreshingData ? 'animate-spin' : ''}`} />
-              <span>{isRefreshingData ? 'Actualisation...' : '🔄 Actualiser les données'}</span>
+              <span>{isRefreshingData ? 'Actualisation...' : '🔄 Actualiser'}</span>
             </button>
 
             <button
               type="button"
               onClick={() => handleSelectView(activeView === 'COMPOSE' ? 'ALL' : 'COMPOSE')}
-              className={`flex items-center gap-2 px-4 py-2.5 rounded-2xl text-xs font-black transition-all cursor-pointer shadow-lg ${
+              className={`flex items-center gap-1.5 sm:gap-2 px-3.5 sm:px-4 py-2.5 rounded-2xl text-xs font-black transition-all cursor-pointer shadow-lg shrink-0 ${
                 activeView === 'COMPOSE'
                   ? 'bg-rose-600 text-white hover:bg-rose-500'
                   : 'bg-amber-500 hover:bg-amber-400 text-slate-950 font-black'
@@ -740,12 +780,12 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
               {activeView === 'COMPOSE' ? (
                 <>
                   <X className="w-4 h-4" />
-                  <span>FERMER LE FORMULAIRE</span>
+                  <span>FERMER</span>
                 </>
               ) : (
                 <>
                   <Plus className="w-4 h-4" />
-                  <span>NOUVELLE NAVETTE D'ÉCHANGE</span>
+                  <span>NOUVELLE NAVETTE</span>
                 </>
               )}
             </button>
@@ -1055,7 +1095,7 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
                 return (
                   <div
                     key={req.id}
-                    className={`bg-slate-900 border rounded-3xl transition-all shadow-md overflow-hidden ${
+                    className={`bg-slate-900 border rounded-3xl transition-all shadow-md w-full min-w-0 ${
                       !req.isRead && isReceived
                         ? 'border-indigo-500/70 bg-indigo-950/20'
                         : isClosed
@@ -1068,11 +1108,11 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
                     {/* EN-TÊTE DE LA CARTE DE NAVETTE */}
                     <div
                       onClick={() => handleToggleExpand(req)}
-                      className="p-5 cursor-pointer flex flex-col sm:flex-row sm:items-center justify-between gap-3 select-none"
+                      className="p-4 sm:p-5 cursor-pointer flex flex-col sm:flex-row sm:items-center justify-between gap-3 select-none w-full min-w-0"
                     >
-                      <div className="flex items-start gap-3">
+                      <div className="flex items-start gap-2.5 sm:gap-3 min-w-0 flex-1">
                         {/* Indicateur de lecture / statut */}
-                        <div className="pt-0.5">
+                        <div className="pt-0.5 shrink-0">
                           {!req.isRead && isReceived ? (
                             <span className="w-3 h-3 rounded-full bg-rose-500 inline-block shadow-sm animate-pulse" />
                           ) : isClosed ? (
@@ -1084,9 +1124,9 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
                           )}
                         </div>
 
-                        <div className="space-y-1">
+                        <div className="space-y-1.5 min-w-0 flex-1">
                           {/* Badges départements & statut */}
-                          <div className="flex flex-wrap items-center gap-2">
+                          <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
                             <span
                               className={`inline-flex items-center gap-1 text-[11px] font-black px-2.5 py-0.5 rounded-lg border ${
                                 otherDeptConfig?.badgeBg || 'bg-slate-800'
@@ -1135,12 +1175,12 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
                           </div>
 
                           {/* Objet de la navette */}
-                          <h4 className="text-sm sm:text-base font-black text-white hover:text-indigo-300 transition-colors">
+                          <h4 className="text-sm sm:text-base font-black text-white hover:text-indigo-300 transition-colors break-words">
                             {req.subject}
                           </h4>
 
                           {/* Auteur initial & Date d'ouverture */}
-                          <div className="text-[11px] text-slate-400 flex items-center gap-3 flex-wrap">
+                          <div className="text-[11px] text-slate-400 flex items-center gap-2 sm:gap-3 flex-wrap">
                             <span>
                               Initié par : <strong className="text-slate-300">{req.senderName || req.senderRole}</strong>
                             </span>
@@ -1166,9 +1206,9 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
                     {/* CONTENU DU FIL DE DISCUSSION DÉPLIÉ (THREAD CHRONOLOGIQUE) */}
                     {/* ========================================================= */}
                     {isExpanded && (
-                      <div className="px-5 pb-6 pt-3 border-t border-slate-800/80 space-y-6 animate-fadeIn">
+                      <div className="px-3 sm:px-5 pb-5 sm:pb-6 pt-3 border-t border-slate-800/80 space-y-4 sm:space-y-6 animate-fadeIn w-full min-w-0">
                         {/* 1. FIL DES MESSAGES SUCCESSIFS CHRONOLOGIQUES */}
-                        <div className="space-y-4">
+                        <div className="space-y-3 sm:space-y-4 w-full min-w-0">
                           <div className="flex items-center justify-between text-xs font-bold text-slate-400 border-b border-slate-800 pb-2">
                             <span className="flex items-center gap-2 text-indigo-300">
                               <MessageSquare className="w-4 h-4" />
@@ -1177,7 +1217,7 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
                             <span className="text-[11px] text-slate-500 font-mono">ID: {req.id}</span>
                           </div>
 
-                          <div className="space-y-3.5 pt-1">
+                          <div className="space-y-3 pt-1 w-full min-w-0">
                             {threadMessages.map((msg, idx) => {
                               const isFromCurrentDept =
                                 isDeptMatch(msg.senderRole, normalizedCurrentDeptKey) ||
@@ -1196,7 +1236,7 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
                               return (
                                 <div
                                   key={msg.id || idx}
-                                  className={`p-4 sm:p-5 rounded-2xl border transition-all ${
+                                  className={`p-3.5 sm:p-5 rounded-2xl border transition-all w-full min-w-0 ${
                                     isFromCurrentDept
                                       ? 'bg-slate-950 border-indigo-500/30'
                                       : 'bg-slate-950/90 border-slate-800'
@@ -1204,7 +1244,7 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
                                 >
                                   {/* En-tête du message dans le fil */}
                                   <div className="flex flex-wrap items-center justify-between gap-2 mb-2 pb-2 border-b border-slate-800/60">
-                                    <div className="flex items-center gap-2">
+                                    <div className="flex items-center gap-2 flex-wrap">
                                       <span
                                         className={`inline-flex items-center gap-1 text-[10px] font-black px-2 py-0.5 rounded-md border ${
                                           msgDeptConfig?.badgeBg || 'bg-slate-800'
@@ -1240,7 +1280,7 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
                                   </div>
 
                                   {/* Corps du message */}
-                                  <p className="text-xs sm:text-sm text-slate-200 whitespace-pre-wrap leading-relaxed font-sans">
+                                  <p className="text-xs sm:text-sm text-slate-200 whitespace-pre-wrap leading-relaxed font-sans break-words overflow-x-auto">
                                     {msg.message}
                                   </p>
                                 </div>
@@ -1251,17 +1291,17 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
 
                         {/* 2. ÉTAT CLÔTURÉ OU CHAMP DE RÉPONSE ACTIVE */}
                         {isClosed ? (
-                          <div className="bg-slate-950 border border-slate-700 rounded-2xl p-4 sm:p-5 flex flex-col sm:flex-row items-center justify-between gap-3 shadow-inner">
-                            <div className="flex items-center gap-3">
-                              <div className="w-9 h-9 rounded-xl bg-slate-800 border border-slate-700 flex items-center justify-center text-slate-300">
+                          <div className="bg-slate-950 border border-slate-700 rounded-2xl p-4 sm:p-5 flex flex-col sm:flex-row items-center justify-between gap-3 shadow-inner w-full min-w-0">
+                            <div className="flex items-center gap-3 min-w-0 flex-1">
+                              <div className="w-9 h-9 rounded-xl bg-slate-800 border border-slate-700 flex items-center justify-center text-slate-300 shrink-0">
                                 <Lock className="w-4 h-4" />
                               </div>
-                              <div>
+                              <div className="min-w-0 flex-1">
                                 <h5 className="text-xs font-black text-white flex items-center gap-2">
                                   <span>Navette Clôturée / Solvabilisée</span>
                                   <span className="text-[10px] text-emerald-400 font-normal">Dossier résolu</span>
                                 </h5>
-                                <p className="text-[11px] text-slate-400">
+                                <p className="text-[11px] text-slate-400 break-words">
                                   {req.closedBy ? `Clôturé par ${req.closedBy}` : 'Échange terminé'}
                                   {req.closedAt
                                     ? ` le ${new Date(req.closedAt).toLocaleDateString('fr-FR', {
@@ -1293,9 +1333,9 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
                           </div>
                         ) : (
                           /* ZONE ACTIVE DE RÉPONSE CONTINUE : ACCESSIBLE AUX DEUX PARTIES */
-                          <div className="bg-slate-950 p-4 sm:p-5 rounded-2xl border border-indigo-500/30 space-y-3 shadow-lg">
+                          <div className="bg-slate-950 p-4 sm:p-5 rounded-2xl border border-indigo-500/30 space-y-3 shadow-lg w-full min-w-0">
                             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                              <label className="text-xs font-black text-white flex items-center gap-2">
+                              <label className="text-xs font-black text-white flex items-center gap-2 flex-wrap">
                                 <Send className="w-3.5 h-3.5 text-amber-400" />
                                 <span>Répondre à la suite...</span>
                                 <span className="text-[11px] font-normal text-slate-400">
@@ -1309,7 +1349,7 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
                                   href={whatsappUrl}
                                   target="_blank"
                                   rel="noopener noreferrer"
-                                  className="inline-flex items-center gap-1.5 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-3 py-1 rounded-xl text-[11px] font-bold transition-all"
+                                  className="inline-flex items-center gap-1.5 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-3 py-1 rounded-xl text-[11px] font-bold transition-all shrink-0"
                                   title={`Envoyer un rappel WhatsApp à ${otherContact.name} (${otherDeptConfig?.shortName})`}
                                 >
                                   <PhoneCall className="w-3 h-3 text-emerald-400" />
@@ -1329,10 +1369,10 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
                                   [req.id]: e.target.value,
                                 }))
                               }
-                              className="w-full bg-slate-900 border border-slate-800 rounded-xl p-3.5 text-xs sm:text-sm text-white focus:outline-none focus:border-amber-500 resize-y leading-relaxed"
+                              className="w-full bg-slate-900 border border-slate-800 rounded-xl p-3 sm:p-3.5 text-xs sm:text-sm text-white focus:outline-none focus:border-amber-500 resize-y leading-relaxed"
                             />
 
-                            <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
+                            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-1 w-full">
                               {/* Option de clôture définitive */}
                               <button
                                 type="button"

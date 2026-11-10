@@ -6,7 +6,6 @@ import {
   getDocs,
   limit,
   query,
-  enableIndexedDbPersistence,
 } from 'firebase/firestore';
 import { getAuth } from 'firebase/auth';
 
@@ -34,24 +33,11 @@ const app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
 // Initialisation de Firestore sur la base par défaut (default)
 export const db = getFirestore(app);
 
-// 2. PRÉSERVATION DES DONNÉES EN LOCAL (CACHE / PERSISTENCE INDEXEDDB)
-// Active la persistance hors ligne Firestore afin que l'application lise prioritairement
-// le cache local du navigateur sans solliciter inutilement les quotas réseau.
-if (typeof window !== 'undefined') {
-  enableIndexedDbPersistence(db)
-    .then(() => {
-      console.log('✅ Persistance Firestore IndexedDB activée avec succès.');
-    })
-    .catch((err) => {
-      if (err.code === 'failed-precondition') {
-        console.warn('Persistance Firestore : plusieurs onglets ouverts en simultané.');
-      } else if (err.code === 'unimplemented') {
-        console.warn('Persistance Firestore : le navigateur ne supporte pas IndexedDB.');
-      } else {
-        console.warn('Persistance Firestore non activée :', err?.message || err);
-      }
-    });
-}
+// 2. SYNCHRONISATION EN LIGNE DIRECTE (RÉSEAU EN PRIORITÉ)
+// Persistance IndexedDB désactivée pour garantir que les navigateurs mobiles (iOS Safari / Android Chrome)
+// reçoivent instantanément toutes les requêtes et messages récents depuis le serveur Firestore
+// sans rester bloqués sur des instantanés locaux obsolètes.
+console.log('🌐 Synchronisation Firestore en ligne directe active (bypass cache persistant mobile).');
 
 // Service d'authentification Firebase
 export const auth = getAuth(app);
