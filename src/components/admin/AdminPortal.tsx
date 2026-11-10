@@ -4902,69 +4902,60 @@ export const AdminPortal: React.FC = () => {
   // 1. CHARGEMENT DES DONNÉES DEPUIS FIRESTORE (useEffect / fetchAnnouncements) :
   // 1. CHARGEMENT DES DONNÉES DEPUIS FIRESTORE (useEffect / fetchAnnouncements) :
   // Assure que l'ID Firestore et les champs author / createdBy sont explicitement inclus dans chaque objet
+  // 1. SYNCHRONISATION EN TEMPS RÉEL (onSnapshot) DES ANNONCES & MESSAGES DEPUIS FIRESTORE
+  // Garantit la mise à jour instantanée des communiqués pour les consoles administratives sans rechargement
   useEffect(() => {
     let isMounted = true;
+    const annDocsMap = new Map<string, NewsItem>();
+    const newsDocsMap = new Map<string, NewsItem>();
 
-    Promise.allSettled([
-      getDocs(collection(db, "announcements")),
-      getDocs(collection(db, "news")),
-    ]).then(([annSnap, newsSnap]) => {
+    const updateAdminAnnouncements = () => {
       if (!isMounted) return;
-      const map = new Map<string, NewsItem>();
-
-      if (annSnap.status === 'fulfilled') {
-        annSnap.value.docs
-          .filter(docSnap => {
-            const data = docSnap.data();
-            return data.deleted !== true && data.status !== 'deleted';
-          })
-          .forEach(docSnap => {
-            const data = docSnap.data();
-            const authorVal = data.author || data.authorRole || data.createdBy || '';
-            const createdByVal = data.createdBy || data.authorRole || data.author || '';
-            if (data.dispatchChannel !== 'MAIL') {
-              map.set(docSnap.id, {
-                id: docSnap.id,
-                ...data,
-                author: authorVal,
-                createdBy: createdByVal,
-              } as NewsItem);
-            }
-          });
-      }
-
-      if (newsSnap.status === 'fulfilled') {
-        newsSnap.value.docs
-          .filter(docSnap => {
-            const data = docSnap.data();
-            return data.deleted !== true && data.status !== 'deleted';
-          })
-          .forEach(docSnap => {
-            const data = docSnap.data();
-            const authorVal = data.author || data.authorRole || data.createdBy || '';
-            const createdByVal = data.createdBy || data.authorRole || data.author || '';
-            if (data.dispatchChannel !== 'MAIL') {
-              map.set(docSnap.id, {
-                id: docSnap.id,
-                ...data,
-                author: authorVal,
-                createdBy: createdByVal,
-              } as NewsItem);
-            }
-          });
-      }
-
-      const list = Array.from(map.values());
+      const combined = new Map<string, NewsItem>();
+      annDocsMap.forEach((v, k) => combined.set(k, v));
+      newsDocsMap.forEach((v, k) => combined.set(k, v));
+      const list = Array.from(combined.values());
       list.sort((a, b) => (b.id || '').localeCompare(a.id || ''));
-      if (list.length > 0 && isMounted) {
-        setAnnouncements(list);
-      }
-    }).catch(err => {
-      console.warn("Lecture unique announcements/news (cache actif):", err);
+      setAnnouncements(list);
+    };
+
+    const processDocs = (docs: any[], targetMap: Map<string, NewsItem>) => {
+      targetMap.clear();
+      docs.forEach(docSnap => {
+        const data = docSnap.data();
+        if (data.deleted === true || data.status === 'deleted' || data.isDeleted === true) {
+          return;
+        }
+        const authorVal = data.author || data.authorRole || data.createdBy || '';
+        const createdByVal = data.createdBy || data.authorRole || data.author || '';
+        if (data.dispatchChannel !== 'MAIL') {
+          targetMap.set(docSnap.id, {
+            id: docSnap.id,
+            ...data,
+            author: authorVal,
+            createdBy: createdByVal,
+          } as NewsItem);
+        }
+      });
+      updateAdminAnnouncements();
+    };
+
+    const unsubAnn = onSnapshot(collection(db, 'announcements'), (snapshot) => {
+      processDocs(snapshot.docs, annDocsMap);
+    }, (err) => {
+      console.warn("Écouteur temps réel announcements (admin):", err);
+    });
+
+    const unsubNews = onSnapshot(collection(db, 'news'), (snapshot) => {
+      processDocs(snapshot.docs, newsDocsMap);
+    }, (err) => {
+      console.warn("Écouteur temps réel news (admin):", err);
     });
 
     return () => {
       isMounted = false;
+      unsubAnn();
+      unsubNews();
     };
   }, []);
 
@@ -5387,41 +5378,41 @@ export const AdminPortal: React.FC = () => {
       {/* BARRE DE SOUS-NAVIGATION POUR DÉPARTEMENTS ÉLIGIBLES (HORS CERVEAU ET SUPER ADMIN) */}
       {/* ========================================================= */}
       {isRoleEligibleForInfoModule(activeRole) && (
-        <div className="flex flex-wrap items-center justify-between gap-3 bg-slate-900/90 p-2.5 rounded-2xl border border-slate-800 shadow-md">
-          <div className="flex items-center gap-2">
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 bg-slate-900/90 p-2.5 rounded-2xl border border-slate-800 shadow-md w-full min-w-0">
+          <div className="grid grid-cols-2 sm:flex sm:items-center gap-2 w-full sm:w-auto">
             <button
               type="button"
               onClick={() => setAdminActiveSubTab(prev => ({ ...prev, [activeRole]: 'METIER' }))}
-              className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-black transition-all cursor-pointer ${
+              className={`flex items-center justify-center gap-1.5 sm:gap-2 px-3 sm:px-4 py-2.5 rounded-xl text-xs font-black transition-all cursor-pointer text-center ${
                 (adminActiveSubTab[activeRole] || 'METIER') === 'METIER'
                   ? 'bg-amber-500 text-slate-950 shadow-md font-black'
-                  : 'text-slate-400 hover:text-white hover:bg-slate-800'
+                  : 'text-slate-400 hover:text-white hover:bg-slate-800 bg-slate-950/60'
               }`}
             >
-              <span>{CONSOLE_CONFIG[activeRole]?.icon}</span>
-              <span>CONSOLE {CONSOLE_CONFIG[activeRole]?.label?.toUpperCase()}</span>
+              <span className="shrink-0">{CONSOLE_CONFIG[activeRole]?.icon}</span>
+              <span className="truncate">CONSOLE {CONSOLE_CONFIG[activeRole]?.shortName?.toUpperCase() || 'MÉTIER'}</span>
             </button>
 
             <button
               type="button"
               onClick={() => setAdminActiveSubTab(prev => ({ ...prev, [activeRole]: 'NAVETTE' }))}
-              className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-black transition-all cursor-pointer ${
+              className={`flex items-center justify-center gap-1.5 sm:gap-2 px-3 sm:px-4 py-2.5 rounded-xl text-xs font-black transition-all cursor-pointer text-center relative ${
                 adminActiveSubTab[activeRole] === 'NAVETTE'
                   ? 'bg-indigo-600 text-white shadow-md font-black'
-                  : 'text-slate-400 hover:text-white hover:bg-slate-800'
+                  : 'text-slate-400 hover:text-white hover:bg-slate-800 bg-slate-950/60'
               }`}
             >
-              <MessageSquare className="w-4 h-4 text-indigo-400" />
+              <MessageSquare className="w-4 h-4 text-indigo-400 shrink-0" />
               <span>NAVETTE D'ÉCHANGE</span>
               {unreadInfoRequestsForActiveRole > 0 && (
-                <span className="bg-rose-500 text-white text-[10px] font-black px-2 py-0.5 rounded-full animate-pulse shadow-sm">
-                  {unreadInfoRequestsForActiveRole} non lue{unreadInfoRequestsForActiveRole > 1 ? 's' : ''}
+                <span className="bg-rose-500 text-white text-[10px] font-black px-1.5 py-0.5 rounded-full animate-pulse shadow-sm shrink-0">
+                  {unreadInfoRequestsForActiveRole}
                 </span>
               )}
             </button>
           </div>
 
-          <span className="text-[11px] text-slate-400 font-bold px-3 py-1 bg-slate-950 rounded-xl border border-slate-800">
+          <span className="hidden sm:inline-block text-[11px] text-slate-400 font-bold px-3 py-1 bg-slate-950 rounded-xl border border-slate-800 self-center">
             {adminActiveSubTab[activeRole] === 'NAVETTE'
               ? "📨 Navette d'Échange Continue • Temps Réel"
               : '💼 Espace Métier Opérationnel'}
@@ -5433,10 +5424,12 @@ export const AdminPortal: React.FC = () => {
       {/* AFFICHAGE DU MODULE NAVETTE OU DES CONSOLES MÉTIERS */}
       {/* ========================================================= */}
       {isRoleEligibleForInfoModule(activeRole) && adminActiveSubTab[activeRole] === 'NAVETTE' ? (
-        <InfoRequestsModule
-          currentRole={activeRole}
-          senderNameOverride={CONSOLE_CONFIG[activeRole]?.shortName}
-        />
+        <div className="w-full min-w-0 flex-1 overflow-y-auto">
+          <InfoRequestsModule
+            currentRole={activeRole}
+            senderNameOverride={CONSOLE_CONFIG[activeRole]?.shortName}
+          />
+        </div>
       ) : (
         <>
           {/* ========================================================= */}

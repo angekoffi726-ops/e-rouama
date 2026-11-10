@@ -943,9 +943,9 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
       {/* 2. LISTE DES FILS D'ÉCHANGE (RÉCEPTION OU ENVOYÉES) */}
       {/* ========================================================= */}
       {activeView !== 'COMPOSE' && (
-        <div className="space-y-4">
+        <div className="space-y-4 w-full min-w-0 flex-1 overflow-y-auto">
           {/* Barre de filtres et recherche */}
-          <div className="bg-slate-900 border border-slate-800 p-4 rounded-2xl flex flex-col md:flex-row items-center justify-between gap-3 shadow-md">
+          <div className="bg-slate-900 border border-slate-800 p-3 sm:p-4 rounded-2xl flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3 shadow-md w-full min-w-0">
             <div className="flex items-center gap-2 w-full md:w-auto">
               <div className="relative flex-1 md:w-72">
                 <Search className="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
@@ -968,7 +968,7 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
               </div>
             </div>
 
-            <div className="flex items-center gap-1.5 w-full md:w-auto overflow-x-auto pb-1 md:pb-0">
+            <div className="flex items-center gap-1.5 w-full md:w-auto overflow-x-auto pb-1 md:pb-0 touch-pan-x no-scrollbar">
               <span className="text-[10px] font-bold text-slate-500 uppercase mr-1 flex items-center gap-1 shrink-0">
                 <Filter className="w-3 h-3" />
                 <span>Statut :</span>
@@ -1038,7 +1038,7 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
 
           {/* Aucun élément */}
           {displayedRequests.length === 0 ? (
-            <div className="bg-slate-900 border border-slate-800 rounded-3xl p-10 text-center space-y-3">
+            <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 sm:p-10 text-center space-y-3 w-full min-w-0">
               <div className="w-12 h-12 mx-auto rounded-2xl bg-slate-800/80 border border-slate-700 flex items-center justify-center text-slate-400">
                 <Inbox className="w-6 h-6" />
               </div>
@@ -1064,7 +1064,7 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
               )}
             </div>
           ) : (
-            <div className="space-y-4">
+            <div className="space-y-4 w-full min-w-0 flex-1 overflow-y-auto">
               {displayedRequests.map(req => {
                 const isReceived = isDeptMatch(req.recipientRole, normalizedCurrentDeptKey) ||
                                    isDeptMatch(req.recipientRoleLabel, normalizedCurrentDeptKey);

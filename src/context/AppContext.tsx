@@ -1328,9 +1328,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     // Chargeur Gbairai (News / Annonces)
     const loadGbairai = async () => {
       try {
-        const newsSnap = await getDocs(collection(db, 'news'));
-        const loaded: NewsItem[] = [];
-        newsSnap.forEach((d) => {
+        const [newsSnap, annSnap] = await Promise.allSettled([
+          getDocs(collection(db, 'news')),
+          getDocs(collection(db, 'announcements')),
+        ]);
+        const map = new Map<string, NewsItem>();
+        const processDoc = (d: any) => {
           const item = { id: d.id, ...(d.data() as any) };
           if (
             item.deleted === true ||
@@ -1343,8 +1346,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           ) {
             return;
           }
-          loaded.push(item);
-        });
+          map.set(d.id, item);
+        };
+        if (newsSnap.status === 'fulfilled') {
+          newsSnap.value.forEach(processDoc);
+        }
+        if (annSnap.status === 'fulfilled') {
+          annSnap.value.forEach(processDoc);
+        }
+        const loaded = Array.from(map.values());
         if (loaded.length > 0) {
           loaded.sort((a, b) => b.id.localeCompare(a.id));
           setNewsItems(loaded);
@@ -1358,9 +1368,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
 
     // Cache partagé en mémoire pour consolider les documents de navette (info_requests + navettes)
-    const navetteDocsMap = new Map<string, InfoRequest>();
+    const infoRequestsMap = new Map<string, InfoRequest>();
+    const navettesMap = new Map<string, InfoRequest>();
     const updateNavetteState = () => {
-      const loaded = Array.from(navetteDocsMap.values());
+      const combined = new Map<string, InfoRequest>();
+      navettesMap.forEach((v, k) => combined.set(k, v));
+      infoRequestsMap.forEach((v, k) => combined.set(k, v));
+      const loaded = Array.from(combined.values());
       // Tri purement côté client par createdAt décroissant sans nécessiter d'index composite Firestore
       loaded.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
       setInfoRequests(loaded);
@@ -1374,10 +1388,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           getDocs(collection(db, 'navettes')),
         ]);
         if (infoReqsSnap.status === 'fulfilled') {
-          infoReqsSnap.value.forEach((d) => navetteDocsMap.set(d.id, { id: d.id, ...(d.data() as any) }));
+          infoReqsSnap.value.forEach((d) => infoRequestsMap.set(d.id, { id: d.id, ...(d.data() as any) }));
         }
         if (navettesSnap.status === 'fulfilled') {
-          navettesSnap.value.forEach((d) => navetteDocsMap.set(d.id, { id: d.id, ...(d.data() as any) }));
+          navettesSnap.value.forEach((d) => navettesMap.set(d.id, { id: d.id, ...(d.data() as any) }));
         }
         updateNavetteState();
       } catch (err) {
@@ -1732,11 +1746,24 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     loadOtherCollections();
 
     // ÉCOUTEURS TEMPS RÉEL POUR GBAIRAI ET NAVETTE D'ÉCHANGE
-    // Permet au Chargé au Suivi (SDP) de voir les lectures Gbairai en temps réel
-    // et garantit que les messages de la Navette ne sont jamais perdus
-    const unsubGbairai = onSnapshot(collection(db, 'news'), (snapshot) => {
-      const loaded: NewsItem[] = [];
-      snapshot.forEach((d) => {
+    // Permet au Chargé au Suivi (SDP), aux administrateurs et aux membres de voir les messages et lectures en temps réel
+    const newsDocsMap = new Map<string, NewsItem>();
+    const announcementsDocsMap = new Map<string, NewsItem>();
+    const updateGbairaiState = () => {
+      const combined = new Map<string, NewsItem>();
+      announcementsDocsMap.forEach((v, k) => combined.set(k, v));
+      newsDocsMap.forEach((v, k) => combined.set(k, v));
+      const loaded = Array.from(combined.values());
+      if (loaded.length > 0) {
+        loaded.sort((a, b) => (b.id || '').localeCompare(a.id || ''));
+        setNewsItems(loaded);
+        setReligiousEvents(prev => reconcileHistoricalSpiritualEvents(prev, loaded));
+      }
+    };
+
+    const handleGbairaiSnapshot = (snapshot: any, targetMap: Map<string, NewsItem>) => {
+      targetMap.clear();
+      snapshot.forEach((d: any) => {
         const item = { id: d.id, ...(d.data() as any) };
         if (
           item.deleted === true ||
@@ -1749,21 +1776,28 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         ) {
           return;
         }
-        loaded.push(item);
+        targetMap.set(d.id, item);
       });
-      if (loaded.length > 0) {
-        loaded.sort((a, b) => b.id.localeCompare(a.id));
-        setNewsItems(loaded);
-        setReligiousEvents(prev => reconcileHistoricalSpiritualEvents(prev, loaded));
-      }
+      updateGbairaiState();
+    };
+
+    const unsubGbairaiNews = onSnapshot(collection(db, 'news'), (snapshot) => {
+      handleGbairaiSnapshot(snapshot, newsDocsMap);
     }, (err) => {
-      console.warn('Erreur écouteur temps réel Gbairai:', err);
+      console.warn('Erreur écouteur temps réel news Gbairai:', err);
+    });
+
+    const unsubGbairaiAnnouncements = onSnapshot(collection(db, 'announcements'), (snapshot) => {
+      handleGbairaiSnapshot(snapshot, announcementsDocsMap);
+    }, (err) => {
+      console.warn('Erreur écouteur temps réel announcements Gbairai:', err);
     });
 
     // Écouteur temps réel pour les navettes et demandes d'information (écoute simultanée et consolidée de info_requests et navettes)
     const unsubInfoRequests = onSnapshot(collection(db, 'info_requests'), (snapshot) => {
+      infoRequestsMap.clear();
       snapshot.forEach((d) => {
-        navetteDocsMap.set(d.id, { id: d.id, ...(d.data() as any) });
+        infoRequestsMap.set(d.id, { id: d.id, ...(d.data() as any) });
       });
       updateNavetteState();
     }, (err) => {
@@ -1771,8 +1805,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
 
     const unsubNavettesCol = onSnapshot(collection(db, 'navettes'), (snapshot) => {
+      navettesMap.clear();
       snapshot.forEach((d) => {
-        navetteDocsMap.set(d.id, { id: d.id, ...(d.data() as any) });
+        navettesMap.set(d.id, { id: d.id, ...(d.data() as any) });
       });
       updateNavetteState();
     }, (err) => {
@@ -1835,7 +1870,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     navetteLoaderRef.current = loadNavette;
 
     return () => {
-      if (unsubGbairai) unsubGbairai();
+      if (unsubGbairaiNews) unsubGbairaiNews();
+      if (unsubGbairaiAnnouncements) unsubGbairaiAnnouncements();
       if (unsubInfoRequests) unsubInfoRequests();
       if (unsubNavettesCol) unsubNavettesCol();
       if (unsubAdminLogs) unsubAdminLogs();

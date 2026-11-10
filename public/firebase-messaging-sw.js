@@ -215,8 +215,8 @@ self.addEventListener('message', async (event) => {
   }
 });
 
-// Versioning et stratégie de cache PWA (2026.11.09.1)
-const APP_VERSION = '2026.11.09.1';
+// Versioning et stratégie de cache PWA (2026.11.10.1)
+const APP_VERSION = '2026.11.10.1';
 const CACHE_NAME = 'erouama-cache-v-' + APP_VERSION;
 
 // Installation : forcer le nouveau Service Worker à devenir actif immédiatement

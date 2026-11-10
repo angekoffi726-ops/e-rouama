@@ -189,7 +189,7 @@ function AuthenticatedApp({ currentUser, rawMember }: AuthenticatedAppProps) {
         </header>
 
         {/* Admin Main Body */}
-        <main className="flex-1 p-4 sm:p-6 lg:p-8 max-w-7xl w-full mx-auto">
+        <main className="flex-1 p-3 sm:p-6 lg:p-8 max-w-7xl w-full mx-auto min-w-0 flex flex-col">
           {/* Bloc / Bannière verte d'installation PWA si l'app n'est pas encore installée */}
           <InstallPwaBanner />
           <AdminPortal />
@@ -487,7 +487,7 @@ function AuthenticatedApp({ currentUser, rawMember }: AuthenticatedAppProps) {
       </nav>
 
       {/* Tab Content */}
-      <main className="flex-1 p-4 sm:p-6 lg:p-8 max-w-7xl w-full mx-auto">
+      <main className="flex-1 p-3 sm:p-6 lg:p-8 max-w-7xl w-full mx-auto min-w-0 flex flex-col">
         {/* Bloc / Bannière verte d'installation PWA si l'app n'est pas encore installée */}
         <InstallPwaBanner />
 
