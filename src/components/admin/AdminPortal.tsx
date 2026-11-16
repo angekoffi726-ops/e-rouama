@@ -14,7 +14,7 @@ import { computeBilanData, extractBilanPeriodParams } from '../../utils/bilanCal
 import { RbacWarningBanner } from './RbacWarningBanner';
 import { CerveauMembersCredentialsViewer } from './CerveauMembersCredentialsViewer';
 import { SuiviProgrammeConsole } from './SuiviProgrammeConsole';
-import { InfoRequestsModule, isRoleEligibleForInfoModule, normalizeToEligibleDeptKey, isDeptMatch, OFFICIAL_WHATSAPP_GROUP_URL, buildWhatsAppShareUrl } from './InfoRequestsModule';
+import { InfoRequestsModule, isRoleEligibleForInfoModule, normalizeToEligibleDeptKey, isDeptMatch, OFFICIAL_WHATSAPP_GROUP_URL, buildWhatsAppShareUrl, copyToClipboardSafely } from './InfoRequestsModule';
 import { EmailRecipientSelector } from '../common/EmailRecipientSelector';
 import {
   Shield,
@@ -2124,15 +2124,11 @@ export const AdminPortal: React.FC = () => {
   const [deletingAnnouncementId, setDeletingAnnouncementId] = useState<string | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
-  // Helpers de partage direct WhatsApp pour la Commission Communication (BIC)
+  // Copie automatique dans le presse-papier et ouverture directe du groupe WhatsApp E-ROUAMA
   const handleComWhatsAppShareFeedback = (text: string, label?: string) => {
-    try {
-      if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
-        navigator.clipboard.writeText(text).catch(() => {});
-      }
-    } catch {}
+    copyToClipboardSafely(text);
     setToastMessage(
-      `📲 WhatsApp ouvert avec le message pré-rempli${label ? ` (« ${label} »)` : ''} et copié dans le presse-papier — envoyez-le dans le groupe E-ROUAMA !`
+      `Message copié ! Ouverture du groupe WhatsApp...${label ? ` (« ${label} » prêt à coller)` : ''}`
     );
     setTimeout(() => setToastMessage(null), 5000);
   };

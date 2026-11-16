@@ -31,11 +31,34 @@ import { AdminRole, InfoRequest, InfoRequestMessage } from '../../types';
 import { getDepartmentContact } from './SuiviProgrammeConsole';
 
 // Lien officiel du groupe WhatsApp de l'association E-ROUAMA
-export const OFFICIAL_WHATSAPP_GROUP_URL = 'https://chat.whatsapp.com/DxARjVEzV9xJgpxQOIwMGm?s=cl&p=a&iam=2';
+export const OFFICIAL_WHATSAPP_GROUP_URL = 'https://chat.whatsapp.com/DxARjVEzV9xJgpxQOIwMGm';
 
-// Génère le lien API WhatsApp avec texte pré-rempli et encodé pour partage en 1 clic
-export const buildWhatsAppShareUrl = (text: string): string => {
-  return `https://api.whatsapp.com/send?text=${encodeURIComponent(text)}`;
+// Copie fiable dans le presse-papier (API Clipboard + repli compatible mobile WebView)
+export const copyToClipboardSafely = (text: string): void => {
+  try {
+    if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(text).catch(() => {});
+    }
+    if (typeof document !== 'undefined') {
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      textarea.setAttribute('readonly', '');
+      textarea.style.position = 'fixed';
+      textarea.style.top = '-9999px';
+      textarea.style.left = '-9999px';
+      document.body.appendChild(textarea);
+      textarea.select();
+      try {
+        document.execCommand('copy');
+      } catch {}
+      document.body.removeChild(textarea);
+    }
+  } catch {}
+};
+
+// Redirige directement vers le groupe WhatsApp officiel de l'association
+export const buildWhatsAppShareUrl = (_text?: string): string => {
+  return OFFICIAL_WHATSAPP_GROUP_URL;
 };
 
 // =========================================================================
@@ -665,16 +688,12 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
     ].join('\n');
   };
 
-  // Copie le texte en parallèle de l'ouverture de WhatsApp pour faciliter le collage dans le groupe
+  // Copie automatique dans le presse-papier et notification toast avant ouverture directe du groupe
   const handleShareWhatsAppFeedback = (text: string, subjectTitle?: string) => {
-    try {
-      if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
-        navigator.clipboard.writeText(text).catch(() => {});
-      }
-    } catch {}
+    copyToClipboardSafely(text);
     setFeedbackToast({
       type: 'success',
-      message: `📲 WhatsApp ouvert avec le texte pré-rempli${subjectTitle ? ` (« ${subjectTitle} »)` : ''} et copié dans le presse-papier — sélectionnez le groupe E-ROUAMA pour envoyer !`,
+      message: `Message copié ! Ouverture du groupe WhatsApp...${subjectTitle ? ` (« ${subjectTitle} » prêt à coller)` : ''}`,
     });
   };
 
@@ -1303,7 +1322,7 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
                                 handleShareWhatsAppFeedback(shareText, req.subject);
                               }}
                               className="inline-flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-black px-3 py-1.5 rounded-xl text-xs shadow-md transition-all active:scale-95"
-                              title="Ouvrir WhatsApp avec ce message pré-rempli pour le groupe de l'association"
+                              title="Copier le message et ouvrir directement le groupe WhatsApp officiel"
                             >
                               <span>📲 Partager dans le groupe WhatsApp</span>
                               <ExternalLink className="w-3 h-3 text-emerald-100" />
@@ -1412,21 +1431,10 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
                                           rel="noopener noreferrer"
                                           onClick={() => handleShareWhatsAppFeedback(singleMsgText, req.subject)}
                                           className="inline-flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-black px-3 py-1.5 rounded-xl text-[11px] shadow transition-all active:scale-95"
-                                          title="Pré-remplir WhatsApp avec ce message précis pour le groupe E-ROUAMA"
+                                          title="Copier ce message et ouvrir directement le groupe WhatsApp officiel E-ROUAMA"
                                         >
                                           <span>📲 Partager dans le groupe WhatsApp</span>
                                           <ExternalLink className="w-3 h-3 text-emerald-100" />
-                                        </a>
-                                        <a
-                                          href={OFFICIAL_WHATSAPP_GROUP_URL}
-                                          target="_blank"
-                                          rel="noopener noreferrer"
-                                          onClick={() => handleShareWhatsAppFeedback(singleMsgText, req.subject)}
-                                          className="inline-flex items-center gap-1 bg-slate-900 hover:bg-slate-800 text-emerald-400 border border-emerald-500/30 font-bold px-2.5 py-1.5 rounded-xl text-[11px] transition-all"
-                                          title="Copier le texte et ouvrir directement le lien du groupe WhatsApp"
-                                        >
-                                          <span>🔗 Lien du groupe</span>
-                                          <ExternalLink className="w-2.5 h-2.5" />
                                         </a>
                                       </div>
                                     );
