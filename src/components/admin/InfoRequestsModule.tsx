@@ -30,6 +30,14 @@ import { useApp } from '../../context/AppContext';
 import { AdminRole, InfoRequest, InfoRequestMessage } from '../../types';
 import { getDepartmentContact } from './SuiviProgrammeConsole';
 
+// Lien officiel du groupe WhatsApp de l'association E-ROUAMA
+export const OFFICIAL_WHATSAPP_GROUP_URL = 'https://chat.whatsapp.com/DxARjVEzV9xJgpxQOIwMGm?s=cl&p=a&iam=2';
+
+// Génère le lien API WhatsApp avec texte pré-rempli et encodé pour partage en 1 clic
+export const buildWhatsAppShareUrl = (text: string): string => {
+  return `https://api.whatsapp.com/send?text=${encodeURIComponent(text)}`;
+};
+
 // =========================================================================
 // CONFIGURATION STRICTE DES DÉPARTEMENTS ÉLIGIBLES (RBAC STRICT)
 // CERVEAU et SUPER_ADMIN sont STRICTEMENT EXCLUS de cette liste et du module.
@@ -598,6 +606,78 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
     }
   };
 
+  // Identification stricte de la Commission Communication (BIC)
+  const isCommunicationDept = normalizedCurrentDeptKey === 'COMMUNICATION';
+
+  // Formate un message ou fil d'échange Navette prêt à être partagé dans le groupe WhatsApp
+  const formatNavetteWhatsAppText = (req: InfoRequest, singleMsg?: InfoRequestMessage): string => {
+    const formatDate = (iso?: string) =>
+      iso
+        ? new Date(iso).toLocaleDateString('fr-FR', {
+            day: '2-digit',
+            month: 'short',
+            year: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit',
+          })
+        : '';
+
+    if (singleMsg) {
+      const cfg = getEligibleDeptConfig(normalizeToEligibleDeptKey(singleMsg.senderRole));
+      const deptName = cfg?.name || singleMsg.senderRoleLabel || singleMsg.senderRole;
+      return [
+        `📢 *E-ROUAMA — ${req.subject}*`,
+        `🏛️ *De :* ${deptName}${singleMsg.senderName ? ` (${singleMsg.senderName})` : ''}`,
+        singleMsg.createdAt ? `📅 *Date :* ${formatDate(singleMsg.createdAt)}` : '',
+        '',
+        singleMsg.message,
+      ]
+        .filter((line, idx, arr) => line !== '' || (idx > 0 && arr[idx - 1] !== ''))
+        .join('\n');
+    }
+
+    const msgs = getThreadMessages(req);
+    if (msgs.length === 1) {
+      return formatNavetteWhatsAppText(req, msgs[0]);
+    }
+
+    const otherKey =
+      isDeptMatch(req.recipientRole, normalizedCurrentDeptKey) ||
+      isDeptMatch(req.recipientRoleLabel, normalizedCurrentDeptKey)
+        ? req.senderRole
+        : req.recipientRole;
+    const otherCfg = getEligibleDeptConfig(normalizeToEligibleDeptKey(otherKey));
+    const partnerName = otherCfg?.name || req.senderRoleLabel || req.senderRole;
+
+    const formattedMsgs = msgs
+      .map(m => {
+        const cfg = getEligibleDeptConfig(normalizeToEligibleDeptKey(m.senderRole));
+        const label = cfg?.shortName || m.senderRoleLabel || m.senderRole;
+        return `▸ *${label}* (${m.senderName}${m.createdAt ? ` • ${formatDate(m.createdAt)}` : ''}) :\n${m.message}`;
+      })
+      .join('\n\n');
+
+    return [
+      `📢 *E-ROUAMA — ${req.subject}*`,
+      `🏛️ *Échange avec :* ${partnerName}`,
+      '',
+      formattedMsgs,
+    ].join('\n');
+  };
+
+  // Copie le texte en parallèle de l'ouverture de WhatsApp pour faciliter le collage dans le groupe
+  const handleShareWhatsAppFeedback = (text: string, subjectTitle?: string) => {
+    try {
+      if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+        navigator.clipboard.writeText(text).catch(() => {});
+      }
+    } catch {}
+    setFeedbackToast({
+      type: 'success',
+      message: `📲 WhatsApp ouvert avec le texte pré-rempli${subjectTitle ? ` (« ${subjectTitle} »)` : ''} et copié dans le presse-papier — sélectionnez le groupe E-ROUAMA pour envoyer !`,
+    });
+  };
+
   // Suggestions rapides pour l'objet
   const quickSubjectSuggestions = [
     'Précision montant dépense PV du 12 Octobre',
@@ -679,6 +759,24 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
               discussion interactif : répondez à la suite sans verrouillage pour coordonner les résolutions et marquez la
               navette comme clôturée une fois résolue.
             </p>
+
+            {isCommunicationDept && (
+              <div className="pt-1 flex flex-wrap items-center gap-2">
+                <a
+                  href={OFFICIAL_WHATSAPP_GROUP_URL}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-2 bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/40 px-3.5 py-1.5 rounded-xl text-xs font-black transition-all shadow-sm"
+                >
+                  <span>📲</span>
+                  <span>Ouvrir le groupe WhatsApp officiel E-ROUAMA</span>
+                  <ExternalLink className="w-3 h-3 text-emerald-400" />
+                </a>
+                <span className="text-[11px] text-emerald-400/80 font-medium">
+                  Partage direct en 1 clic activé sur chaque message &amp; rapport reçu.
+                </span>
+              </div>
+            )}
           </div>
 
           {/* KPI RÉCAPITULATIFS EN TEMPS RÉEL */}
@@ -1192,7 +1290,26 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
                         </div>
                       </div>
 
-                      <div className="flex items-center gap-2 self-end sm:self-center shrink-0">
+                      <div className="flex flex-wrap items-center justify-end gap-2 self-end sm:self-center shrink-0">
+                        {isCommunicationDept && (() => {
+                          const shareText = formatNavetteWhatsAppText(req);
+                          return (
+                            <a
+                              href={buildWhatsAppShareUrl(shareText)}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              onClick={e => {
+                                e.stopPropagation();
+                                handleShareWhatsAppFeedback(shareText, req.subject);
+                              }}
+                              className="inline-flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-black px-3 py-1.5 rounded-xl text-xs shadow-md transition-all active:scale-95"
+                              title="Ouvrir WhatsApp avec ce message pré-rempli pour le groupe de l'association"
+                            >
+                              <span>📲 Partager dans le groupe WhatsApp</span>
+                              <ExternalLink className="w-3 h-3 text-emerald-100" />
+                            </a>
+                          );
+                        })()}
                         <button
                           type="button"
                           className="text-xs bg-slate-950 hover:bg-slate-800 text-slate-300 px-3 py-1.5 rounded-xl border border-slate-800 flex items-center gap-1"
@@ -1283,6 +1400,37 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
                                   <p className="text-xs sm:text-sm text-slate-200 whitespace-pre-wrap leading-relaxed font-sans break-words overflow-x-auto">
                                     {msg.message}
                                   </p>
+
+                                  {/* Action directe Communication : Partager ce message/rapport sur WhatsApp */}
+                                  {isCommunicationDept && (() => {
+                                    const singleMsgText = formatNavetteWhatsAppText(req, msg);
+                                    return (
+                                      <div className="mt-3 pt-2.5 border-t border-slate-800/60 flex flex-wrap items-center justify-end gap-2">
+                                        <a
+                                          href={buildWhatsAppShareUrl(singleMsgText)}
+                                          target="_blank"
+                                          rel="noopener noreferrer"
+                                          onClick={() => handleShareWhatsAppFeedback(singleMsgText, req.subject)}
+                                          className="inline-flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-black px-3 py-1.5 rounded-xl text-[11px] shadow transition-all active:scale-95"
+                                          title="Pré-remplir WhatsApp avec ce message précis pour le groupe E-ROUAMA"
+                                        >
+                                          <span>📲 Partager dans le groupe WhatsApp</span>
+                                          <ExternalLink className="w-3 h-3 text-emerald-100" />
+                                        </a>
+                                        <a
+                                          href={OFFICIAL_WHATSAPP_GROUP_URL}
+                                          target="_blank"
+                                          rel="noopener noreferrer"
+                                          onClick={() => handleShareWhatsAppFeedback(singleMsgText, req.subject)}
+                                          className="inline-flex items-center gap-1 bg-slate-900 hover:bg-slate-800 text-emerald-400 border border-emerald-500/30 font-bold px-2.5 py-1.5 rounded-xl text-[11px] transition-all"
+                                          title="Copier le texte et ouvrir directement le lien du groupe WhatsApp"
+                                        >
+                                          <span>🔗 Lien du groupe</span>
+                                          <ExternalLink className="w-2.5 h-2.5" />
+                                        </a>
+                                      </div>
+                                    );
+                                  })()}
                                 </div>
                               );
                             })}
@@ -1413,18 +1561,35 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
                         )}
 
                         {/* Actions secondaires et suppression */}
-                        <div className="flex items-center justify-between text-xs text-slate-500 pt-2 border-t border-slate-800/60">
+                        <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500 pt-2 border-t border-slate-800/60">
                           <span className="font-mono text-[10px]">Identifiant Unique : {req.id}</span>
-                          {!isReceived && (
-                            <button
-                              type="button"
-                              onClick={() => deleteInfoRequest(req.id)}
-                              className="text-rose-400 hover:text-rose-300 flex items-center gap-1 p-1 hover:underline"
-                            >
-                              <Trash2 className="w-3 h-3" />
-                              <span>Supprimer cette navette</span>
-                            </button>
-                          )}
+                          <div className="flex flex-wrap items-center gap-3">
+                            {isCommunicationDept && (() => {
+                              const threadText = formatNavetteWhatsAppText(req);
+                              return (
+                                <a
+                                  href={buildWhatsAppShareUrl(threadText)}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  onClick={() => handleShareWhatsAppFeedback(threadText, req.subject)}
+                                  className="inline-flex items-center gap-1.5 bg-emerald-600/20 hover:bg-emerald-600 text-emerald-300 hover:text-white border border-emerald-500/40 font-black px-3 py-1.5 rounded-xl text-[11px] transition-all"
+                                >
+                                  <span>📲 Partager dans le groupe WhatsApp</span>
+                                  <ExternalLink className="w-3 h-3" />
+                                </a>
+                              );
+                            })()}
+                            {!isReceived && (
+                              <button
+                                type="button"
+                                onClick={() => deleteInfoRequest(req.id)}
+                                className="text-rose-400 hover:text-rose-300 flex items-center gap-1 p-1 hover:underline"
+                              >
+                                <Trash2 className="w-3 h-3" />
+                                <span>Supprimer cette navette</span>
+                              </button>
+                            )}
+                          </div>
                         </div>
                       </div>
                     )}

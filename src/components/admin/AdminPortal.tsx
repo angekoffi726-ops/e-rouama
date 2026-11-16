@@ -14,7 +14,7 @@ import { computeBilanData, extractBilanPeriodParams } from '../../utils/bilanCal
 import { RbacWarningBanner } from './RbacWarningBanner';
 import { CerveauMembersCredentialsViewer } from './CerveauMembersCredentialsViewer';
 import { SuiviProgrammeConsole } from './SuiviProgrammeConsole';
-import { InfoRequestsModule, isRoleEligibleForInfoModule, normalizeToEligibleDeptKey, isDeptMatch } from './InfoRequestsModule';
+import { InfoRequestsModule, isRoleEligibleForInfoModule, normalizeToEligibleDeptKey, isDeptMatch, OFFICIAL_WHATSAPP_GROUP_URL, buildWhatsAppShareUrl } from './InfoRequestsModule';
 import { EmailRecipientSelector } from '../common/EmailRecipientSelector';
 import {
   Shield,
@@ -2123,6 +2123,103 @@ export const AdminPortal: React.FC = () => {
   const [announcements, setAnnouncements] = useState<NewsItem[]>([]);
   const [deletingAnnouncementId, setDeletingAnnouncementId] = useState<string | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  // Helpers de partage direct WhatsApp pour la Commission Communication (BIC)
+  const handleComWhatsAppShareFeedback = (text: string, label?: string) => {
+    try {
+      if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+        navigator.clipboard.writeText(text).catch(() => {});
+      }
+    } catch {}
+    setToastMessage(
+      `📲 WhatsApp ouvert avec le message pré-rempli${label ? ` (« ${label} »)` : ''} et copié dans le presse-papier — envoyez-le dans le groupe E-ROUAMA !`
+    );
+    setTimeout(() => setToastMessage(null), 5000);
+  };
+
+  const formatBilanForWhatsApp = (b: FinancialBilan): string => {
+    const params = extractBilanPeriodParams(b);
+    const computed = computeBilanData({
+      declarations: payments,
+      withdrawals,
+      periodMode: params.periodMode,
+      startDate: params.startDate,
+      endDate: params.endDate,
+    });
+    const totalInVal = computed.totalIn ?? b.totalIn ?? 0;
+    const totalOutVal = computed.totalOut ?? b.totalOut ?? 0;
+    const totalSoldeVal = computed.totalSolde ?? b.totalBalance ?? (totalInVal - totalOutVal);
+    return [
+      `💰 *BILAN FINANCIER OFFICIEL E-ROUAMA*`,
+      `📌 *Titre :* ${b.title}`,
+      `📅 *Période :* ${b.period}`,
+      `📈 *Entrées Totales :* ${totalInVal.toLocaleString('fr-FR')} F CFA`,
+      `📉 *Sorties Totales :* ${totalOutVal.toLocaleString('fr-FR')} F CFA`,
+      `🏦 *Solde Net :* ${totalSoldeVal.toLocaleString('fr-FR')} F CFA`,
+    ].join('\n');
+  };
+
+  const formatProjectForWhatsApp = (p: AgrProject): string => {
+    return [
+      `💼 *NOTE DE PROJET AGR — E-ROUAMA*`,
+      `📌 *Projet :* ${p.title}`,
+      `🏷️ *Catégorie :* ${p.category}`,
+      `💰 *Budget Estimé :* ${(p.estimatedCost ?? 0).toLocaleString('fr-FR')} F CFA`,
+      `💳 *Contribution / Membre :* ${p.requiredAmountPerMember ? `${p.requiredAmountPerMember.toLocaleString('fr-FR')} F CFA` : 'Libre'}`,
+      p.dateRealisation || p.eventDate ? `📅 *Réalisation :* ${p.dateRealisation || p.eventDate}` : '',
+      p.description ? `\n${p.description}` : '',
+    ]
+      .filter((line, idx, arr) => line !== '' || (idx > 0 && arr[idx - 1] !== ''))
+      .join('\n');
+  };
+
+  const formatActivityForWhatsApp = (a: EventActivity): string => {
+    return [
+      `🎪 *PROGRAMME D'ÉVÉNEMENT — E-ROUAMA*`,
+      `📌 *Événement :* ${a.title}`,
+      `📅 *Date :* ${a.eventDate}`,
+      a.location ? `📍 *Lieu :* ${a.location}` : '',
+      a.budget ? `💰 *Budget Prévisionnel :* ${a.budget.toLocaleString('fr-FR')} F CFA` : '',
+      a.description ? `\n${a.description}` : '',
+      a.program ? `\n📋 *Programme :*\n${a.program}` : '',
+    ]
+      .filter((line, idx, arr) => line !== '' || (idx > 0 && arr[idx - 1] !== ''))
+      .join('\n');
+  };
+
+  const formatReligiousEventForWhatsApp = (e: ReligiousEvent): string => {
+    return [
+      `🕊️ *ÉVÉNEMENT SPIRITUEL — E-ROUAMA*`,
+      `📌 *Intitulé :* ${e.title}`,
+      `📅 *Date :* ${e.eventDate}${e.eventTime ? ` à ${e.eventTime}` : ''}`,
+      e.location ? `📍 *Lieu :* ${e.location}` : '',
+      e.theme ? `✨ *Thème :* "${e.theme}"` : '',
+    ]
+      .filter((line, idx, arr) => line !== '' || (idx > 0 && arr[idx - 1] !== ''))
+      .join('\n');
+  };
+
+  const formatPVForWhatsApp = (p: SecretaryPV): string => {
+    return [
+      `📝 *PROCÈS-VERBAL DE RÉUNION — E-ROUAMA*`,
+      `📌 *Titre :* ${p.title}${p.refNumber ? ` (${p.refNumber})` : ''}`,
+      `📅 *Séance du :* ${p.meetingDate}${p.startTime || p.endTime ? ` (${p.startTime || '--:--'} à ${p.endTime || '--:--'})` : ''}`,
+      p.attendeesCount !== undefined && p.attendeesCount !== null ? `👥 *Effectif :* ${p.attendeesCount} participants` : '',
+      p.content ? `\n${p.content}` : '',
+    ]
+      .filter((line, idx, arr) => line !== '' || (idx > 0 && arr[idx - 1] !== ''))
+      .join('\n');
+  };
+
+  const formatNewsForWhatsApp = (title: string, content: string, category?: string): string => {
+    return [
+      `📢 *COMMUNIQUÉ OFFICIEL E-ROUAMA*${category ? ` [${category}]` : ''}`,
+      title ? `*${title}*` : '',
+      content ? `\n${content}` : '',
+    ]
+      .filter((line, idx, arr) => line !== '' || (idx > 0 && arr[idx - 1] !== ''))
+      .join('\n');
+  };
   const [emailModalData, setEmailModalData] = useState<{
     title: string;
     content: string;
@@ -8778,14 +8875,26 @@ export const AdminPortal: React.FC = () => {
 
           {/* Réception des Notes d'Information et Fichiers Officiels (Du Secrétariat Général) & Actions BIC */}
           <div className="bg-slate-900 rounded-[2.5rem] p-6 sm:p-8 border border-slate-800 shadow-xl space-y-8">
-            <div className="border-b border-slate-800 pb-4">
-              <h2 className="text-xl font-black text-white flex items-center gap-2">
-                <Eye className="w-5 h-5 text-amber-500" />
-                <span>📢 Réception des Notes d'Information & Fichiers Officiels (Du Secrétariat Général)</span>
-              </h2>
-              <p className="text-xs text-slate-400 mt-1">
-                La BIC accuse réception des dossiers validés et visés par le Payor, ce qui autorise le Secrétariat à archiver officiellement, et diffuse les annonces auprès des membres.
-              </p>
+            <div className="border-b border-slate-800 pb-4 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+              <div>
+                <h2 className="text-xl font-black text-white flex items-center gap-2">
+                  <Eye className="w-5 h-5 text-amber-500" />
+                  <span>📢 Réception des Notes d'Information & Fichiers Officiels (Du Secrétariat Général)</span>
+                </h2>
+                <p className="text-xs text-slate-400 mt-1">
+                  La BIC accuse réception des dossiers validés et visés par le Payor, ce qui autorise le Secrétariat à archiver officiellement, et diffuse les annonces auprès des membres.
+                </p>
+              </div>
+              <a
+                href={OFFICIAL_WHATSAPP_GROUP_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-2 bg-emerald-600/20 hover:bg-emerald-600 text-emerald-300 hover:text-white border border-emerald-500/40 px-4 py-2.5 rounded-2xl text-xs font-black transition-all shadow-md shrink-0 self-start lg:self-center"
+                title="Accéder directement au groupe WhatsApp officiel de l'association E-ROUAMA"
+              >
+                <span>📲 Groupe WhatsApp Officiel E-ROUAMA</span>
+                <ExternalLink className="w-3.5 h-3.5" />
+              </a>
             </div>
 
             {/* 1. BILANS FINANCIERS */}
@@ -8880,6 +8989,24 @@ export const AdminPortal: React.FC = () => {
                             <Send className="w-3.5 h-3.5" />
                             <span>{b.publishedByCom ? '📢 Ré-Annoncer' : '📢 Diffuser aux Membres'}</span>
                           </button>
+
+                          {/* 4. Partager dans le groupe WhatsApp */}
+                          {(() => {
+                            const waText = formatBilanForWhatsApp(b);
+                            return (
+                              <a
+                                href={buildWhatsAppShareUrl(waText)}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                onClick={() => handleComWhatsAppShareFeedback(waText, b.title)}
+                                className="bg-emerald-700/80 hover:bg-emerald-600 text-white border border-emerald-500/40 font-black px-3 py-2 rounded-xl flex items-center gap-1.5 shadow-lg active:scale-95 transition-all text-xs"
+                                title="Ouvrir WhatsApp avec ce bilan pré-rempli pour le groupe officiel"
+                              >
+                                <span>📲 Partager dans le groupe WhatsApp</span>
+                                <ExternalLink className="w-3 h-3 text-emerald-100" />
+                              </a>
+                            );
+                          })()}
                         </div>
                       </div>
                     ))}
@@ -8970,6 +9097,24 @@ export const AdminPortal: React.FC = () => {
                             <Send className="w-3.5 h-3.5" />
                             <span>📢 Diffuser dans Gagne-Pain</span>
                           </button>
+
+                          {/* 4. Partager dans le groupe WhatsApp */}
+                          {(() => {
+                            const waText = formatProjectForWhatsApp(p);
+                            return (
+                              <a
+                                href={buildWhatsAppShareUrl(waText)}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                onClick={() => handleComWhatsAppShareFeedback(waText, p.title)}
+                                className="bg-emerald-700/80 hover:bg-emerald-600 text-white border border-emerald-500/40 font-black px-3 py-2 rounded-xl flex items-center gap-1.5 shadow-lg active:scale-95 transition-all text-xs"
+                                title="Ouvrir WhatsApp avec cette note de projet pré-remplie pour le groupe officiel"
+                              >
+                                <span>📲 Partager dans le groupe WhatsApp</span>
+                                <ExternalLink className="w-3 h-3 text-emerald-100" />
+                              </a>
+                            );
+                          })()}
                         </div>
                       </div>
                     ))}
@@ -9060,6 +9205,24 @@ export const AdminPortal: React.FC = () => {
                             <Send className="w-3.5 h-3.5" />
                             <span>📢 Diffuser dans SHOW</span>
                           </button>
+
+                          {/* 4. Partager dans le groupe WhatsApp */}
+                          {(() => {
+                            const waText = formatActivityForWhatsApp(a);
+                            return (
+                              <a
+                                href={buildWhatsAppShareUrl(waText)}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                onClick={() => handleComWhatsAppShareFeedback(waText, a.title)}
+                                className="bg-emerald-700/80 hover:bg-emerald-600 text-white border border-emerald-500/40 font-black px-3 py-2 rounded-xl flex items-center gap-1.5 shadow-lg active:scale-95 transition-all text-xs"
+                                title="Ouvrir WhatsApp avec ce programme d'événement pré-rempli pour le groupe officiel"
+                              >
+                                <span>📲 Partager dans le groupe WhatsApp</span>
+                                <ExternalLink className="w-3 h-3 text-emerald-100" />
+                              </a>
+                            );
+                          })()}
                         </div>
                       </div>
                     ))}
@@ -9150,6 +9313,24 @@ export const AdminPortal: React.FC = () => {
                             <Send className="w-3.5 h-3.5" />
                             <span>📢 Diffuser sur Gbairai</span>
                           </button>
+
+                          {/* 4. Partager dans le groupe WhatsApp */}
+                          {(() => {
+                            const waText = formatReligiousEventForWhatsApp(e);
+                            return (
+                              <a
+                                href={buildWhatsAppShareUrl(waText)}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                onClick={() => handleComWhatsAppShareFeedback(waText, e.title)}
+                                className="bg-emerald-700/80 hover:bg-emerald-600 text-white border border-emerald-500/40 font-black px-3 py-2 rounded-xl flex items-center gap-1.5 shadow-lg active:scale-95 transition-all text-xs"
+                                title="Ouvrir WhatsApp avec cette note spirituelle pré-remplie pour le groupe officiel"
+                              >
+                                <span>📲 Partager dans le groupe WhatsApp</span>
+                                <ExternalLink className="w-3 h-3 text-emerald-100" />
+                              </a>
+                            );
+                          })()}
                         </div>
                       </div>
                     ))}
@@ -9253,6 +9434,24 @@ export const AdminPortal: React.FC = () => {
                             <Send className="w-3.5 h-3.5" />
                             <span>📢 Diffuser dans le Fil (Gbairai)</span>
                           </button>
+
+                          {/* 4. Partager dans le groupe WhatsApp */}
+                          {(() => {
+                            const waText = formatPVForWhatsApp(p);
+                            return (
+                              <a
+                                href={buildWhatsAppShareUrl(waText)}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                onClick={() => handleComWhatsAppShareFeedback(waText, p.title)}
+                                className="bg-emerald-700/80 hover:bg-emerald-600 text-white border border-emerald-500/40 font-black px-3 py-2 rounded-xl flex items-center gap-1.5 shadow-lg active:scale-95 transition-all text-xs"
+                                title="Ouvrir WhatsApp avec ce PV pré-rempli pour le groupe officiel"
+                              >
+                                <span>📲 Partager dans le groupe WhatsApp</span>
+                                <ExternalLink className="w-3 h-3 text-emerald-100" />
+                              </a>
+                            );
+                          })()}
                         </div>
                       </div>
                     ))}
@@ -9427,38 +9626,57 @@ export const AdminPortal: React.FC = () => {
                 </div>
               )}
 
-              {/* DÉCLENCHEUR UNIQUE : BOUTON SUBMIT DU FORMULAIRE SANS ONCLICK REDONDANT */}
-              <button
-                type="submit"
-                disabled={isSendingEmail}
-                className="bg-[#E67E22] hover:bg-[#D35400] text-white font-black py-3.5 px-6 rounded-2xl shadow-lg text-sm flex items-center gap-2 transition-all active:scale-95 disabled:opacity-50 cursor-pointer disabled:cursor-not-allowed"
-              >
-                {isSendingEmail ? (
-                  <>
-                    <Loader2 className="w-4 h-4 animate-spin text-white" />
-                    <span>
-                      {sendingProgress && sendingProgress.total === 1
-                        ? `Transmission EmailJS en cours vers ${sendingProgress.email || 'le destinataire'}...`
-                        : `Envoi séquentiel EmailJS ${sendingProgress ? `(${sendingProgress.current}/${sendingProgress.total})` : 'en cours'} (pause 1s anti-limite)...`}
-                    </span>
-                  </>
-                ) : (
-                  <>
-                    <Send className="w-4 h-4" />
-                    <span>
-                      {comDispatchChannel === 'MAIL'
-                        ? comRecipientMode === 'SPECIFIC'
-                          ? 'Envoyer le Courriel au Membre Sélectionné (EmailJS)'
-                          : 'Envoyer le Communiqué par Mail à Tous (EmailJS)'
-                        : comDispatchChannel === 'GENERAL'
-                        ? comRecipientMode === 'SPECIFIC'
-                          ? "Diffuser dans l'App & Envoyer par Mail au Membre (EmailJS)"
-                          : "Diffuser dans l'App & Envoyer par Mail à Tous (EmailJS)"
-                        : "Diffuser l'Annonce dans le Fil (App)"}
-                    </span>
-                  </>
-                )}
-              </button>
+              {/* DÉCLENCHEUR UNIQUE : BOUTON SUBMIT DU FORMULAIRE SANS ONCLICK REDONDANT + PARTAGE WHATSAPP */}
+              <div className="flex flex-wrap items-center gap-3">
+                <button
+                  type="submit"
+                  disabled={isSendingEmail}
+                  className="bg-[#E67E22] hover:bg-[#D35400] text-white font-black py-3.5 px-6 rounded-2xl shadow-lg text-sm flex items-center gap-2 transition-all active:scale-95 disabled:opacity-50 cursor-pointer disabled:cursor-not-allowed"
+                >
+                  {isSendingEmail ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin text-white" />
+                      <span>
+                        {sendingProgress && sendingProgress.total === 1
+                          ? `Transmission EmailJS en cours vers ${sendingProgress.email || 'le destinataire'}...`
+                          : `Envoi séquentiel EmailJS ${sendingProgress ? `(${sendingProgress.current}/${sendingProgress.total})` : 'en cours'} (pause 1s anti-limite)...`}
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      <Send className="w-4 h-4" />
+                      <span>
+                        {comDispatchChannel === 'MAIL'
+                          ? comRecipientMode === 'SPECIFIC'
+                            ? 'Envoyer le Courriel au Membre Sélectionné (EmailJS)'
+                            : 'Envoyer le Communiqué par Mail à Tous (EmailJS)'
+                          : comDispatchChannel === 'GENERAL'
+                          ? comRecipientMode === 'SPECIFIC'
+                            ? "Diffuser dans l'App & Envoyer par Mail au Membre (EmailJS)"
+                            : "Diffuser dans l'App & Envoyer par Mail à Tous (EmailJS)"
+                          : "Diffuser l'Annonce dans le Fil (App)"}
+                      </span>
+                    </>
+                  )}
+                </button>
+
+                {(newsTitle.trim() || newsContent.trim()) && (() => {
+                  const waText = formatNewsForWhatsApp(newsTitle.trim(), newsContent.trim(), newsCategory);
+                  return (
+                    <a
+                      href={buildWhatsAppShareUrl(waText)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      onClick={() => handleComWhatsAppShareFeedback(waText, newsTitle.trim() || 'Communiqué')}
+                      className="bg-emerald-600 hover:bg-emerald-500 text-white font-black py-3.5 px-5 rounded-2xl shadow-lg text-sm flex items-center gap-2 transition-all active:scale-95"
+                      title="Pré-remplir WhatsApp avec ce communiqué pour l'envoyer dans le groupe E-ROUAMA"
+                    >
+                      <span>📲 Partager dans le groupe WhatsApp</span>
+                      <ExternalLink className="w-4 h-4 text-emerald-100" />
+                    </a>
+                  );
+                })()}
+              </div>
             </form>
           </div>
 
@@ -9483,7 +9701,7 @@ export const AdminPortal: React.FC = () => {
                 {comAnnouncements.map(announcement => (
                   <div
                     key={announcement.id}
-                    className="p-4 rounded-2xl bg-slate-950 border border-slate-800 flex items-center justify-between gap-4 text-xs"
+                    className="p-4 rounded-2xl bg-slate-950 border border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-4 text-xs"
                   >
                     <div>
                       <span className="font-extrabold text-white text-sm">{announcement.title}</span>
@@ -9492,25 +9710,44 @@ export const AdminPortal: React.FC = () => {
                       </p>
                     </div>
 
-                    <button
-                      type="button"
-                      disabled={deletingAnnouncementId === announcement.id}
-                      onClick={() => handleDeleteAnnouncement(announcement.id)}
-                      className="bg-rose-600/20 text-rose-300 hover:bg-rose-600 hover:text-white border border-rose-500/30 px-3.5 py-2 rounded-xl font-black flex items-center gap-1.5 transition-all cursor-pointer active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
-                      title="Supprimer définitivement ce communiqué"
-                    >
-                      {deletingAnnouncementId === announcement.id ? (
-                        <>
-                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                          <span>Suppression...</span>
-                        </>
-                      ) : (
-                        <>
-                          <Trash2 className="w-3.5 h-3.5" />
-                          <span>Supprimer</span>
-                        </>
-                      )}
-                    </button>
+                    <div className="flex flex-wrap items-center gap-2 shrink-0 self-end sm:self-center">
+                      {(() => {
+                        const waText = formatNewsForWhatsApp(announcement.title, announcement.content, announcement.category);
+                        return (
+                          <a
+                            href={buildWhatsAppShareUrl(waText)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            onClick={() => handleComWhatsAppShareFeedback(waText, announcement.title)}
+                            className="bg-emerald-600/20 hover:bg-emerald-600 text-emerald-300 hover:text-white border border-emerald-500/30 px-3.5 py-2 rounded-xl font-black flex items-center gap-1.5 transition-all active:scale-95"
+                            title="Partager ce communiqué publié dans le groupe WhatsApp"
+                          >
+                            <span>📲 Partager dans le groupe WhatsApp</span>
+                            <ExternalLink className="w-3 h-3" />
+                          </a>
+                        );
+                      })()}
+
+                      <button
+                        type="button"
+                        disabled={deletingAnnouncementId === announcement.id}
+                        onClick={() => handleDeleteAnnouncement(announcement.id)}
+                        className="bg-rose-600/20 text-rose-300 hover:bg-rose-600 hover:text-white border border-rose-500/30 px-3.5 py-2 rounded-xl font-black flex items-center gap-1.5 transition-all cursor-pointer active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
+                        title="Supprimer définitivement ce communiqué"
+                      >
+                        {deletingAnnouncementId === announcement.id ? (
+                          <>
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            <span>Suppression...</span>
+                          </>
+                        ) : (
+                          <>
+                            <Trash2 className="w-3.5 h-3.5" />
+                            <span>Supprimer</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -17693,6 +17930,29 @@ export const AdminPortal: React.FC = () => {
                               )}
                             </div>
                           )}
+                          {activeRole === 'COM' && (() => {
+                            let waText = '';
+                            if (docType === 'BILAN') waText = formatBilanForWhatsApp(rawData as FinancialBilan);
+                            else if (docType === 'PROJECT') waText = formatProjectForWhatsApp(rawData as AgrProject);
+                            else if (docType === 'ACTIVITY') waText = formatActivityForWhatsApp(rawData as EventActivity);
+                            else if (docType === 'RELIGIOUS_EVENT') waText = formatReligiousEventForWhatsApp(rawData as ReligiousEvent);
+                            else if (docType === 'PV') waText = formatPVForWhatsApp(rawData as SecretaryPV);
+
+                            if (!waText) return null;
+                            return (
+                              <a
+                                href={buildWhatsAppShareUrl(waText)}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                onClick={() => handleComWhatsAppShareFeedback(waText, rawData.title)}
+                                className="bg-emerald-600 hover:bg-emerald-500 text-white font-black px-4 py-2 rounded-xl text-xs flex items-center gap-1.5 shadow-lg active:scale-95 transition-all"
+                                title="Ouvrir WhatsApp avec ce document pré-rempli pour le groupe E-ROUAMA"
+                              >
+                                <span>📲 Partager dans le groupe WhatsApp</span>
+                                <ExternalLink className="w-3.5 h-3.5 text-emerald-100" />
+                              </a>
+                            );
+                          })()}
                           <span className="bg-emerald-500/15 text-emerald-300 border border-emerald-500/40 px-3.5 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 shadow">
                             <CheckCircle2 className="w-4 h-4 text-emerald-400" />
                             <span>Document Officiel Validé & Visé (Payor)</span>
