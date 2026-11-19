@@ -64,11 +64,13 @@ export interface ReligiousEvent {
   eventTime: string;
   location: string;
   theme?: string;
-  status?: 'DRAFT' | 'SENT_TO_SECRETARIAT' | 'PENDING_PAYOR' | 'APPROVED' | 'APPROVED_PAYOR' | 'PUBLISHED' | 'returned_for_correction' | 'ARCHIVED';
+  status?: 'DRAFT' | 'SENT_TO_SECRETARIAT' | 'SENT_TO_SUIVI' | 'PENDING_PAYOR' | 'APPROVED' | 'APPROVED_PAYOR' | 'PUBLISHED' | 'returned_for_correction' | 'ARCHIVED';
   createdAt?: string;
   publishedAt?: string;
+  publishedByDeptAt?: string;
   dispatchChannel?: 'APP' | 'MAIL' | 'GENERAL';
   publishedToGbairai?: boolean;
+  gbairaiAlertSentByCom?: boolean;
   payorFeedback?: string;
   payorSignature?: {
     signedBy: string;
@@ -77,6 +79,9 @@ export interface ReligiousEvent {
     role: string;
   };
   sentToSecretariat?: boolean;
+  sentToSuivi?: boolean;
+  suiviReviewed?: boolean;
+  isPostMeetingRevision?: boolean;
   sentToPayor?: boolean;
   sentToCom?: boolean;
   ackByCom?: boolean;
@@ -349,10 +354,14 @@ export interface EventActivity {
   adHocRoles?: AdHocCommitteeRoles;
   program: string;
   budget?: number;
-  status: 'DRAFT' | 'SENT_TO_SECRETARIAT' | 'PENDING_PAYOR' | 'APPROVED' | 'PUBLISHED' | 'returned_for_correction' | 'ARCHIVED';
+  requiredAmountPerMember?: number;
+  paymentDeadline?: string;
+  status: 'DRAFT' | 'SENT_TO_SECRETARIAT' | 'SENT_TO_SUIVI' | 'PENDING_PAYOR' | 'APPROVED' | 'PUBLISHED' | 'returned_for_correction' | 'ARCHIVED';
   createdBy: string;
   budgetStatus?: 'NONE' | 'PENDING_TRESORIER' | 'APPROVED_TRESORIER';
   createdAt?: string;
+  publishedAt?: string;
+  publishedByDeptAt?: string;
   payorFeedback?: string;
   payorSignature?: {
     signedBy: string;
@@ -361,9 +370,13 @@ export interface EventActivity {
     role: string;
   };
   sentToSecretariat?: boolean;
+  sentToSuivi?: boolean;
+  suiviReviewed?: boolean;
+  isPostMeetingRevision?: boolean;
   sentToPayor?: boolean;
   sentToCom?: boolean;
   ackByCom?: boolean;
+  gbairaiAlertSentByCom?: boolean;
   archivedBySecretariat?: boolean;
   batchId?: string;
   batchTitle?: string;
@@ -380,7 +393,7 @@ export const DEFAULT_ANNIVERSAIRE_ACTIVITY: EventActivity = {
   eventMonth: '3',
   eventYear: '2027',
   isDayPending: false,
-  status: 'PUBLISHED',
+  status: 'DRAFT',
   budgetStatus: 'NONE',
   location: 'À définir',
   description: '',
@@ -439,7 +452,7 @@ export const DEFAULT_SOIREE_ACTIVITY: EventActivity = {
   eventMonth: '8',
   eventYear: '2027',
   isDayPending: true,
-  status: 'PUBLISHED',
+  status: 'DRAFT',
   budgetStatus: 'NONE',
   location: 'À définir',
   description: 'Grande soirée annuelle de gala et de communion fraternelle E-ROUAMA',
@@ -484,6 +497,7 @@ export interface AgrProject {
     | 'archived'
     | 'DRAFT'
     | 'SENT_TO_SECRETARIAT'
+    | 'SENT_TO_SUIVI'
     | 'PENDING_PAYOR'
     | 'APPROVED_PAYOR'
     | 'PUBLISHED'
@@ -502,9 +516,15 @@ export interface AgrProject {
   date: string;
   createdBy: string;
   sentToSecretariat?: boolean;
+  sentToSuivi?: boolean;
+  suiviReviewed?: boolean;
+  isPostMeetingRevision?: boolean;
   sentToPayor?: boolean;
   sentToCom?: boolean;
   ackByCom?: boolean;
+  gbairaiAlertSentByCom?: boolean;
+  publishedAt?: string;
+  publishedByDeptAt?: string;
   archivedBySecretariat?: boolean;
   batchId?: string;
   batchTitle?: string;

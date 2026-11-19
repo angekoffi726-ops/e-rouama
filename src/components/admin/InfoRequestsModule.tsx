@@ -380,6 +380,10 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
   const [replyInputs, setReplyInputs] = useState<Record<string, string>>({});
   const [isReplyingId, setIsReplyingId] = useState<string | null>(null);
   const [closingId, setClosingId] = useState<string | null>(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [confirmPurgeClosed, setConfirmPurgeClosed] = useState(false);
+  const [isPurgingClosed, setIsPurgingClosed] = useState(false);
 
   // Filtrage harmonisé des demandes pour ce département (Émis ET Reçus sans perte)
   // 1. Demandes Reçues (adressées à ce département ou ses alias)
@@ -617,6 +621,49 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
     }
   };
 
+  // Suppression définitive d'un fil de discussion (purge)
+  const handleDeleteRequest = async (req: InfoRequest) => {
+    setDeletingId(req.id);
+    setFeedbackToast(null);
+    try {
+      const res = await deleteInfoRequest(req.id);
+      if (res.success) {
+        if (expandedRequestId === req.id) setExpandedRequestId(null);
+        setConfirmDeleteId(null);
+        setFeedbackToast({
+          type: 'success',
+          message: `Fil « ${req.subject || req.id} » supprimé et purgé définitivement.`,
+        });
+      } else {
+        setFeedbackToast({ type: 'error', message: "Impossible de supprimer ce fil d'échange." });
+      }
+    } catch (err: any) {
+      setFeedbackToast({ type: 'error', message: err?.message || 'Erreur lors de la suppression.' });
+    } finally {
+      setDeletingId(null);
+    }
+  };
+
+  // Purge groupée des fils déjà clôturés dans la vue courante
+  const handlePurgeClosedThreads = async () => {
+    const closedThreads = currentViewList.filter(r => r.isClosed || r.status === 'Clôturé');
+    if (closedThreads.length === 0) return;
+    setIsPurgingClosed(true);
+    setFeedbackToast(null);
+    try {
+      await Promise.all(closedThreads.map(r => deleteInfoRequest(r.id)));
+      setConfirmPurgeClosed(false);
+      setFeedbackToast({
+        type: 'success',
+        message: `${closedThreads.length} discussion(s) clôturée(s) purgée(s) du canal.`,
+      });
+    } catch (err: any) {
+      setFeedbackToast({ type: 'error', message: err?.message || 'Erreur lors de la purge.' });
+    } finally {
+      setIsPurgingClosed(false);
+    }
+  };
+
   // Basculer l'affichage détaillé et marquer comme lu
   const handleToggleExpand = async (req: InfoRequest) => {
     if (expandedRequestId === req.id) {
@@ -760,12 +807,12 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
           <div className="space-y-2">
             <div className="inline-flex items-center gap-2 bg-indigo-500/10 border border-indigo-500/30 text-indigo-300 px-3 py-1 rounded-full text-xs font-black tracking-wide">
               <MessageSquare className="w-3.5 h-3.5 text-indigo-400" />
-              <span>NAVETTE D'ÉCHANGE • FIL DE DISCUSSION CONTINU</span>
+              <span>CANAL DE NAVETTE &amp; ÉCHANGES • INTÉGRÉ À L'ESPACE DÉPARTEMENT</span>
               <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
             </div>
 
             <h2 className="text-xl sm:text-2xl font-black text-white flex items-center gap-2.5 flex-wrap">
-              <span>NAVETTE D'ÉCHANGE</span>
+              <span>Canal de Navette &amp; Échanges</span>
               <span
                 className={`text-xs px-2.5 py-1 rounded-xl font-bold border ${currentDeptConfig?.badgeBg} ${currentDeptConfig?.badgeText} ${currentDeptConfig?.borderColor}`}
               >
@@ -774,9 +821,9 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
             </h2>
 
             <p className="text-xs text-slate-400 max-w-2xl leading-relaxed">
-              Canal officiel d'échanges continus entre départements administratifs. Chaque requête constitue un fil de
-              discussion interactif : répondez à la suite sans verrouillage pour coordonner les résolutions et marquez la
-              navette comme clôturée une fois résolue.
+              Canal officiel d'échanges continus intégré directement dans votre espace de gestion. Chaque requête constitue un fil de
+              discussion interactif : répondez à la suite sans verrouillage pour coordonner les résolutions et marquez le
+              fil comme clôturé une fois résolu.
             </p>
 
             {isCommunicationDept && (
@@ -1148,10 +1195,49 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
                     : 'text-slate-400 hover:bg-slate-800'
                 }`}
               >
-                ⚪ Clôturées
+                ⚪ Clôturées ({closedCount})
               </button>
+
+              {closedCount > 0 && !confirmPurgeClosed && (
+                <button
+                  type="button"
+                  onClick={() => setConfirmPurgeClosed(true)}
+                  className="px-3 py-1.5 rounded-xl text-[11px] font-black bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 border border-rose-500/30 transition-all shrink-0 flex items-center gap-1 cursor-pointer"
+                  title="Supprimer tous les fils clôturés"
+                >
+                  <Trash2 className="w-3 h-3" />
+                  <span>Purger clôturées ({closedCount})</span>
+                </button>
+              )}
             </div>
           </div>
+
+          {confirmPurgeClosed && (
+            <div className="bg-rose-950/60 border border-rose-500/40 rounded-2xl p-3.5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs animate-fadeIn">
+              <span className="text-rose-200 font-bold">
+                Confirmer la purge définitive des {closedCount} fil(s) clôturé(s) de cette vue ?
+              </span>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  disabled={isPurgingClosed}
+                  onClick={() => setConfirmPurgeClosed(false)}
+                  className="px-3 py-1.5 rounded-xl bg-slate-900 text-slate-300 hover:text-white font-bold border border-slate-700 cursor-pointer"
+                >
+                  Annuler
+                </button>
+                <button
+                  type="button"
+                  disabled={isPurgingClosed}
+                  onClick={handlePurgeClosedThreads}
+                  className="px-3 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-black flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>{isPurgingClosed ? 'Purge en cours...' : 'Confirmer la purge'}</span>
+                </button>
+              </div>
+            </div>
+          )}
 
           {/* Aucun élément */}
           {displayedRequests.length === 0 ? (
@@ -1331,12 +1417,72 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
                         })()}
                         <button
                           type="button"
+                          onClick={e => {
+                            e.stopPropagation();
+                            setConfirmDeleteId(prev => (prev === req.id ? null : req.id));
+                          }}
+                          className="text-xs bg-rose-950/70 hover:bg-rose-900 text-rose-200 border border-rose-500/40 font-black px-3 py-1.5 rounded-xl flex items-center gap-1.5 transition-all cursor-pointer"
+                          title="Clôturer ou supprimer définitivement ce fil de discussion"
+                        >
+                          <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+                          <span>Supprimer / Clôturer</span>
+                        </button>
+                        <button
+                          type="button"
                           className="text-xs bg-slate-950 hover:bg-slate-800 text-slate-300 px-3 py-1.5 rounded-xl border border-slate-800 flex items-center gap-1"
                         >
                           {isExpanded ? <span>Masquer le fil</span> : <span>Consulter / Répondre</span>}
                         </button>
                       </div>
                     </div>
+
+                    {confirmDeleteId === req.id && (
+                      <div
+                        onClick={e => e.stopPropagation()}
+                        className="mx-4 sm:mx-5 mb-4 p-3.5 bg-rose-950/60 border border-rose-500/40 rounded-2xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs animate-fadeIn"
+                      >
+                        <div className="space-y-0.5">
+                          <p className="font-black text-rose-200">
+                            Action sur ce fil d'échange : « {req.subject} »
+                          </p>
+                          <p className="text-[11px] text-rose-300/80">
+                            Vous pouvez marquer la discussion comme clôturée ou la supprimer définitivement du canal.
+                          </p>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2 shrink-0">
+                          {!isClosed && (
+                            <button
+                              type="button"
+                              disabled={closingId === req.id || deletingId === req.id}
+                              onClick={async () => {
+                                await handleToggleClose(req);
+                                setConfirmDeleteId(null);
+                              }}
+                              className="px-3 py-1.5 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 border border-amber-500/40 font-black flex items-center gap-1 cursor-pointer disabled:opacity-50"
+                            >
+                              <CheckCheck className="w-3.5 h-3.5 text-amber-400" />
+                              <span>Clôturer seulement</span>
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            disabled={deletingId === req.id}
+                            onClick={() => handleDeleteRequest(req)}
+                            className="px-3 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-black flex items-center gap-1 cursor-pointer disabled:opacity-50 shadow"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                            <span>{deletingId === req.id ? 'Suppression...' : 'Supprimer définitivement'}</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setConfirmDeleteId(null)}
+                            className="px-3 py-1.5 rounded-xl bg-slate-900 text-slate-300 hover:text-white font-bold border border-slate-700 cursor-pointer"
+                          >
+                            Annuler
+                          </button>
+                        </div>
+                      </div>
+                    )}
 
                     {/* ========================================================= */}
                     {/* CONTENU DU FIL DE DISCUSSION DÉPLIÉ (THREAD CHRONOLOGIQUE) */}
@@ -1587,16 +1733,14 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
                                 </a>
                               );
                             })()}
-                            {!isReceived && (
-                              <button
-                                type="button"
-                                onClick={() => deleteInfoRequest(req.id)}
-                                className="text-rose-400 hover:text-rose-300 flex items-center gap-1 p-1 hover:underline"
-                              >
-                                <Trash2 className="w-3 h-3" />
-                                <span>Supprimer cette navette</span>
-                              </button>
-                            )}
+                            <button
+                              type="button"
+                              onClick={() => setConfirmDeleteId(req.id)}
+                              className="bg-rose-950/60 hover:bg-rose-900 text-rose-300 hover:text-white border border-rose-500/40 font-bold px-3 py-1.5 rounded-xl flex items-center gap-1.5 transition-all cursor-pointer"
+                            >
+                              <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+                              <span>Supprimer / Clôturer</span>
+                            </button>
                           </div>
                         </div>
                       </div>

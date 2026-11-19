@@ -37,7 +37,7 @@ function formatFrenchEventDate(dateStr?: string): string {
   return dateStr;
 }
 
-// Vérifie si un événement spirituel est officiellement validé par le Payor ou publié
+// Vérifie si un événement spirituel a été officiellement visé par le Payor ET publié par la Spiritualité
 export function isSpiritualEventPublishedOrApproved(evt: ReligiousEvent): boolean {
   if (!evt) return false;
 
@@ -52,18 +52,7 @@ export function isSpiritualEventPublishedOrApproved(evt: ReligiousEvent): boolea
   }
 
   const s = (evt.status || '').toUpperCase();
-  return (
-    s === 'PUBLISHED' ||
-    s === 'APPROVED' ||
-    s === 'APPROVED_PAYOR' ||
-    s === 'VALIDATED' ||
-    s === 'VALIDE' ||
-    Boolean(evt.publishedToGbairai) ||
-    Boolean(evt.publishedAt) ||
-    Boolean(evt.payorSignature?.signedBy) ||
-    Boolean(evt.payorSignature?.stampUrl) ||
-    Boolean(evt.ackByCom)
-  );
+  return s === 'PUBLISHED';
 }
 
 export const PriereRouamaTab: React.FC = () => {

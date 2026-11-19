@@ -70,7 +70,7 @@ export const FinancesTab: React.FC = () => {
 
   // Published activities & projects for category auto-fill
   const publishedActivities = activities.filter(a => a.status === 'PUBLISHED');
-  const publishedProjects = projects.filter(p => p.status === 'PUBLISHED');
+  const publishedProjects = projects.filter(p => p.status === 'PUBLISHED' || p.status === 'active');
 
   // URL Marchand Wave Officiel E-ROUAMA (Djaï)
   const WAVE_OFFICIAL_MERCHANT_URL = 'https://pay.wave.com/m/M_ci_GgJcnMC4q7hK/c/ci/';
@@ -226,18 +226,120 @@ export const FinancesTab: React.FC = () => {
   const [trancheMsg, setTrancheMsg] = useState<{ type: 'error' | 'success'; text: string } | null>(null);
   const [isTrancheSubmitting, setIsTrancheSubmitting] = useState(false);
 
+  const [selectedLoisirsId, setSelectedLoisirsId] = useState<string>('');
+
+  const activeAnniv = activities.find(
+    a =>
+      a.status === 'PUBLISHED' &&
+      (a.fixedType === 'ANNIVERSAIRE' ||
+        a.id === 'ACT-ANNIVERSAIRE-2027' ||
+        a.title?.toUpperCase().includes('ANNIVERSAIRE'))
+  );
+
+  const activeSoiree = activities.find(
+    a => a.status === 'PUBLISHED' && (a.fixedType === 'SOIREE_ROUAMA' || a.title?.toLowerCase().includes('soirée') || a.title?.toLowerCase().includes('soiree'))
+  );
+
+  const publishedLoisirsEvents = [
+    ...(financialEvents || []).filter(e => e.fund === 'LOISIRS' && e.status === 'PUBLISHED'),
+    ...activities
+      .filter(a => a.status === 'PUBLISHED' && a.eventType === 'SIMPLE')
+      .filter(a => !(financialEvents || []).some(fe => fe.id === `EVT-ACT-${a.id}` && fe.status === 'PUBLISHED'))
+      .map(a => ({
+        id: `EVT-ACT-${a.id}`,
+        fund: 'LOISIRS' as const,
+        subCategory: a.title,
+        title: a.title,
+        description: a.description || a.title,
+        requiredAmountPerMember:
+          a.requiredAmountPerMember && a.requiredAmountPerMember > 0
+            ? a.requiredAmountPerMember
+            : a.budget && a.budget > 0
+            ? Math.round(a.budget / (members.length || 12))
+            : 5000,
+        totalTargetAmount: a.budget,
+        eventDate: a.eventDate,
+        paymentDeadline: a.paymentDeadline || a.eventDate,
+        status: 'PUBLISHED' as const,
+        createdAt: a.publishedAt || a.createdAt || '',
+        createdBy: a.createdBy || 'COMMISSION ORGANISATION',
+      })),
+  ];
+
+  const activeLoisirs =
+    (selectedLoisirsId && publishedLoisirsEvents.find(e => e.id === selectedLoisirsId)) ||
+    publishedLoisirsEvents[0] ||
+    (getActiveFinancialEvent ? getActiveFinancialEvent('LOISIRS') : undefined);
+
+  const activeSocial = getActiveFinancialEvent
+    ? getActiveFinancialEvent('CAS_SOCIAUX')
+    : financialEvents?.find(e => e.fund === 'CAS_SOCIAUX' && e.status === 'PUBLISHED');
+
+  const activeAgr =
+    (selectedProjectId && publishedProjects.find(p => p.id === selectedProjectId)) ||
+    publishedProjects[0] ||
+    (getActiveAgrProject ? getActiveAgrProject() : undefined);
+
+  const isFundActiveMap: Record<string, boolean> = {
+    ANNIVERSAIRE: !!activeAnniv,
+    SOIREE_ROUAMA: !!activeSoiree,
+    LOISIRS: !!activeLoisirs,
+    CAS_SOCIAUX: !!activeSocial,
+    AGR: !!activeAgr,
+  };
+  const isSelectedTrancheFundActive = Boolean(isFundActiveMap[selectedTrancheFund]);
+
+  useEffect(() => {
+    if (!isFundActiveMap[selectedTrancheFund]) {
+      const firstActive = (['ANNIVERSAIRE', 'SOIREE_ROUAMA', 'LOISIRS', 'CAS_SOCIAUX', 'AGR'] as FundType[]).find(
+        f => isFundActiveMap[f]
+      );
+      if (firstActive) {
+        setSelectedTrancheFund(firstActive);
+      }
+    }
+  }, [Boolean(activeAnniv), Boolean(activeSoiree), Boolean(activeLoisirs), Boolean(activeSocial), Boolean(activeAgr)]);
+
   // Rubric progresses for connected member
   const annivProgress = getMemberRubricProgress(currentMemberId, 'ANNIVERSAIRE');
   const soireeProgress = getMemberRubricProgress(currentMemberId, 'SOIREE_ROUAMA');
-  const loisirsProgress = getMemberRubricProgress(currentMemberId, 'LOISIRS');
+  const loisirsProgress = getMemberRubricProgress(
+    currentMemberId,
+    'LOISIRS',
+    activeLoisirs?.id,
+    activeLoisirs?.requiredAmountPerMember,
+    activeLoisirs?.title
+  );
   const socialProgress = getMemberRubricProgress(currentMemberId, 'CAS_SOCIAUX', socialPrecision);
-  const agrProgress = getMemberRubricProgress(currentMemberId, 'AGR');
+  const agrProgress = getMemberRubricProgress(
+    currentMemberId,
+    'AGR',
+    activeAgr?.id,
+    activeAgr?.requiredAmountPerMember,
+    activeAgr?.title
+  );
 
   // Currently active rubric progress in tranche form
   const activeTrancheProgress = getMemberRubricProgress(
     currentMemberId,
     selectedTrancheFund,
-    selectedTrancheFund === 'CAS_SOCIAUX' ? socialPrecision : undefined
+    selectedTrancheFund === 'CAS_SOCIAUX'
+      ? socialPrecision
+      : selectedTrancheFund === 'AGR'
+      ? activeAgr?.id
+      : selectedTrancheFund === 'LOISIRS'
+      ? activeLoisirs?.id
+      : undefined,
+    selectedTrancheFund === 'AGR'
+      ? activeAgr?.requiredAmountPerMember
+      : selectedTrancheFund === 'LOISIRS'
+      ? activeLoisirs?.requiredAmountPerMember
+      : undefined,
+    selectedTrancheFund === 'AGR'
+      ? activeAgr?.title
+      : selectedTrancheFund === 'LOISIRS'
+      ? activeLoisirs?.title
+      : undefined
   );
 
   // Tranche Rule: Minimum 1 000 FCFA per installment (or remaining due if < 1000 and > 0)
@@ -248,9 +350,9 @@ export const FinancesTab: React.FC = () => {
 
   const numericTrancheAmount = Number(trancheAmountInput) || 0;
   const isTrancheAmountValid = numericTrancheAmount >= minTrancheAllowed;
-  const isTrancheWaveActive = trancheAmountInput.trim() !== '' && isTrancheAmountValid;
+  const isTrancheWaveActive = isSelectedTrancheFundActive && trancheAmountInput.trim() !== '' && isTrancheAmountValid;
   const isTrancheSubmitActive =
-    trancheReceiptFile !== null && trancheAmountInput.trim() !== '' && isTrancheAmountValid && !isTrancheSubmitting;
+    isSelectedTrancheFundActive && trancheReceiptFile !== null && trancheAmountInput.trim() !== '' && isTrancheAmountValid && !isTrancheSubmitting;
 
   const handleTrancheFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
@@ -306,6 +408,14 @@ export const FinancesTab: React.FC = () => {
   const handleTrancheSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setTrancheMsg(null);
+
+    if (!isSelectedTrancheFundActive) {
+      setTrancheMsg({
+        type: 'error',
+        text: 'Cette rubrique est actuellement fermée en attente de validation et de publication officielle du programme.',
+      });
+      return;
+    }
 
     const amt = Number(trancheAmountInput) || 0;
 
@@ -501,35 +611,19 @@ export const FinancesTab: React.FC = () => {
 
   const handleDeleteHistoryItem = handleHidePayment;
 
-  const activeSoiree = activities.find(
-    a => a.status === 'PUBLISHED' && (a.fixedType === 'SOIREE_ROUAMA' || a.title?.toLowerCase().includes('soirée') || a.title?.toLowerCase().includes('soiree'))
-  );
-
-  const activeLoisirs = getActiveFinancialEvent
-    ? getActiveFinancialEvent('LOISIRS')
-    : financialEvents?.find(e => e.fund === 'LOISIRS' && e.status === 'PUBLISHED');
-
-  const activeSocial = getActiveFinancialEvent
-    ? getActiveFinancialEvent('CAS_SOCIAUX')
-    : financialEvents?.find(e => e.fund === 'CAS_SOCIAUX' && e.status === 'PUBLISHED');
-
-  const activeAgr = getActiveAgrProject
-    ? getActiveAgrProject()
-    : projects?.find(p => p.status === 'PUBLISHED');
-
   // Rubric Cards Definition for Mode 2 (Tranches - 5 Cotisations Fixes et Acomptes)
   const trancheCards = [
     {
       fund: 'ANNIVERSAIRE' as FundType,
-      title: 'Anniversaire (21 Mars)',
-      subtitle: 'Célébration Fraternelle (Date Fixe)',
-      eventDate: '21 Mars 2027',
-      paymentDeadline: '21 Mars 2027',
-      isActive: true,
-      emptyNotice: '',
+      title: activeAnniv ? activeAnniv.title : 'Anniversaire (21 Mars)',
+      subtitle: activeAnniv ? 'Célébration Fraternelle (Événement Fixe)' : 'Aucun événement fixe publié pour le moment',
+      eventDate: activeAnniv?.eventDate || '',
+      paymentDeadline: activeAnniv?.paymentDeadline || activeAnniv?.eventDate || '',
+      isActive: !!activeAnniv,
+      emptyNotice: 'Aucun événement fixe publié pour le moment',
       progress: annivProgress,
       accentColor: 'from-amber-500/10 to-amber-600/5',
-      borderColor: 'border-amber-400/40',
+      borderColor: activeAnniv ? 'border-amber-400/40' : 'border-slate-300',
       badgeBg: 'bg-amber-100 text-amber-900 border-amber-300',
       icon: <Cake className="w-6 h-6 text-amber-500" />,
       example: 'Ex: Versez 2 000 F aujourd\'hui sur les 10 000 F, reste à payer 8 000 F.',
@@ -539,7 +633,7 @@ export const FinancesTab: React.FC = () => {
       title: activeSoiree ? activeSoiree.title : 'Soirée Rouama',
       subtitle: activeSoiree ? 'Retrouvailles & Dîner de Gala (Événement Fixe)' : 'Aucun événement fixe publié pour le moment',
       eventDate: activeSoiree?.eventDate || '',
-      paymentDeadline: activeSoiree?.eventDate || '',
+      paymentDeadline: activeSoiree?.paymentDeadline || activeSoiree?.eventDate || '',
       isActive: !!activeSoiree,
       emptyNotice: 'Aucun événement fixe publié pour le moment',
       progress: soireeProgress,
@@ -1476,13 +1570,13 @@ export const FinancesTab: React.FC = () => {
                   {[
                     {
                       key: 'ANNIVERSAIRE' as FundType,
-                      label: '🎂 Anniversaire 21 Mars',
-                      isActive: true,
+                      label: activeAnniv ? `🎂 ${activeAnniv.title}` : '🎂 Anniversaire 21 Mars',
+                      isActive: !!activeAnniv,
                     },
                     {
                       key: 'SOIREE_ROUAMA' as FundType,
                       label: activeSoiree ? `✨ ${activeSoiree.title}` : '✨ Soirée Rouama',
-                      isActive: true,
+                      isActive: !!activeSoiree,
                     },
                     {
                       key: 'LOISIRS' as FundType,
@@ -1549,19 +1643,39 @@ export const FinancesTab: React.FC = () => {
 
               {/* Active Context Banner if LOISIRS */}
               {selectedTrancheFund === 'LOISIRS' && activeLoisirs && (
-                <div className="p-4 bg-blue-50/70 border border-blue-200 rounded-2xl flex flex-wrap items-center justify-between gap-3">
-                  <div>
-                    <span className="text-xs font-black text-blue-950 block">
-                      🏖️ Sortie / Loisir programmée : {activeLoisirs.title}
-                    </span>
-                    <p className="text-[11px] text-blue-700">{activeLoisirs.description}</p>
+                <div className="p-4 bg-blue-50/70 border border-blue-200 rounded-2xl space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <span className="text-xs font-black text-blue-950 block">
+                        🏖️ Sortie / Loisir programmée : {activeLoisirs.title}
+                      </span>
+                      <p className="text-[11px] text-blue-700">{activeLoisirs.description}</p>
+                    </div>
+                    <div className="text-right">
+                      <span className="text-[10px] text-blue-500 font-bold block uppercase">Objectif par membre</span>
+                      <span className="text-xs font-black text-blue-900 bg-white px-3 py-1 rounded-xl border border-blue-200 font-mono">
+                        {activeLoisirs.requiredAmountPerMember.toLocaleString('fr-FR')} F CFA
+                      </span>
+                    </div>
                   </div>
-                  <div className="text-right">
-                    <span className="text-[10px] text-blue-500 font-bold block uppercase">Objectif par membre</span>
-                    <span className="text-xs font-black text-blue-900 bg-white px-3 py-1 rounded-xl border border-blue-200 font-mono">
-                      {activeLoisirs.requiredAmountPerMember.toLocaleString('fr-FR')} F CFA
-                    </span>
-                  </div>
+                  {publishedLoisirsEvents.length > 1 && (
+                    <div className="flex flex-wrap gap-2 pt-2 border-t border-blue-200/70">
+                      {publishedLoisirsEvents.map(ev => (
+                        <button
+                          key={ev.id}
+                          type="button"
+                          onClick={() => setSelectedLoisirsId(ev.id)}
+                          className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                            activeLoisirs.id === ev.id
+                              ? 'bg-blue-600 text-white shadow'
+                              : 'bg-white text-blue-800 border border-blue-200 hover:bg-blue-100'
+                          }`}
+                        >
+                          {ev.title} ({ev.requiredAmountPerMember.toLocaleString('fr-FR')} F)
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -1622,21 +1736,41 @@ export const FinancesTab: React.FC = () => {
 
               {/* Active Context Banner if AGR */}
               {selectedTrancheFund === 'AGR' && activeAgr && (
-                <div className="p-4 bg-purple-50/70 border border-purple-200 rounded-2xl flex flex-wrap items-center justify-between gap-3">
-                  <div>
-                    <span className="text-xs font-black text-purple-950 block">
-                      🌱 Projet AGR actif : {activeAgr.title}
-                    </span>
-                    <p className="text-[11px] text-purple-700">{activeAgr.description}</p>
+                <div className="p-4 bg-purple-50/70 border border-purple-200 rounded-2xl space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <span className="text-xs font-black text-purple-950 block">
+                        🌱 Projet AGR actif : {activeAgr.title}
+                      </span>
+                      <p className="text-[11px] text-purple-700">{activeAgr.description}</p>
+                    </div>
+                    <div className="text-right">
+                      <span className="text-[10px] text-purple-500 font-bold block uppercase">Objectif par membre</span>
+                      <span className="text-xs font-black text-purple-900 bg-white px-3 py-1 rounded-xl border border-purple-200 font-mono">
+                        {activeAgr.requiredAmountPerMember
+                          ? `${activeAgr.requiredAmountPerMember.toLocaleString('fr-FR')} F CFA`
+                          : 'Acompte libre (min. 1 000 F)'}
+                      </span>
+                    </div>
                   </div>
-                  <div className="text-right">
-                    <span className="text-[10px] text-purple-500 font-bold block uppercase">Objectif par membre</span>
-                    <span className="text-xs font-black text-purple-900 bg-white px-3 py-1 rounded-xl border border-purple-200 font-mono">
-                      {activeAgr.requiredAmountPerMember
-                        ? `${activeAgr.requiredAmountPerMember.toLocaleString('fr-FR')} F CFA`
-                        : 'Acompte libre (min. 1 000 F)'}
-                    </span>
-                  </div>
+                  {publishedProjects.length > 1 && (
+                    <div className="flex flex-wrap gap-2 pt-2 border-t border-purple-200/70">
+                      {publishedProjects.map(proj => (
+                        <button
+                          key={proj.id}
+                          type="button"
+                          onClick={() => setSelectedProjectId(proj.id)}
+                          className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
+                            activeAgr.id === proj.id
+                              ? 'bg-purple-600 text-white shadow'
+                              : 'bg-white text-purple-800 border border-purple-200 hover:bg-purple-100'
+                          }`}
+                        >
+                          {proj.title} ({proj.requiredAmountPerMember ? `${proj.requiredAmountPerMember.toLocaleString('fr-FR')} F` : 'Libre'})
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -1839,7 +1973,9 @@ export const FinancesTab: React.FC = () => {
 
               {!isTrancheSubmitActive && (
                 <p className="text-center text-xs text-amber-700 bg-amber-50 p-2.5 rounded-xl border border-amber-200 font-bold">
-                  🔒 {trancheReceiptFile === null
+                  🔒 {!isSelectedTrancheFundActive
+                    ? "Aucune cotisation ouverte pour cette rubrique pour le moment (en attente de publication officielle)."
+                    : trancheReceiptFile === null
                     ? "Veuillez joindre la preuve de reçu pour activer la déclaration."
                     : !isTrancheAmountValid
                     ? `Le montant doit être d'au moins ${minTrancheAllowed.toLocaleString('fr-FR')} F CFA.`

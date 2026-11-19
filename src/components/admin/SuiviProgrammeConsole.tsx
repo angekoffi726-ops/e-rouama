@@ -42,6 +42,9 @@ import {
   ChevronUp,
   UserCheck,
   X,
+  Trash2,
+  Lock,
+  CheckCheck,
 } from 'lucide-react';
 import { InfoRequestsModule } from './InfoRequestsModule';
 import { OFFICIAL_DEPARTMENTS } from '../../data/departmentMapping';
@@ -379,9 +382,10 @@ interface DepartmentActivityViewItem {
 
 interface SuiviProgrammeConsoleProps {
   activeRole?: AdminRole;
+  onPreviewOfficialDoc?: (kind: 'ORGANISATION' | 'PROJET' | 'SPIRITUALITE', id: string, batchId?: string) => void;
 }
 
-export const SuiviProgrammeConsole: React.FC<SuiviProgrammeConsoleProps> = () => {
+export const SuiviProgrammeConsole: React.FC<SuiviProgrammeConsoleProps> = ({ onPreviewOfficialDoc }) => {
   const {
     members = [],
     activities = [],
@@ -393,6 +397,14 @@ export const SuiviProgrammeConsole: React.FC<SuiviProgrammeConsoleProps> = () =>
     getMemberDuesStatus,
     markNewsAsRead,
     markAllGbairaiAsRead,
+    sendActivityFromSecretariatToPayor,
+    sendActivitiesBatchFromSecretariatToPayor,
+    sendProjectFromSecretariatToPayor,
+    sendProjectsBatchFromSecretariatToPayor,
+    sendReligiousEventFromSecretariatToPayor,
+    sendReligiousEventsBatchFromSecretariatToPayor,
+    deleteInfoRequest,
+    closeInfoRequest,
   } = useApp();
 
   // Navigation par onglets clairs et structurés
@@ -408,9 +420,232 @@ export const SuiviProgrammeConsole: React.FC<SuiviProgrammeConsoleProps> = () =>
   const [activityDeptFilter, setActivityDeptFilter] = useState<'ALL' | 'ORGANISATION' | 'SPIRITUALITE' | 'PROJET'>('ALL');
   const [activitySearchQuery, setActivitySearchQuery] = useState<string>('');
 
-  // Filtres pour la rubrique Demandes d'Information
+  // Filtres & suppression pour la rubrique Demandes d'Information
   const [infoFilter, setInfoFilter] = useState<'ALL' | 'PENDING' | 'REPLIED'>('ALL');
   const [infoSearchQuery, setInfoSearchQuery] = useState<string>('');
+  const [cadrageToast, setCadrageToast] = useState<string | null>(null);
+  const [dismissedDemoIds, setDismissedDemoIds] = useState<string[]>([]);
+  const [confirmDeleteInfoId, setConfirmDeleteInfoId] = useState<string | null>(null);
+  const [deletingInfoId, setDeletingInfoId] = useState<string | null>(null);
+  const [confirmPurgeInfo, setConfirmPurgeInfo] = useState(false);
+  const [isPurgingInfo, setIsPurgingInfo] = useState(false);
+  const [infoActionToast, setInfoActionToast] = useState<string | null>(null);
+
+  const sdpUnreadNavetteCount = useMemo(() => {
+    return (infoRequests || []).filter(
+      r =>
+        !r.isRead &&
+        (String(r.recipientRole || '').toUpperCase().includes('SDP') ||
+          String(r.recipientRoleLabel || '').toLowerCase().includes('suivi'))
+    ).length;
+  }, [infoRequests]);
+
+  const orgDeptCount = useMemo(
+    () => allDepartmentActivitiesCountByDept(activities, projects, religiousEvents, 'ORGANISATION'),
+    [activities, projects, religiousEvents]
+  );
+
+  const workflowTransitItems = useMemo(() => {
+    const items: Array<{
+      id: string;
+      kind: 'ORGANISATION' | 'PROJET' | 'SPIRITUALITE';
+      deptLabel: string;
+      icon: string;
+      title: string;
+      dateLabel: string;
+      status: string;
+      payorFeedback?: string;
+      sentToSuivi?: boolean;
+      suiviReviewed?: boolean;
+      isPostMeetingRevision?: boolean;
+      isConsolidated?: boolean;
+      batchId?: string;
+      batchIds?: string[];
+      batchTitles?: string[];
+      batchCount?: number;
+    }> = [];
+
+    const resolveBatchStatus = (statuses: string[]): string => {
+      if (statuses.includes('SENT_TO_SUIVI')) return 'SENT_TO_SUIVI';
+      if (statuses.includes('SENT_TO_SECRETARIAT')) return 'SENT_TO_SECRETARIAT';
+      if (statuses.includes('returned_for_correction')) return 'returned_for_correction';
+      if (statuses.includes('PENDING_PAYOR') || statuses.includes('pending_payor_approval')) return 'PENDING_PAYOR';
+      return statuses[0] || 'APPROVED';
+    };
+
+    const isTransitStatus = (s: string) =>
+      s === 'SENT_TO_SUIVI' ||
+      s === 'SENT_TO_SECRETARIAT' ||
+      s === 'PENDING_PAYOR' ||
+      s === 'pending_payor_approval' ||
+      s === 'APPROVED' ||
+      s === 'approved_by_payor' ||
+      s === 'APPROVED_PAYOR' ||
+      s === 'returned_for_correction';
+
+    // 1. ORGANISATION : Regrouper les lots consolidés par batchId
+    const orgBatchMap = new Map<string, EventActivity[]>();
+    (activities || []).forEach(a => {
+      const s = String(a.status || 'DRAFT').trim();
+      if (s === 'ARCHIVED' || s === 'PUBLISHED' || s === 'DRAFT') return;
+      const isPostRevision = Boolean(a.isPostMeetingRevision || a.suiviReviewed);
+      if (isPostRevision && (s === 'SENT_TO_SECRETARIAT' || s === 'returned_for_correction')) return;
+      if (!isTransitStatus(s)) return;
+
+      if (a.isConsolidated && a.batchId) {
+        const list = orgBatchMap.get(a.batchId) || [];
+        list.push(a);
+        orgBatchMap.set(a.batchId, list);
+      } else {
+        items.push({
+          id: a.id,
+          kind: 'ORGANISATION',
+          deptLabel: 'Organisation (SHOW)',
+          icon: '🎪',
+          title: a.title,
+          dateLabel: a.eventDate || 'Date à définir',
+          status: s,
+          payorFeedback: a.payorFeedback,
+          sentToSuivi: a.sentToSuivi,
+          suiviReviewed: a.suiviReviewed,
+          isPostMeetingRevision: a.isPostMeetingRevision,
+        });
+      }
+    });
+    orgBatchMap.forEach((batchActs, batchId) => {
+      const first = batchActs[0];
+      const fullBatch = (activities || []).filter(item => item.batchId === batchId);
+      const statuses = batchActs.map(x => String(x.status || 'DRAFT').trim());
+      items.push({
+        id: first.id,
+        kind: 'ORGANISATION',
+        deptLabel: 'Organisation (SHOW)',
+        icon: '🎪',
+        title: first.batchTitle || `Programme Global d'Activités (${fullBatch.length} activités)`,
+        dateLabel: fullBatch.map(x => x.eventDate || 'À définir').join(' • '),
+        status: resolveBatchStatus(statuses),
+        payorFeedback: batchActs.find(x => x.payorFeedback)?.payorFeedback,
+        sentToSuivi: batchActs.some(x => x.sentToSuivi),
+        suiviReviewed: batchActs.some(x => x.suiviReviewed),
+        isPostMeetingRevision: batchActs.some(x => x.isPostMeetingRevision),
+        isConsolidated: true,
+        batchId,
+        batchIds: fullBatch.map(x => x.id),
+        batchTitles: fullBatch.map(x => x.title),
+        batchCount: fullBatch.length,
+      });
+    });
+
+    // 2. PROJETS (AGR) : Regrouper les lots consolidés par batchId
+    const projBatchMap = new Map<string, AgrProject[]>();
+    (projects || []).forEach(p => {
+      const s = String(p.status || 'DRAFT').trim();
+      if (s === 'ARCHIVED' || s === 'PUBLISHED' || s === 'active' || s === 'DRAFT') return;
+      const isPostRevision = Boolean(p.isPostMeetingRevision || p.suiviReviewed);
+      if (isPostRevision && (s === 'SENT_TO_SECRETARIAT' || s === 'returned_for_correction')) return;
+      if (!isTransitStatus(s)) return;
+
+      if (p.isConsolidated && p.batchId) {
+        const list = projBatchMap.get(p.batchId) || [];
+        list.push(p);
+        projBatchMap.set(p.batchId, list);
+      } else {
+        items.push({
+          id: p.id,
+          kind: 'PROJET',
+          deptLabel: 'Projets (Gagne-Pain)',
+          icon: '🚀',
+          title: p.title,
+          dateLabel: p.dateRealisation || p.eventDate || 'Date à définir',
+          status: s,
+          payorFeedback: p.payorFeedback,
+          sentToSuivi: p.sentToSuivi,
+          suiviReviewed: p.suiviReviewed,
+          isPostMeetingRevision: p.isPostMeetingRevision,
+        });
+      }
+    });
+    projBatchMap.forEach((batchProjs, batchId) => {
+      const first = batchProjs[0];
+      const fullBatch = (projects || []).filter(item => item.batchId === batchId);
+      const statuses = batchProjs.map(x => String(x.status || 'DRAFT').trim());
+      items.push({
+        id: first.id,
+        kind: 'PROJET',
+        deptLabel: 'Projets (Gagne-Pain)',
+        icon: '🚀',
+        title: first.batchTitle || `Dossier Global de Projets AGR (${fullBatch.length} projets)`,
+        dateLabel: fullBatch.map(x => x.dateRealisation || x.eventDate || 'À définir').join(' • '),
+        status: resolveBatchStatus(statuses),
+        payorFeedback: batchProjs.find(x => x.payorFeedback)?.payorFeedback,
+        sentToSuivi: batchProjs.some(x => x.sentToSuivi),
+        suiviReviewed: batchProjs.some(x => x.suiviReviewed),
+        isPostMeetingRevision: batchProjs.some(x => x.isPostMeetingRevision),
+        isConsolidated: true,
+        batchId,
+        batchIds: fullBatch.map(x => x.id),
+        batchTitles: fullBatch.map(x => x.title),
+        batchCount: fullBatch.length,
+      });
+    });
+
+    // 3. SPIRITUALITÉ : Regrouper les lots consolidés par batchId
+    const relBatchMap = new Map<string, ReligiousEvent[]>();
+    (religiousEvents || []).forEach(r => {
+      const s = String(r.status || 'DRAFT').trim();
+      if (s === 'ARCHIVED' || s === 'PUBLISHED' || s === 'DRAFT') return;
+      const normTitle = (r.title || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      if (normTitle.includes('saint augustin') || r.id === 'PRIERE-SAINT-AUGUSTIN-PERMANENT') return;
+      const isPostRevision = Boolean(r.isPostMeetingRevision || r.suiviReviewed);
+      if (isPostRevision && (s === 'SENT_TO_SECRETARIAT' || s === 'returned_for_correction')) return;
+      if (!isTransitStatus(s)) return;
+
+      if (r.isConsolidated && r.batchId) {
+        const list = relBatchMap.get(r.batchId) || [];
+        list.push(r);
+        relBatchMap.set(r.batchId, list);
+      } else {
+        items.push({
+          id: r.id,
+          kind: 'SPIRITUALITE',
+          deptLabel: 'Spiritualité (Prière)',
+          icon: '🕊️',
+          title: r.title,
+          dateLabel: r.eventDate || 'Date à définir',
+          status: s,
+          payorFeedback: r.payorFeedback,
+          sentToSuivi: r.sentToSuivi,
+          suiviReviewed: r.suiviReviewed,
+          isPostMeetingRevision: r.isPostMeetingRevision,
+        });
+      }
+    });
+    relBatchMap.forEach((batchEvts, batchId) => {
+      const first = batchEvts[0];
+      const fullBatch = (religiousEvents || []).filter(item => item.batchId === batchId);
+      const statuses = batchEvts.map(x => String(x.status || 'DRAFT').trim());
+      items.push({
+        id: first.id,
+        kind: 'SPIRITUALITE',
+        deptLabel: 'Spiritualité (Prière)',
+        icon: '🕊️',
+        title: first.batchTitle || `Programme Global des Événements Religieux (${fullBatch.length} événements)`,
+        dateLabel: fullBatch.map(x => x.eventDate || 'À définir').join(' • '),
+        status: resolveBatchStatus(statuses),
+        payorFeedback: batchEvts.find(x => x.payorFeedback)?.payorFeedback,
+        sentToSuivi: batchEvts.some(x => x.sentToSuivi),
+        suiviReviewed: batchEvts.some(x => x.suiviReviewed),
+        isPostMeetingRevision: batchEvts.some(x => x.isPostMeetingRevision),
+        isConsolidated: true,
+        batchId,
+        batchIds: fullBatch.map(x => x.id),
+        batchTitles: fullBatch.map(x => x.title),
+        batchCount: fullBatch.length,
+      });
+    });
+
+    return items;
+  }, [activities, projects, religiousEvents]);
 
   // =========================================================
   // ÉCOUTE FIRESTORE EN TEMPS RÉEL DES CONNEXIONS ET ACTIVITÉS ADMINS & GBAÏRAÏ
@@ -865,62 +1100,53 @@ export const SuiviProgrammeConsole: React.FC<SuiviProgrammeConsoleProps> = () =>
       return clean;
     };
 
-    // --- 1. COMMISSION ORGANISATION (UNIQUEMENT LES 2 ACTIVITÉS RÉELLES STATUTAIRES) ---
-    // Recherche des 2 activités statutaires officielles dans la liste
-    const annivAct = activities.find(
-      a => a.fixedType === 'ANNIVERSAIRE' || a.id === 'ACT-ANNIVERSAIRE-2027' || a.title?.toUpperCase().includes('ANNIVERSAIRE')
-    );
-    const soireeAct = activities.find(
-      a => a.fixedType === 'SOIREE_ROUAMA' || a.id === 'ACT-SOIREE-2027' || a.id === 'ACT-SOIREE-2026' || a.title?.toUpperCase().includes('SOIRÉE') || a.title?.toUpperCase().includes('SOIREE')
-    );
+    const getWorkflowStatusLabel = (status?: string): string => {
+      const s = (status || 'DRAFT').trim();
+      if (s === 'PUBLISHED' || s === 'active') return 'Publié Officiellement';
+      if (s === 'APPROVED' || s === 'approved_by_payor' || s === 'APPROVED_PAYOR') return 'Visé Payor (Prêt à publier)';
+      if (s === 'PENDING_PAYOR' || s === 'pending_payor_approval') return 'En attente Payor';
+      if (s === 'SENT_TO_SUIVI') return 'En instruction Suivi';
+      if (s === 'SENT_TO_SECRETARIAT') return 'Transmis au Secrétariat';
+      if (s === 'returned_for_correction') return 'Retourné pour correction';
+      return 'Brouillon';
+    };
 
-    // Activité Réelle 1 : Anniversaire Rouama (21 Mars 2027)
-    const annivTitle = annivAct?.title || 'ANNIVERSAIRE ROUAMA (21 MARS 2027)';
-    const annivDate = annivAct?.eventDate || '21 Mars 2027';
-    const annivReminder = calculateReminderDate(annivDate);
-    list.push({
-      id: annivAct?.id || 'ACT-ANNIVERSAIRE-2027',
-      departmentKey: 'ORGANISATION',
-      departmentName: 'Commission Organisation',
-      departmentIcon: '🎪',
-      departmentBadgeColor: 'bg-rose-500/20 text-rose-300 border-rose-500/40',
-      title: annivTitle,
-      date: annivDate,
-      location: sanitizeLocation(annivAct?.location),
-      reminderDate: annivReminder.reminderDateStr,
-      isPast: annivReminder.isPast,
-      isDueForReminder: annivReminder.isDueForReminder,
-      statusLabel: 'Activité Publiée',
-      description: annivAct?.description || 'Célébration officielle statutaire de l\'Anniversaire ROUAMA',
-    });
+    const isPublishedForTracking = (status?: string): boolean => {
+      const up = String(status || '').trim().toUpperCase();
+      return up === 'PUBLISHED' || up === 'ACTIVE';
+    };
 
-    // Activité Réelle 2 : Soirée Rouama (Août 2027)
-    const rawSoireeTitle = soireeAct?.title || 'SOIRÉE ROUAMA 2027';
-    const soireeTitle = rawSoireeTitle.replace(/2026/g, '2027');
-    const rawSoireeDate = soireeAct?.eventDate || 'Août 2027';
-    const soireeDate = rawSoireeDate.includes('2026') ? 'Août 2027' : rawSoireeDate;
-    const soireeReminder = calculateReminderDate(soireeDate);
-    list.push({
-      id: soireeAct?.id || 'ACT-SOIREE-2027',
-      departmentKey: 'ORGANISATION',
-      departmentName: 'Commission Organisation',
-      departmentIcon: '🎪',
-      departmentBadgeColor: 'bg-rose-500/20 text-rose-300 border-rose-500/40',
-      title: soireeTitle,
-      date: soireeDate,
-      location: sanitizeLocation(soireeAct?.location),
-      reminderDate: soireeReminder.reminderDateStr,
-      isPast: soireeReminder.isPast,
-      isDueForReminder: soireeReminder.isDueForReminder,
-      statusLabel: 'Activité Publiée',
-      description: soireeAct?.description || 'Grande soirée annuelle de gala et de communion fraternelle E-ROUAMA',
-    });
+    // --- 1. COMMISSION ORGANISATION (SUIVI POST-PUBLICATION J-30) ---
+    activities
+      .filter(a => isPublishedForTracking(a.status))
+      .forEach(act => {
+        const reminder = calculateReminderDate(act.eventDate || '');
+        list.push({
+          id: act.id,
+          departmentKey: 'ORGANISATION',
+          departmentName: 'Commission Organisation',
+          departmentIcon: '🎪',
+          departmentBadgeColor: 'bg-rose-500/20 text-rose-300 border-rose-500/40',
+          title: act.title,
+          date: act.eventDate || 'Date à définir',
+          location: sanitizeLocation(act.location),
+          reminderDate: reminder.reminderDateStr,
+          isPast: reminder.isPast,
+          isDueForReminder: reminder.isDueForReminder,
+          statusLabel: getWorkflowStatusLabel(act.status),
+          description: act.description || "Programme d'activité de la Commission Organisation",
+        });
+      });
 
-    // --- 2. DÉPARTEMENT SPIRITUALITÉ ---
+    // --- 2. DÉPARTEMENT SPIRITUALITÉ (SUIVI POST-PUBLICATION J-30) ---
     religiousEvents
-      .filter(r => r.status === 'PUBLISHED' || r.publishedToGbairai)
+      .filter(r => isPublishedForTracking(r.status))
+      .filter(r => {
+        const normTitle = (r.title || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+        return !normTitle.includes('saint augustin') && r.id !== 'PRIERE-SAINT-AUGUSTIN-PERMANENT';
+      })
       .forEach(relEvt => {
-        const relReminder = calculateReminderDate(relEvt.eventDate);
+        const relReminder = calculateReminderDate(relEvt.eventDate || '');
         list.push({
           id: relEvt.id,
           departmentKey: 'SPIRITUALITE',
@@ -928,21 +1154,41 @@ export const SuiviProgrammeConsole: React.FC<SuiviProgrammeConsoleProps> = () =>
           departmentIcon: '✨',
           departmentBadgeColor: 'bg-amber-500/20 text-amber-300 border-amber-500/40',
           title: relEvt.title,
-          date: `${relEvt.eventDate} à ${relEvt.eventTime}`,
-          location: relEvt.location || 'À définir',
+          date: relEvt.eventTime ? `${relEvt.eventDate} à ${relEvt.eventTime}` : (relEvt.eventDate || 'Date à définir'),
+          location: sanitizeLocation(relEvt.location),
           reminderDate: relReminder.reminderDateStr,
           isPast: relReminder.isPast,
           isDueForReminder: relReminder.isDueForReminder,
-          statusLabel: 'Activité Publiée (Gbairai)',
+          statusLabel: getWorkflowStatusLabel(relEvt.status),
           description: relEvt.theme ? `Thème : ${relEvt.theme}` : 'Événement et célébration spirituelle',
         });
       });
 
-    // --- 3. COMMISSION PROJETS (AGR) ---
-    // Aucune activité publiée pour le moment (aucune fausse activité inventée)
+    // --- 3. COMMISSION PROJETS (AGR) (SUIVI POST-PUBLICATION J-30) ---
+    projects
+      .filter(p => isPublishedForTracking(p.status))
+      .forEach(proj => {
+        const projDate = proj.dateRealisation || proj.eventDate || proj.paymentDeadline || '';
+        const projReminder = calculateReminderDate(projDate);
+        list.push({
+          id: proj.id,
+          departmentKey: 'PROJET',
+          departmentName: 'Commission Projets (AGR)',
+          departmentIcon: '🚀',
+          departmentBadgeColor: 'bg-indigo-500/20 text-indigo-300 border-indigo-500/40',
+          title: proj.title,
+          date: projDate || 'Date à définir',
+          location: 'À définir',
+          reminderDate: projReminder.reminderDateStr,
+          isPast: projReminder.isPast,
+          isDueForReminder: projReminder.isDueForReminder,
+          statusLabel: getWorkflowStatusLabel(proj.status),
+          description: proj.description || `Projet AGR (${proj.category || 'Investissement'})`,
+        });
+      });
 
     return list;
-  }, [activities, religiousEvents]);
+  }, [activities, projects, religiousEvents]);
 
   const filteredActivities = useMemo(() => {
     return allDepartmentActivities.filter(act => {
@@ -1011,14 +1257,20 @@ export const SuiviProgrammeConsole: React.FC<SuiviProgrammeConsoleProps> = () =>
 
   const effectiveInfoRequests = useMemo(() => {
     if (infoRequests && infoRequests.length > 0) return infoRequests;
-    return sampleDemonstrationRequests;
-  }, [infoRequests, sampleDemonstrationRequests]);
+    return sampleDemonstrationRequests.filter(r => !dismissedDemoIds.includes(r.id));
+  }, [infoRequests, sampleDemonstrationRequests, dismissedDemoIds]);
+
+  const isInfoRequestHandled = (req: InfoRequest) => {
+    const isReplied = Boolean((req.replyMessage && req.replyMessage.trim().length > 0) || req.status === 'Répondu' || req.repliedAt);
+    const isClosed = Boolean(req.isClosed || req.status === 'Clôturé');
+    return { isReplied, isClosed, isHandled: isReplied || isClosed };
+  };
 
   const filteredInfoRequests = useMemo(() => {
     return effectiveInfoRequests.filter(req => {
-      const isReplied = Boolean((req.replyMessage && req.replyMessage.trim().length > 0) || req.status === 'Répondu' || req.repliedAt);
-      if (infoFilter === 'PENDING' && isReplied) return false;
-      if (infoFilter === 'REPLIED' && !isReplied) return false;
+      const { isHandled } = isInfoRequestHandled(req);
+      if (infoFilter === 'PENDING' && isHandled) return false;
+      if (infoFilter === 'REPLIED' && !isHandled) return false;
 
       if (infoSearchQuery.trim()) {
         const q = infoSearchQuery.toLowerCase();
@@ -1033,8 +1285,8 @@ export const SuiviProgrammeConsole: React.FC<SuiviProgrammeConsoleProps> = () =>
   // Indicateur du nombre de demandes en attente depuis plus d'une heure
   const pendingOverOneHourCount = useMemo(() => {
     return effectiveInfoRequests.filter(req => {
-      const isReplied = Boolean((req.replyMessage && req.replyMessage.trim().length > 0) || req.status === 'Répondu' || req.repliedAt);
-      if (isReplied) return false;
+      const { isHandled } = isInfoRequestHandled(req);
+      if (isHandled) return false;
       const createdTimestamp = req.createdAt ? new Date(req.createdAt).getTime() : 0;
       return createdTimestamp > 0 && (Date.now() - createdTimestamp) >= (60 * 60 * 1000);
     }).length;
@@ -1079,7 +1331,9 @@ export const SuiviProgrammeConsole: React.FC<SuiviProgrammeConsoleProps> = () =>
             <div className="bg-slate-950/80 p-3 rounded-2xl border border-slate-800 text-center">
               <span className="text-[10px] font-bold text-slate-400 uppercase block">Activités</span>
               <span className="text-xl font-black text-white font-mono">{allDepartmentActivities.length}</span>
-              <span className="text-[9px] text-slate-500 block">Organisation ({allDepartmentActivities.length})</span>
+              <span className="text-[9px] text-slate-500 block">
+                Org ({orgDeptCount.org}) • Spir ({orgDeptCount.spir}) • Proj ({orgDeptCount.proj})
+              </span>
             </div>
 
             <div className="bg-slate-950/80 p-3 rounded-2xl border border-amber-500/30 text-center">
@@ -1206,7 +1460,12 @@ export const SuiviProgrammeConsole: React.FC<SuiviProgrammeConsoleProps> = () =>
           }`}
         >
           <Send className="w-4 h-4 text-indigo-300" />
-          <span>NAVETTE D'ÉCHANGE (OPÉRATIONNEL)</span>
+          <span>CANAL DE NAVETTE &amp; ÉCHANGES</span>
+          {sdpUnreadNavetteCount > 0 && (
+            <span className="bg-rose-500 text-white text-[10px] font-black px-1.5 py-0.2 rounded-full shadow animate-pulse">
+              {sdpUnreadNavetteCount}
+            </span>
+          )}
         </button>
       </div>
 
@@ -1216,19 +1475,199 @@ export const SuiviProgrammeConsole: React.FC<SuiviProgrammeConsoleProps> = () =>
       {/* ========================================================= */}
       {activeTab === 'ACTIVITES' && (
         <div className="space-y-6 animate-fadeIn">
+          {cadrageToast && (
+            <div className="bg-emerald-950/90 border border-emerald-500/40 text-emerald-200 px-4 py-3 rounded-2xl text-xs font-bold flex items-center justify-between gap-2 shadow-lg">
+              <span className="flex items-center gap-2">
+                <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                <span>{cadrageToast}</span>
+              </span>
+              <button
+                type="button"
+                onClick={() => setCadrageToast(null)}
+                className="text-emerald-300 hover:text-white p-1"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          )}
+
+          {/* Circuit Hiérarchique & Réunion de Cadrage (Secrétariat / Suivi -> Payor) */}
+          <div className="bg-slate-900 border border-indigo-500/30 rounded-3xl p-5 sm:p-6 shadow-xl space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div>
+                <div className="inline-flex items-center gap-2 bg-indigo-500/15 text-indigo-300 px-3 py-1 rounded-full text-[11px] font-black uppercase tracking-wider mb-1.5 border border-indigo-500/30">
+                  <CheckCircle className="w-3.5 h-3.5" />
+                  <span>Circuit Hiérarchique &amp; Réunion de Cadrage</span>
+                </div>
+                <h3 className="text-base sm:text-lg font-black text-white">
+                  Instruction Pré-Réunion de Cadrage (Secrétariat ➔ Suivi ➔ Payor)
+                </h3>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Les programmes soumis pour la première fois sont transmis par le Secrétariat au Chargé de Suivi pour instruction avant la réunion de cadrage avec le Payor. Les révisions post-réunion passent ensuite directement du Secrétariat au Payor, puis reviennent ici après publication pour le suivi J-30.
+                </p>
+              </div>
+              <span className="text-xs font-black px-3 py-1.5 rounded-xl bg-slate-950 border border-slate-800 text-indigo-300 shrink-0 self-start sm:self-center">
+                {workflowTransitItems.length} dossier(s) en circuit
+              </span>
+            </div>
+
+            {workflowTransitItems.length === 0 ? (
+              <div className="bg-slate-950/60 border border-slate-800/80 rounded-2xl p-4 text-xs text-slate-400">
+                Aucun programme n'est actuellement en attente d'instruction pré-réunion ou de visa Payor.
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                {workflowTransitItems.map(item => {
+                  const isSentToSuivi = item.status === 'SENT_TO_SUIVI';
+                  const isSentToSecretariat = item.status === 'SENT_TO_SECRETARIAT';
+                  const isPendingPayor = item.status === 'PENDING_PAYOR' || item.status === 'pending_payor_approval';
+                  const isApproved = item.status === 'APPROVED' || item.status === 'approved_by_payor' || item.status === 'APPROVED_PAYOR';
+                  const isReturned = item.status === 'returned_for_correction';
+
+                  return (
+                    <div
+                      key={item.batchId ? `${item.kind}-${item.batchId}` : `${item.kind}-${item.id}`}
+                      className={`bg-slate-950/80 border rounded-2xl p-4 flex flex-col justify-between gap-3 ${
+                        isSentToSuivi ? 'border-amber-500/50 shadow-lg shadow-amber-950/10' : 'border-slate-800'
+                      }`}
+                    >
+                      <div className="space-y-1.5">
+                        <div className="flex items-center justify-between gap-2 flex-wrap">
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="text-[11px] font-black text-amber-300">
+                              {item.icon} {item.deptLabel}
+                            </span>
+                            {item.isConsolidated && (
+                              <span className="bg-purple-500/20 text-purple-300 border border-purple-500/30 px-2 py-0.5 rounded-full text-[10px] font-black">
+                                📦 Lot Consolidé ({item.batchCount})
+                              </span>
+                            )}
+                          </div>
+                          <span
+                            className={`text-[10px] font-black px-2 py-0.5 rounded-full border ${
+                              isApproved
+                                ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
+                                : isPendingPayor
+                                ? 'bg-indigo-500/15 text-indigo-300 border-indigo-500/30'
+                                : isReturned
+                                ? 'bg-rose-500/15 text-rose-300 border-rose-500/30'
+                                : isSentToSuivi
+                                ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                                : 'bg-sky-500/15 text-sky-300 border-sky-500/30'
+                            }`}
+                          >
+                            {isApproved
+                              ? '✅ Visé Payor (En attente de publication)'
+                              : isPendingPayor
+                              ? '⏳ En attente Visa Payor'
+                              : isReturned
+                              ? '↩️ Retourné pour correction'
+                              : isSentToSuivi
+                              ? '🕵️ À instruire (Pré-réunion)'
+                              : '📥 Reçu au Secrétariat'}
+                          </span>
+                        </div>
+                        <p className="text-sm font-black text-white">{item.title}</p>
+                        {item.batchId && (
+                          <p className="text-[10px] font-mono text-purple-300/90">Réf. Lot : {item.batchId}</p>
+                        )}
+                        {item.isConsolidated && item.batchTitles && item.batchTitles.length > 0 && (
+                          <div className="flex flex-wrap gap-1 pt-0.5">
+                            {item.batchTitles.map((t, idx) => (
+                              <span
+                                key={idx}
+                                className="text-[10px] font-bold bg-slate-900 text-slate-200 border border-slate-700 px-2 py-0.5 rounded-md"
+                              >
+                                • {t}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                        <p className="text-[11px] text-slate-400">📅 {item.dateLabel}</p>
+                        {isReturned && item.payorFeedback && (
+                          <p className="text-[11px] text-rose-300 bg-rose-950/40 border border-rose-500/20 rounded-xl px-2.5 py-1.5">
+                            Motif Payor : {item.payorFeedback}
+                          </p>
+                        )}
+                      </div>
+
+                      <div className="flex flex-col gap-2">
+                        {onPreviewOfficialDoc && (
+                          <button
+                            type="button"
+                            onClick={() => onPreviewOfficialDoc(item.kind, item.id, item.batchId)}
+                            className="w-full py-2 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-amber-300 border border-slate-700 hover:border-amber-500/40 text-xs font-black flex items-center justify-center gap-1.5 transition-all cursor-pointer shadow-sm"
+                          >
+                            <Eye className="w-3.5 h-3.5" />
+                            <span>
+                              {item.isConsolidated
+                                ? `Visualiser le Dossier Global (${item.batchCount})`
+                                : 'Visualiser le Dossier complet'}
+                            </span>
+                          </button>
+                        )}
+
+                        {isSentToSuivi && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (item.isConsolidated && item.batchIds && item.batchIds.length > 0) {
+                                if (item.kind === 'ORGANISATION') {
+                                  sendActivitiesBatchFromSecretariatToPayor(item.batchIds);
+                                } else if (item.kind === 'PROJET') {
+                                  sendProjectsBatchFromSecretariatToPayor(item.batchIds);
+                                } else {
+                                  sendReligiousEventsBatchFromSecretariatToPayor(item.batchIds);
+                                }
+                              } else {
+                                if (item.kind === 'ORGANISATION') {
+                                  sendActivityFromSecretariatToPayor(item.id);
+                                } else if (item.kind === 'PROJET') {
+                                  sendProjectFromSecretariatToPayor(item.id);
+                                } else {
+                                  sendReligiousEventFromSecretariatToPayor(item.id);
+                                }
+                              }
+                              setCadrageToast(
+                                `Instruction validée : « ${item.title} » a été transmis au Payor pour la réunion de cadrage.`
+                              );
+                              setTimeout(() => setCadrageToast(null), 4000);
+                            }}
+                            className="w-full py-2 px-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-black flex items-center justify-center gap-1.5 transition-all cursor-pointer shadow"
+                          >
+                            <Send className="w-3.5 h-3.5" />
+                            <span>Valider l'instruction &amp; Soumettre au Payor</span>
+                          </button>
+                        )}
+
+                        {isSentToSecretariat && (
+                          <div className="text-[11px] text-sky-300/90 bg-sky-950/30 border border-sky-500/20 rounded-xl px-3 py-1.5 font-medium">
+                            En attente d'acheminement par le Secrétariat vers votre console d'instruction.
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
           {/* Header & Filtres */}
           <div className="bg-slate-900 border border-slate-800 rounded-3xl p-5 sm:p-6 shadow-xl space-y-4">
             <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
               <div>
                 <div className="inline-flex items-center gap-2 bg-amber-500/20 text-amber-300 px-3 py-1 rounded-full text-xs font-black uppercase tracking-wider mb-1.5 border border-amber-500/30">
                   <Sparkles className="w-3.5 h-3.5" />
-                  <span>Centralisation Statutaire • Organisation (2) • Spiritualité &amp; Projets (0)</span>
+                  <span>
+                    Centralisation Statutaire • Organisation ({orgDeptCount.org}) • Spiritualité ({orgDeptCount.spir}) • Projets ({orgDeptCount.proj})
+                  </span>
                 </div>
                 <h2 className="text-xl font-black text-white flex items-center gap-2">
-                  <span>Activités Publiées des Départements</span>
+                  <span>Programmes &amp; Activités des Départements</span>
                 </h2>
                 <p className="text-xs text-slate-400 mt-0.5 max-w-2xl">
-                  Seul le département <strong>Organisation</strong> possède des activités publiées (au nombre de 2, avec lieux à définir). Les départements Spiritualité et Projets n'ont encore publié aucune activité. Pour chaque activité, la <strong>Date de relance</strong> est calculée automatiquement à un mois avant l'événement.
+                  Suivi unifié des programmes d'activités (Organisation, Spiritualité, Projets) dans le circuit officiel. Pour chaque activité, la <strong>Date de relance</strong> est calculée automatiquement un mois avant l'événement.
                 </p>
               </div>
 
@@ -1308,16 +1747,20 @@ export const SuiviProgrammeConsole: React.FC<SuiviProgrammeConsoleProps> = () =>
             <div className="bg-slate-900 border border-slate-800 rounded-3xl p-12 text-center space-y-3">
               <Calendar className="w-10 h-10 text-slate-600 mx-auto" />
               <p className="text-sm font-bold text-slate-300">
-                {activityDeptFilter === 'SPIRITUALITE'
+                {activitySearchQuery.trim()
+                  ? 'Aucune activité trouvée.'
+                  : activityDeptFilter === 'ORGANISATION'
+                  ? 'Aucune activité publiée par la Commission Organisation pour le moment.'
+                  : activityDeptFilter === 'SPIRITUALITE'
                   ? 'Aucune activité publiée par le Département Spiritualité pour le moment.'
                   : activityDeptFilter === 'PROJET'
                   ? 'Aucune activité publiée par la Commission Projets (AGR) pour le moment.'
-                  : 'Aucune activité trouvée.'}
+                  : 'Aucune activité publiée pour le moment.'}
               </p>
               <p className="text-xs text-slate-500 max-w-md mx-auto">
-                {activityDeptFilter === 'SPIRITUALITE' || activityDeptFilter === 'PROJET'
-                  ? 'Ce département n\'a encore programmé ou officialisé aucune activité dans le calendrier.'
-                  : 'Modifiez votre filtre ou effectuez une autre recherche.'}
+                {activitySearchQuery.trim()
+                  ? 'Modifiez votre filtre ou effectuez une autre recherche.'
+                  : 'Les programmes officiellement publiés par les départements apparaîtront ici avec leur date de relance automatique (J-30).'}
               </p>
             </div>
           ) : (
@@ -1403,9 +1846,20 @@ export const SuiviProgrammeConsole: React.FC<SuiviProgrammeConsoleProps> = () =>
                   </div>
 
                   {/* Bas de carte */}
-                  <div className="pt-2 border-t border-slate-800 flex items-center justify-between text-[11px] text-slate-400">
+                  <div className="pt-2 border-t border-slate-800 flex items-center justify-between gap-2 text-[11px] text-slate-400">
                     <span className="font-medium">Statut : <strong className="text-slate-200">{act.statusLabel || 'En cours'}</strong></span>
-                    <span className="font-mono text-[10px] text-slate-500">ID: {act.id.substring(0, 14)}</span>
+                    {onPreviewOfficialDoc ? (
+                      <button
+                        type="button"
+                        onClick={() => onPreviewOfficialDoc(act.departmentKey, act.id)}
+                        className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-amber-300 border border-slate-700 text-[10px] font-black transition-all cursor-pointer"
+                      >
+                        <Eye className="w-3 h-3" />
+                        <span>Aperçu</span>
+                      </button>
+                    ) : (
+                      <span className="font-mono text-[10px] text-slate-500">ID: {act.id.substring(0, 14)}</span>
+                    )}
                   </div>
                 </div>
               ))}
@@ -1420,6 +1874,22 @@ export const SuiviProgrammeConsole: React.FC<SuiviProgrammeConsoleProps> = () =>
       {/* ========================================================= */}
       {activeTab === 'DEMANDES_INFO' && (
         <div className="space-y-6 animate-fadeIn">
+          {infoActionToast && (
+            <div className="bg-emerald-950/90 border border-emerald-500/40 text-emerald-200 px-4 py-3 rounded-2xl text-xs font-bold flex items-center justify-between gap-2 shadow-lg">
+              <span className="flex items-center gap-2">
+                <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                <span>{infoActionToast}</span>
+              </span>
+              <button
+                type="button"
+                onClick={() => setInfoActionToast(null)}
+                className="text-emerald-300 hover:text-white p-1"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          )}
+
           {/* Header & Consignes de confidentialité */}
           <div className="bg-slate-900 border border-slate-800 rounded-3xl p-5 sm:p-6 shadow-xl space-y-4">
             <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
@@ -1432,12 +1902,12 @@ export const SuiviProgrammeConsole: React.FC<SuiviProgrammeConsoleProps> = () =>
                   <span>Suivi Discret des Demandes d'Information Inter-Départements</span>
                 </h2>
                 <p className="text-xs text-slate-400 mt-0.5 max-w-2xl">
-                  Seuls les départements émetteurs et destinataires ainsi que le statut sont visibles. Si une demande reste <strong>en attente depuis plus d'une heure</strong>, le bouton <strong>Notifier via WhatsApp</strong> permet d'interpeller directement le destinataire en message privé.
+                  Seuls les départements émetteurs et destinataires ainsi que le statut sont visibles. Si une demande reste <strong>en attente depuis plus d'une heure</strong>, le bouton <strong>Notifier via WhatsApp</strong> permet d'interpeller directement le destinataire. Vous pouvez également <strong>clôturer ou supprimer</strong> les échanges traités pour garder le tableau propre.
                 </p>
               </div>
 
-              {/* Filtres de statut */}
-              <div className="flex items-center gap-2 text-xs font-bold">
+              {/* Filtres de statut & Purge */}
+              <div className="flex flex-wrap items-center gap-2 text-xs font-bold">
                 <button
                   type="button"
                   onClick={() => setInfoFilter('ALL')}
@@ -1460,7 +1930,7 @@ export const SuiviProgrammeConsole: React.FC<SuiviProgrammeConsoleProps> = () =>
                 >
                   <span>⏳ En attente</span>
                   <span className="bg-amber-950 text-amber-200 text-[10px] px-1.5 py-0.2 rounded-full font-mono">
-                    {effectiveInfoRequests.filter(r => !((r.replyMessage && r.replyMessage.trim().length > 0) || r.status === 'Répondu' || r.repliedAt)).length}
+                    {effectiveInfoRequests.filter(r => !isInfoRequestHandled(r).isHandled).length}
                   </span>
                 </button>
                 <button
@@ -1472,11 +1942,59 @@ export const SuiviProgrammeConsole: React.FC<SuiviProgrammeConsoleProps> = () =>
                       : 'bg-slate-950 text-emerald-400 hover:text-white border border-slate-800'
                   }`}
                 >
-                  <span>🟢 Répondues</span>
+                  <span>🟢 Traitées / Clôturées</span>
                   <span className="bg-emerald-950 text-emerald-200 text-[10px] px-1.5 py-0.2 rounded-full font-mono">
-                    {effectiveInfoRequests.filter(r => Boolean((r.replyMessage && r.replyMessage.trim().length > 0) || r.status === 'Répondu' || r.repliedAt)).length}
+                    {effectiveInfoRequests.filter(r => isInfoRequestHandled(r).isHandled).length}
                   </span>
                 </button>
+
+                {effectiveInfoRequests.some(r => isInfoRequestHandled(r).isHandled) && (
+                  !confirmPurgeInfo ? (
+                    <button
+                      type="button"
+                      onClick={() => setConfirmPurgeInfo(true)}
+                      className="px-3 py-1.5 rounded-xl font-black transition-all flex items-center gap-1.5 bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 border border-rose-500/30 cursor-pointer"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>Purger traitées ({effectiveInfoRequests.filter(r => isInfoRequestHandled(r).isHandled).length})</span>
+                    </button>
+                  ) : (
+                    <div className="flex items-center gap-1.5 bg-rose-950/60 border border-rose-500/40 rounded-xl px-2.5 py-1">
+                      <button
+                        type="button"
+                        disabled={isPurgingInfo}
+                        onClick={async () => {
+                          setIsPurgingInfo(true);
+                          const toPurge = effectiveInfoRequests.filter(r => isInfoRequestHandled(r).isHandled);
+                          let count = 0;
+                          for (const r of toPurge) {
+                            if (r.id.startsWith('DEMO-')) {
+                              setDismissedDemoIds(prev => (prev.includes(r.id) ? prev : [...prev, r.id]));
+                              count++;
+                            } else {
+                              const res = await deleteInfoRequest(r.id);
+                              if (res.success) count++;
+                            }
+                          }
+                          setIsPurgingInfo(false);
+                          setConfirmPurgeInfo(false);
+                          setInfoActionToast(`${count} échange(s) traité(s) ou clôturé(s) purgé(s) du tableau.`);
+                          setTimeout(() => setInfoActionToast(null), 4000);
+                        }}
+                        className="text-rose-200 bg-rose-600 hover:bg-rose-500 px-2.5 py-1 rounded-lg font-black text-[11px] cursor-pointer disabled:opacity-50"
+                      >
+                        {isPurgingInfo ? 'Purge...' : 'Confirmer la purge'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setConfirmPurgeInfo(false)}
+                        className="text-slate-300 hover:text-white px-2 py-1 rounded-lg text-[11px] font-bold cursor-pointer"
+                      >
+                        Annuler
+                      </button>
+                    </div>
+                  )
+                )}
               </div>
             </div>
 
@@ -1505,12 +2023,12 @@ export const SuiviProgrammeConsole: React.FC<SuiviProgrammeConsoleProps> = () =>
               {filteredInfoRequests.map((req) => {
                 const senderDept = getDepartmentDisplayName(req.senderRole);
                 const recipientDept = getDepartmentDisplayName(req.recipientRole);
-                const isReplied = Boolean((req.replyMessage && req.replyMessage.trim().length > 0) || req.status === 'Répondu' || req.repliedAt);
+                const { isReplied, isClosed, isHandled } = isInfoRequestHandled(req);
 
                 // Calcul du délai d'attente
                 const createdTime = req.createdAt ? new Date(req.createdAt).getTime() : 0;
                 const diffMs = Date.now() - createdTime;
-                const isOverOneHour = !isReplied && createdTime > 0 && diffMs >= (60 * 60 * 1000);
+                const isOverOneHour = !isHandled && createdTime > 0 && diffMs >= (60 * 60 * 1000);
                 const hoursWaiting = Math.floor(diffMs / (60 * 60 * 1000));
                 const minutesWaiting = Math.floor((diffMs % (60 * 60 * 1000)) / (60 * 1000));
 
@@ -1538,87 +2056,171 @@ export const SuiviProgrammeConsole: React.FC<SuiviProgrammeConsoleProps> = () =>
                     })
                   : undefined;
 
+                const isConfirmingDelete = confirmDeleteInfoId === req.id;
+
                 return (
                   <div
                     key={req.id}
                     className={`bg-slate-900 border ${
                       isOverOneHour
                         ? 'border-amber-500/60 shadow-amber-950/20 shadow-lg'
-                        : isReplied
+                        : isHandled
                         ? 'border-slate-800 hover:border-slate-700'
                         : 'border-slate-800'
-                    } rounded-2xl p-4 sm:p-5 transition-all flex flex-col md:flex-row items-start md:items-center justify-between gap-4`}
+                    } rounded-2xl p-4 sm:p-5 transition-all flex flex-col gap-3`}
                   >
-                    <div className="space-y-1.5 flex-1 min-w-0">
-                      {/* Format neutre strict exigé par le cahier des charges */}
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="text-sm font-black text-white">
-                          Demande d'information envoyée par le <span className="text-amber-400 font-extrabold">{senderDept}</span> au <span className="text-cyan-400 font-extrabold">{recipientDept}</span>
-                        </span>
+                    <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+                      <div className="space-y-1.5 flex-1 min-w-0">
+                        {/* Format neutre strict exigé par le cahier des charges */}
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="text-sm font-black text-white">
+                            Demande d'information envoyée par le <span className="text-amber-400 font-extrabold">{senderDept}</span> au <span className="text-cyan-400 font-extrabold">{recipientDept}</span>
+                          </span>
+                        </div>
+
+                        {/* Métadonnées temporelles et auteur sans dévoiler le message */}
+                        <div className="flex flex-wrap items-center gap-3 text-xs text-slate-400 font-medium">
+                          <span className="flex items-center gap-1 font-mono text-[11px]">
+                            <Clock className="w-3.5 h-3.5 text-slate-500" />
+                            <span>Émise le {formattedSentDate}</span>
+                          </span>
+
+                          {!isHandled && createdTime > 0 && (
+                            <span className={`text-[11px] font-bold px-2 py-0.5 rounded-md ${
+                              isOverOneHour ? 'bg-rose-500/20 text-rose-300 font-mono' : 'bg-slate-800 text-slate-300 font-mono'
+                            }`}>
+                              Attente : {hoursWaiting > 0 ? `${hoursWaiting}h ` : ''}{minutesWaiting}min
+                            </span>
+                          )}
+
+                          {isReplied && formattedRepliedDate && (
+                            <span className="flex items-center gap-1 text-emerald-400 font-mono text-[11px]">
+                              <Check className="w-3.5 h-3.5" />
+                              <span>Réponse le {formattedRepliedDate} {req.repliedBy ? `par ${req.repliedBy}` : ''}</span>
+                            </span>
+                          )}
+
+                          <span className="text-slate-600">•</span>
+                          <span className="text-[11px] text-slate-500 font-mono">Réf: {req.id}</span>
+                        </div>
                       </div>
 
-                      {/* Métadonnées temporelles et auteur sans dévoiler le message */}
-                      <div className="flex flex-wrap items-center gap-3 text-xs text-slate-400 font-medium">
-                        <span className="flex items-center gap-1 font-mono text-[11px]">
-                          <Clock className="w-3.5 h-3.5 text-slate-500" />
-                          <span>Émise le {formattedSentDate}</span>
-                        </span>
+                      {/* Statut, Alerte WhatsApp & Suppression/Clôture */}
+                      <div className="flex flex-wrap items-center gap-2.5 shrink-0 w-full md:w-auto justify-between md:justify-end border-t md:border-t-0 pt-3 md:pt-0 border-slate-800">
+                        {/* Statut dynamique */}
+                        <div>
+                          {isClosed ? (
+                            <span className="inline-flex items-center gap-1.5 bg-slate-800 text-slate-300 border border-slate-600 px-3 py-1 rounded-full text-xs font-black">
+                              <CheckCheck className="w-3.5 h-3.5 text-slate-400" />
+                              <span>Clôturée</span>
+                            </span>
+                          ) : isReplied ? (
+                            <span className="inline-flex items-center gap-1.5 bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 px-3 py-1 rounded-full text-xs font-black">
+                              <CheckCircle className="w-3.5 h-3.5 text-emerald-400" />
+                              <span>Répondu</span>
+                            </span>
+                          ) : (
+                            <span className={`inline-flex items-center gap-1.5 ${
+                              isOverOneHour
+                                ? 'bg-amber-500/20 text-amber-300 border border-amber-500/50'
+                                : 'bg-slate-800 text-slate-300 border border-slate-700'
+                            } px-3 py-1 rounded-full text-xs font-black`}>
+                              <Clock className={`w-3.5 h-3.5 ${isOverOneHour ? 'text-amber-400 animate-spin' : 'text-slate-400'}`} />
+                              <span>En attente de réponse</span>
+                            </span>
+                          )}
+                        </div>
 
-                        {!isReplied && createdTime > 0 && (
-                          <span className={`text-[11px] font-bold px-2 py-0.5 rounded-md ${
-                            isOverOneHour ? 'bg-rose-500/20 text-rose-300 font-mono' : 'bg-slate-800 text-slate-300 font-mono'
-                          }`}>
-                            Attente : {hoursWaiting > 0 ? `${hoursWaiting}h ` : ''}{minutesWaiting}min
-                          </span>
+                        {/* Bouton Alerte WhatsApp si en attente depuis > 1h */}
+                        {isOverOneHour && (
+                          <a
+                            href={`https://wa.me/${contact.cleanPhone}?text=${encodeURIComponent(whatsappMessage)}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-2 bg-emerald-600 hover:bg-emerald-500 text-white font-black px-3.5 py-2 rounded-xl text-xs shadow-lg transition-all active:scale-95 cursor-pointer"
+                            title={`Interpeller ${contact.name} (${recipientDept}) sur WhatsApp`}
+                          >
+                            <MessageCircle className="w-4 h-4 fill-current" />
+                            <span>Notifier via WhatsApp</span>
+                          </a>
                         )}
 
-                        {isReplied && formattedRepliedDate && (
-                          <span className="flex items-center gap-1 text-emerald-400 font-mono text-[11px]">
-                            <Check className="w-3.5 h-3.5" />
-                            <span>Réponse le {formattedRepliedDate} {req.repliedBy ? `par ${req.repliedBy}` : ''}</span>
-                          </span>
-                        )}
-
-                        <span className="text-slate-600">•</span>
-                        <span className="text-[11px] text-slate-500 font-mono">Réf: {req.id}</span>
-                      </div>
-                    </div>
-
-                    {/* Statut & Action WhatsApp */}
-                    <div className="flex flex-wrap items-center gap-3 shrink-0 w-full md:w-auto justify-between md:justify-end border-t md:border-t-0 pt-3 md:pt-0 border-slate-800">
-                      {/* Statut dynamique */}
-                      <div>
-                        {isReplied ? (
-                          <span className="inline-flex items-center gap-1.5 bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 px-3 py-1 rounded-full text-xs font-black">
-                            <CheckCircle className="w-3.5 h-3.5 text-emerald-400" />
-                            <span>Répondu</span>
-                          </span>
-                        ) : (
-                          <span className={`inline-flex items-center gap-1.5 ${
-                            isOverOneHour
-                              ? 'bg-amber-500/20 text-amber-300 border border-amber-500/50'
-                              : 'bg-slate-800 text-slate-300 border border-slate-700'
-                          } px-3 py-1 rounded-full text-xs font-black`}>
-                            <Clock className={`w-3.5 h-3.5 ${isOverOneHour ? 'text-amber-400 animate-spin' : 'text-slate-400'}`} />
-                            <span>En attente de réponse</span>
-                          </span>
-                        )}
-                      </div>
-
-                      {/* Bouton Alerte WhatsApp si en attente depuis > 1h */}
-                      {isOverOneHour && (
-                        <a
-                          href={`https://wa.me/${contact.cleanPhone}?text=${encodeURIComponent(whatsappMessage)}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="inline-flex items-center gap-2 bg-emerald-600 hover:bg-emerald-500 text-white font-black px-4 py-2 rounded-xl text-xs shadow-lg transition-all active:scale-95 cursor-pointer"
-                          title={`Interpeller ${contact.name} (${recipientDept}) sur WhatsApp`}
+                        {/* Bouton Supprimer / Clôturer */}
+                        <button
+                          type="button"
+                          onClick={() => setConfirmDeleteInfoId(isConfirmingDelete ? null : req.id)}
+                          className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-black border transition-all cursor-pointer ${
+                            isConfirmingDelete
+                              ? 'bg-rose-600 text-white border-rose-500'
+                              : 'bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border-rose-500/30'
+                          }`}
+                          title="Supprimer ou clôturer cet échange"
                         >
-                          <MessageCircle className="w-4 h-4 fill-current" />
-                          <span>Notifier via WhatsApp</span>
-                        </a>
-                      )}
+                          <Trash2 className="w-3.5 h-3.5" />
+                          <span>Supprimer / Clôturer</span>
+                        </button>
+                      </div>
                     </div>
+
+                    {isConfirmingDelete && (
+                      <div className="bg-rose-950/40 border border-rose-500/30 rounded-xl p-3 flex flex-wrap items-center justify-between gap-3">
+                        <span className="text-xs text-rose-200 font-semibold">
+                          Purger définitivement cette ligne du suivi inter-départements { !isClosed ? 'ou la marquer simplement clôturée ?' : '?' }
+                        </span>
+                        <div className="flex flex-wrap items-center gap-2">
+                          {!isClosed && !req.id.startsWith('DEMO-') && (
+                            <button
+                              type="button"
+                              disabled={deletingInfoId === req.id}
+                              onClick={async () => {
+                                setDeletingInfoId(req.id);
+                                await closeInfoRequest(req.id, 'Chargé du Suivi (SDP)');
+                                setDeletingInfoId(null);
+                                setConfirmDeleteInfoId(null);
+                                setInfoActionToast(`Demande ${req.id} marquée comme clôturée.`);
+                                setTimeout(() => setInfoActionToast(null), 4000);
+                              }}
+                              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-600 text-xs font-bold cursor-pointer disabled:opacity-50"
+                            >
+                              <Lock className="w-3 h-3" />
+                              <span>Clôturer seulement</span>
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            disabled={deletingInfoId === req.id}
+                            onClick={async () => {
+                              setDeletingInfoId(req.id);
+                              if (req.id.startsWith('DEMO-')) {
+                                setDismissedDemoIds(prev => (prev.includes(req.id) ? prev : [...prev, req.id]));
+                                setInfoActionToast('Ligne de démonstration supprimée du suivi.');
+                              } else {
+                                const res = await deleteInfoRequest(req.id);
+                                setInfoActionToast(
+                                  res.success
+                                    ? `Échange ${req.id} supprimé définitivement.`
+                                    : 'Impossible de supprimer cet échange pour le moment.'
+                                );
+                              }
+                              setDeletingInfoId(null);
+                              setConfirmDeleteInfoId(null);
+                              setTimeout(() => setInfoActionToast(null), 4000);
+                            }}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-black cursor-pointer disabled:opacity-50"
+                          >
+                            <Trash2 className="w-3 h-3" />
+                            <span>{deletingInfoId === req.id ? 'Suppression...' : 'Supprimer définitivement'}</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setConfirmDeleteInfoId(null)}
+                            className="px-2.5 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-slate-300 text-xs font-bold cursor-pointer"
+                          >
+                            Annuler
+                          </button>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 );
               })}
@@ -2167,10 +2769,10 @@ export const SuiviProgrammeConsole: React.FC<SuiviProgrammeConsoleProps> = () =>
           <div className="bg-slate-900 border border-indigo-500/30 rounded-3xl p-5 sm:p-6 shadow-xl">
             <div className="flex items-center gap-2.5 text-indigo-400 font-black text-sm uppercase tracking-wider mb-2">
               <Send className="w-4 h-4" />
-              <span>Module Opérationnel de la Navette d'Échange</span>
+              <span>Canal de Navette &amp; Échanges (Intégré à l'Espace Suivi)</span>
             </div>
             <p className="text-xs text-slate-400">
-              Cet espace permet au Chargé du Suivi du Programme d'échanger en continu avec les autres départements, d'émettre des requêtes et d'apporter des précisions en temps réel.
+              Cet espace intégré permet au Chargé du Suivi du Programme d'échanger en continu avec les autres départements, d'émettre des requêtes et d'apporter des précisions en temps réel sans quitter la console.
             </p>
           </div>
 
@@ -2180,4 +2782,25 @@ export const SuiviProgrammeConsole: React.FC<SuiviProgrammeConsoleProps> = () =>
     </div>
   );
 };
+
+function allDepartmentActivitiesCountByDept(
+  activities: EventActivity[],
+  projects: AgrProject[],
+  religiousEvents: ReligiousEvent[],
+  _unused?: string
+) {
+  const isPublished = (status?: string) => {
+    const up = String(status || '').trim().toUpperCase();
+    return up === 'PUBLISHED' || up === 'ACTIVE';
+  };
+  const org = (activities || []).filter(a => isPublished(a.status)).length;
+  const proj = (projects || []).filter(p => isPublished(p.status)).length;
+  const spir = (religiousEvents || [])
+    .filter(r => isPublished(r.status))
+    .filter(r => {
+      const normTitle = (r.title || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+      return !normTitle.includes('saint augustin') && r.id !== 'PRIERE-SAINT-AUGUSTIN-PERMANENT';
+    }).length;
+  return { org, proj, spir };
+}
 export default SuiviProgrammeConsole;

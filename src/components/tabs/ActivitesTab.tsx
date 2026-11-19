@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useApp } from '../../context/AppContext';
-import { EventActivity, DEFAULT_ANNIVERSAIRE_ACTIVITY } from '../../types';
+import { EventActivity } from '../../types';
 import {
   Tent,
   Calendar,
@@ -295,6 +295,14 @@ export const EventActivityCard: React.FC<EventActivityCardProps> = ({ activity: 
                 <span>Budget : {act.budget.toLocaleString('fr-FR')} F CFA</span>
               </span>
             )}
+
+            {/* Contribution requise par membre si renseignée */}
+            {typeof act.requiredAmountPerMember === 'number' && act.requiredAmountPerMember > 0 && (
+              <span className="text-xs font-black text-emerald-900 bg-emerald-50 border border-emerald-300 px-3 py-1.5 rounded-full inline-flex items-center gap-1">
+                <UserCheck className="w-3.5 h-3.5 text-emerald-700" />
+                <span>Cotisation : {act.requiredAmountPerMember.toLocaleString('fr-FR')} F / membre</span>
+              </span>
+            )}
           </div>
 
           {/* Titre de l'événement */}
@@ -509,12 +517,16 @@ export const ActivitesTab: React.FC = () => {
     return () => clearInterval(interval);
   }, []);
 
-  // Récupération de l'activité dynamique Anniversaire Rouama configurée par la Commission Organisation
+  // Récupération stricte de l'activité Anniversaire Rouama UNIQUEMENT si officiellement PUBLIÉE
   const anniversaireActivity = activities.find(
-    a => a.fixedType === 'ANNIVERSAIRE' || a.id === 'ACT-ANNIVERSAIRE-2027' || a.title?.toUpperCase().includes('ANNIVERSAIRE')
-  ) || DEFAULT_ANNIVERSAIRE_ACTIVITY;
+    a =>
+      a.status === 'PUBLISHED' &&
+      (a.fixedType === 'ANNIVERSAIRE' ||
+        a.id === 'ACT-ANNIVERSAIRE-2027' ||
+        a.title?.toUpperCase().includes('ANNIVERSAIRE'))
+  );
 
-  const hasAnnivAdHocMembers = anniversaireActivity.adHocRoles && Object.values(anniversaireActivity.adHocRoles).some(val => {
+  const hasAnnivAdHocMembers = anniversaireActivity?.adHocRoles && Object.values(anniversaireActivity.adHocRoles).some(val => {
     if (Array.isArray(val)) return val.length > 0;
     return Boolean(val && val !== 'Non désigné');
   });
@@ -555,7 +567,8 @@ export const ActivitesTab: React.FC = () => {
 
   return (
     <div className="space-y-8 animate-fadeIn">
-      {/* 1. MARCH 21ST FESTIVAL COUNTDOWN HERO BANNER (BANNIÈRE VERTE ORIGINALE AVEC DÉTAILS DÉPLIABLES) */}
+      {/* 1. MARCH 21ST FESTIVAL COUNTDOWN HERO BANNER (AFFICHE UNIQUEMENT SI OFFICIELLEMENT PUBLIÉE) */}
+      {anniversaireActivity && (
       <div className="bg-[#355E3B] rounded-[2.5rem] sm:rounded-[3rem] p-6 sm:p-10 text-white shadow-xl relative overflow-hidden border border-white/10">
         <div className="absolute -right-10 -bottom-10 w-64 h-64 bg-[#E67E22]/20 rounded-full blur-2xl pointer-events-none" />
 
@@ -576,7 +589,7 @@ export const ActivitesTab: React.FC = () => {
           {/* Décompte officiel grand format standardisé + Bouton Voir Détails */}
           <div className="flex flex-col items-center lg:items-end gap-3 shrink-0 self-stretch lg:self-auto">
             <OfficialCountdownClock
-              targetDate={new Date(targetYear, 2, 21, 0, 0, 0)}
+              targetDate={getActivityTargetDate(anniversaireActivity).targetDate || new Date(targetYear, 2, 21, 0, 0, 0)}
               isMonthYearOnly={false}
               isIndeterminate={false}
             />
@@ -748,6 +761,7 @@ export const ActivitesTab: React.FC = () => {
           )}
         </AnimatePresence>
       </div>
+      )}
 
       {/* 2. AD-HOC COMMITTEES & PUBLISHED PROGRAMS */}
       <div className="bg-white rounded-[2.5rem] p-6 sm:p-8 shadow-xl border border-emerald-900/10 space-y-6">
@@ -757,13 +771,20 @@ export const ActivitesTab: React.FC = () => {
             <span>Comités Ad-Hoc & Programmes d'Événements</span>
           </h2>
           <p className="text-xs text-slate-500 font-medium mt-1">
-            Organisation autonome gérée par la Commission Organisation et diffusée pour l'ensemble des membres.
+            Programmes validés par le Payor et officiellement publiés par la Commission Organisation.
           </p>
         </div>
 
-        {otherPublishedActivities.length === 0 ? (
-          <div className="text-center py-12 bg-emerald-50/30 rounded-3xl border border-dashed border-emerald-200 text-slate-500 text-sm">
-            Aucune activité ou programme publié pour l'instant. (Attente de rédaction par la Commission Organisation).
+        {otherPublishedActivities.length === 0 && !anniversaireActivity ? (
+          <div className="text-center py-12 bg-emerald-50/30 rounded-3xl border border-dashed border-emerald-200 text-slate-500 text-sm space-y-1">
+            <p className="font-bold text-slate-700">Aucun programme d'activité publié pour le moment.</p>
+            <p className="text-xs text-slate-500">
+              Les programmes apparaîtront ici avec leur décompte officiel dès validation par le Payor et publication par la Commission Organisation.
+            </p>
+          </div>
+        ) : otherPublishedActivities.length === 0 ? (
+          <div className="text-center py-8 bg-emerald-50/30 rounded-3xl border border-dashed border-emerald-200 text-slate-500 text-sm">
+            Aucune autre activité ou sortie publiée pour l'instant.
           </div>
         ) : (
           <div className="space-y-6">

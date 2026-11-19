@@ -186,13 +186,29 @@ export const ProjetsTab: React.FC = () => {
                     )}
                   </div>
 
-                  <div className="bg-white p-3.5 rounded-2xl border border-emerald-200 flex items-center justify-between">
-                    <span className="text-[11px] uppercase font-bold text-slate-500 block">
-                      Coût Estimé
-                    </span>
-                    <span className="text-base font-black text-forest-moss">
-                      {(proj.estimatedCost ?? 0).toLocaleString('fr-FR')} F CFA
-                    </span>
+                  <div className="bg-white p-3.5 rounded-2xl border border-emerald-200 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] uppercase font-bold text-slate-500 block">
+                        Coût Estimé
+                      </span>
+                      <span className="text-base font-black text-forest-moss">
+                        {(proj.estimatedCost ?? 0).toLocaleString('fr-FR')} F CFA
+                      </span>
+                    </div>
+                    {(proj.requiredAmountPerMember > 0 || proj.paymentDeadline) && (
+                      <div className="pt-2 border-t border-emerald-100 flex flex-wrap items-center justify-between gap-2 text-xs">
+                        {proj.requiredAmountPerMember > 0 && (
+                          <span className="font-bold text-amber-800 bg-amber-50 px-2.5 py-0.5 rounded-lg border border-amber-200">
+                            Cotisation DJAI : {proj.requiredAmountPerMember.toLocaleString('fr-FR')} F / membre
+                          </span>
+                        )}
+                        {proj.paymentDeadline && (
+                          <span className="font-semibold text-rose-700">
+                            Échéance : {proj.paymentDeadline}
+                          </span>
+                        )}
+                      </div>
+                    )}
                   </div>
                 </div>
 

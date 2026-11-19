@@ -10,8 +10,6 @@ import {
   WithdrawalRequest,
   NewsItem,
   EventActivity,
-  DEFAULT_ANNIVERSAIRE_ACTIVITY,
-  DEFAULT_SOIREE_ACTIVITY,
   DEFAULT_GBAIRAI_NEWS,
   AgrProject,
   FinancialEvent,
@@ -50,6 +48,7 @@ import {
   onSnapshot,
   runTransaction,
   arrayUnion,
+  deleteField,
 } from 'firebase/firestore';
 import { db, testFirestoreConnection, sanitizeFirestore } from '../firebase';
 import { compressReceiptImage } from '../utils/imageCompressor';
@@ -118,11 +117,15 @@ interface AppContextType {
   deleteReligiousEvent: (eventId: string) => Promise<void>;
   sendReligiousEventToSecretariat: (eventId: string) => void;
   sendReligiousEventsBatchToSecretariat: (eventIds: string[]) => void;
+  sendReligiousEventFromSecretariatToSuivi: (eventId: string) => void;
+  sendReligiousEventsBatchFromSecretariatToSuivi: (eventIds: string[]) => void;
   sendReligiousEventFromSecretariatToPayor: (eventId: string) => void;
   sendReligiousEventsBatchFromSecretariatToPayor: (eventIds: string[]) => void;
   approveReligiousEventPayor: (eventId: string) => void;
   approveReligiousEventsBatchPayor: (eventIds: string[]) => void;
   returnReligiousEventForCorrectionPayor: (eventId: string, feedback: string) => void;
+  returnReligiousEventsBatchForCorrectionPayor: (eventIds: string[], feedback: string) => void;
+  splitReligiousEventsBatchToIndividual: (eventIds: string[]) => void;
   sendReligiousEventNoteToCom: (eventId: string) => void;
   ackReligiousEventCOM: (eventId: string) => void;
   archiveReligiousEventSecretariat: (eventId: string) => void;
@@ -249,11 +252,15 @@ interface AppContextType {
   publishActivity: (activityId: string) => void;
   sendActivityToSecretariat: (activityId: string) => void;
   sendActivitiesBatchToSecretariat: (activityIds: string[]) => void;
+  sendActivityFromSecretariatToSuivi: (activityId: string) => void;
+  sendActivitiesBatchFromSecretariatToSuivi: (activityIds: string[]) => void;
   sendActivityFromSecretariatToPayor: (activityId: string) => void;
   sendActivitiesBatchFromSecretariatToPayor: (activityIds: string[]) => void;
   approveActivityPayor: (activityId: string) => void;
   approveActivitiesBatchPayor: (activityIds: string[]) => void;
   returnActivityForCorrectionPayor: (activityId: string, feedback: string) => void;
+  returnActivitiesBatchForCorrectionPayor: (activityIds: string[], feedback: string) => void;
+  splitActivitiesBatchToIndividual: (activityIds: string[]) => void;
   sendActivityNoteToCom: (activityId: string) => void;
   ackActivityCOM: (activityId: string) => void;
   archiveActivitySecretariat: (activityId: string) => void;
@@ -270,17 +277,22 @@ interface AppContextType {
   deleteProject: (projectId: string) => void;
   sendProjectToSecretariat: (projectId: string) => void;
   sendProjectsBatchToSecretariat: (projectIds: string[]) => void;
+  sendProjectFromSecretariatToSuivi: (projectId: string) => void;
+  sendProjectsBatchFromSecretariatToSuivi: (projectIds: string[]) => void;
   sendProjectFromSecretariatToPayor: (projectId: string) => void;
   sendProjectsBatchFromSecretariatToPayor: (projectIds: string[]) => void;
   approveProjectPayor: (projectId: string) => void;
   approveProjectsBatchPayor: (projectIds: string[]) => void;
   returnProjectForCorrectionPayor: (projectId: string, feedback: string) => void;
+  returnProjectsBatchForCorrectionPayor: (projectIds: string[], feedback: string) => void;
+  splitProjectsBatchToIndividual: (projectIds: string[]) => void;
   sendProjectNoteToCom: (projectId: string) => void;
   ackProjectCOM: (projectId: string) => void;
   archiveProjectSecretariat: (projectId: string) => void;
   assessProjectTresorier: (projectId: string, feasible: boolean) => void;
   publishProject: (projectId: string) => void;
   archiveProject: (projectId: string) => void;
+  sendComGbairaiAlert: (type: 'ACTIVITY' | 'PROJECT' | 'RELIGIOUS_EVENT', id: string) => void;
 
   createSecretaryPV: (pv: Omit<SecretaryPV, 'id' | 'status'> & { status?: SecretaryPV['status'] }) => void;
   updateSecretaryPV: (pvId: string, updates: Partial<SecretaryPV>) => void;
@@ -668,7 +680,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   useEffect(() => {
     currentUserRef.current = currentUser;
   }, [currentUser]);
-  const [activities, setActivities] = useState<EventActivity[]>([DEFAULT_ANNIVERSAIRE_ACTIVITY, DEFAULT_SOIREE_ACTIVITY]);
+  const [activities, setActivities] = useState<EventActivity[]>([]);
   const [projects, setProjects] = useState<AgrProject[]>([]);
   const [financialEvents, setFinancialEvents] = useState<FinancialEvent[]>([]);
   const [archiveDocs, setArchiveDocs] = useState<ArchiveDoc[]>([]);
@@ -687,106 +699,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [adminLogs, setAdminLogs] = useState<AdminLoginLog[]>([]);
   const [infoRequests, setInfoRequests] = useState<InfoRequest[]>([]);
 
-  // Synchronisation et réconciliation automatique des événements spirituels historiques (antérieurs ou créés dans News/Gbaïraï)
-  const reconcileHistoricalSpiritualEvents = (currentRelEvents: ReligiousEvent[], currentNews: NewsItem[]): ReligiousEvent[] => {
-    const result = [...currentRelEvents];
+  // Dédoublonnage et filtrage strict des événements spirituels (aucune promotion automatique vers PUBLISHED)
+  const reconcileHistoricalSpiritualEvents = (currentRelEvents: ReligiousEvent[], _currentNews: NewsItem[]): ReligiousEvent[] => {
     const normalizeStr = (str?: string) => (str || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-
-    (currentNews || []).forEach(news => {
-      if (!news) return;
-      const rawItem = news as any;
-      const isSpiritual =
-        rawItem.department === 'SPIRITUALITÉ' ||
-        rawItem.category === 'SPIRITUALITÉ' ||
-        news.authorRole === 'SPIRITUALITÉ' ||
-        news.author === 'SPIRITUALITÉ' ||
-        news.createdBy === 'SPIRITUALITÉ' ||
-        (news.title && (news.title.includes('RELIGIEUX') || news.title.includes('SPIRITUEL') || news.title.toLowerCase().includes('messe')));
-
-      if (!isSpiritual) return;
-
-      // Exclusion stricte de la Prière de Saint Augustin (prière permanente, non un événement calendaire)
-      const lowerTitle = (news.title || '').toLowerCase();
-      if (
-        lowerTitle.includes('prière rouama') ||
-        lowerTitle.includes('priere rouama') ||
-        lowerTitle.includes('saint augustin')
-      ) {
-        return;
-      }
-
-      const cleanTitle = (news.title || '').replace(/\[(?:ÉVÉNEMENT RELIGIEUX|EVENEMENT RELIGIEUX|SPIRITUALITÉ)\]\s*/gi, '').trim();
-      const cleanNormTitle = normalizeStr(cleanTitle);
-
-      const exists = result.some(e => {
-        if (e.id === news.id || e.id === 'EVT-' + news.id) return true;
-        const eNormTitle = normalizeStr(e.title);
-        if (cleanNormTitle && eNormTitle && (cleanNormTitle === eNormTitle || eNormTitle.includes(cleanNormTitle) || cleanNormTitle.includes(eNormTitle))) {
-          return true;
-        }
-        return false;
-      });
-
-      if (!exists) {
-        const content = news.content || '';
-        let eventDate = '';
-        let eventTime = '';
-        let location = '';
-        let theme = '';
-
-        const dateMatch = content.match(/Date:\s*([^\s\n]+(?:\s+à\s+[^\n]+)?)/i);
-        if (dateMatch) {
-          const rawDatePart = dateMatch[1];
-          if (rawDatePart.includes('à')) {
-            const parts = rawDatePart.split('à');
-            eventDate = parts[0].trim();
-            eventTime = parts[1].trim();
-          } else {
-            eventDate = rawDatePart.trim();
-          }
-        }
-
-        const timeMatch = content.match(/(?:Heure|à)\s*:\s*([0-9]{1,2}[:h][0-9]{2})/i);
-        if (timeMatch && !eventTime) {
-          eventTime = timeMatch[1].replace('h', ':').trim();
-        }
-
-        const locationMatch = content.match(/Lieu\s*:\s*([^\n]+)/i);
-        if (locationMatch) {
-          location = locationMatch[1].trim();
-        }
-
-        const themeMatch = content.match(/Thème\s*:\s*([^\n]+)/i);
-        if (themeMatch) {
-          theme = themeMatch[1].trim();
-        }
-
-        const inferredEvt: ReligiousEvent = {
-          id: 'EVT-' + news.id,
-          title: cleanTitle || news.title,
-          eventDate: eventDate || news.date || '2027-01-17',
-          eventTime: eventTime || '17:00',
-          location: location || 'Sanctuaire ROUAMA',
-          theme: theme || undefined,
-          status: 'PUBLISHED',
-          publishedAt: news.date,
-          createdAt: news.date,
-          publishedToGbairai: true,
-        };
-
-        result.push(inferredEvt);
-
-        try {
-          setDoc(doc(db, 'religious_events', inferredEvt.id), sanitizeFirestore(inferredEvt), { merge: true }).catch(() => {});
-        } catch {}
-      }
-    });
-
-    // Dédoublonnage strict final du tableau (par titre + date) et exclusion des mentions de prière permanente
     const uniqueResult: ReligiousEvent[] = [];
     const seenKeys = new Set<string>();
 
-    result.forEach(evt => {
+    (currentRelEvents || []).forEach(evt => {
       if (!evt) return;
       const lowerEvtTitle = (evt.title || '').toLowerCase();
       if (
@@ -796,7 +715,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       ) {
         return;
       }
-      const key = `${normalizeStr(evt.title)}_${normalizeStr(evt.eventDate || '')}`;
+      const key = `${normalizeStr(evt.title)}_${normalizeStr(evt.eventDate || '')}_${evt.id}`;
       if (!seenKeys.has(key)) {
         seenKeys.add(key);
         uniqueResult.push(evt);
@@ -1543,7 +1462,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     // Chargeur des autres collections
     const loadOtherCollections = async () => {
       try {
-        const [actSnap, projSnap, finEventSnap, verseSnap, intentSnap, relEventSnap, pvsSnap, bilansSnap, archSnap, adminSnap, progTaskSnap, progAlertSnap, adminLogSnap] = await Promise.allSettled([
+        const [actSnap, projSnap, finEventSnap, verseSnap, intentSnap, relEventSnap, pvsSnap, bilansSnap, archSnap, adminSnap, progTaskSnap, progAlertSnap, adminLogSnap, resetFlagSnap, purgeTestBatchSnap, purgeCentralisationSnap] = await Promise.allSettled([
           getDocs(collection(db, 'activities')),
           getDocs(collection(db, 'projects')),
           getDocs(collection(db, 'financial_events')),
@@ -1557,7 +1476,30 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           getDocs(collection(db, 'programme_tasks')),
           getDocs(collection(db, 'programme_alerts')),
           getDocs(collection(db, 'admin_logs')),
+          getDoc(doc(db, 'admin', 'workflow_reset_v3')),
+          getDoc(doc(db, 'admin', 'purge_test_batch_1794992532283')),
+          getDoc(doc(db, 'admin', 'purge_centralisation_v1')),
         ]);
+
+        const needsWorkflowReset =
+          resetFlagSnap.status === 'fulfilled' && !resetFlagSnap.value.exists();
+        const needsCentralisationPurge =
+          purgeCentralisationSnap.status === 'fulfilled' && !purgeCentralisationSnap.value.exists();
+        const centralisationPurgePromises: Promise<any>[] = [];
+        const needsTestBatchPurge =
+          purgeTestBatchSnap.status === 'fulfilled' && !purgeTestBatchSnap.value.exists();
+        const testBatchPurgePromises: Promise<any>[] = [];
+        const isTargetTestBatchProject = (p: Partial<AgrProject> & { id: string }): boolean => {
+          const normTitle = String(p.title || '').trim().toUpperCase();
+          const docDate = String(p.dateRealisation || p.eventDate || '').trim();
+          if (p.batchId === 'BATCH-PROJ-1794992532283') return true;
+          if (!needsTestBatchPurge) return false;
+          if (p.id === 'PROJ-001' && normTitle === 'RES') return true;
+          if (p.id === 'PROJ-002' && normTitle === 'FER') return true;
+          if (normTitle === 'RES' && docDate === '2027-01-02') return true;
+          if (normTitle === 'FER' && docDate === '2027-02-05') return true;
+          return false;
+        };
 
         if (actSnap.status === 'fulfilled') {
           const rawLoaded: EventActivity[] = [];
@@ -1623,21 +1565,94 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             }
           }
 
-          if (!hasAnniv) loaded.push(DEFAULT_ANNIVERSAIRE_ACTIVITY);
-          if (!hasSoiree) loaded.push(DEFAULT_SOIREE_ACTIVITY);
+          if (needsWorkflowReset || needsCentralisationPurge) {
+            for (let i = 0; i < loaded.length; i++) {
+              const a = loaded[i];
+              const upStatus = String(a.status || '').trim().toUpperCase();
+              if (upStatus === 'PUBLISHED' || upStatus === 'ACTIVE' || (needsWorkflowReset && !a.status)) {
+                const resetPayload = {
+                  status: 'DRAFT' as const,
+                  sentToSecretariat: false,
+                  sentToSuivi: false,
+                  sentToPayor: false,
+                  sentToCom: false,
+                  ackByCom: false,
+                  gbairaiAlertSentByCom: false,
+                  publishedAt: '',
+                  publishedByDeptAt: '',
+                  payorSignature: null as any,
+                };
+                centralisationPurgePromises.push(
+                  setDoc(doc(db, 'activities', a.id), resetPayload, { merge: true }).catch(() => {})
+                );
+                loaded[i] = { ...a, ...resetPayload, payorSignature: undefined };
+              }
+            }
+          }
+
           loaded.sort((a, b) => b.id.localeCompare(a.id));
           setActivities(loaded);
         }
 
         if (projSnap.status === 'fulfilled') {
           const loaded: AgrProject[] = [];
-          projSnap.value.forEach(d => loaded.push({ id: d.id, ...(d.data() as any) }));
+          projSnap.value.forEach(d => {
+            const projItem: AgrProject = { id: d.id, ...(d.data() as any) };
+            if (isTargetTestBatchProject(projItem)) {
+              testBatchPurgePromises.push(deleteDoc(doc(db, 'projects', d.id)).catch(console.warn));
+              return;
+            }
+            loaded.push(projItem);
+          });
+          if (needsWorkflowReset || needsCentralisationPurge) {
+            for (let i = 0; i < loaded.length; i++) {
+              const p = loaded[i];
+              const upStatus = String(p.status || '').trim().toUpperCase();
+              if (upStatus === 'PUBLISHED' || upStatus === 'ACTIVE' || (needsWorkflowReset && !p.status)) {
+                const resetPayload = {
+                  status: 'DRAFT' as const,
+                  sentToSecretariat: false,
+                  sentToSuivi: false,
+                  sentToPayor: false,
+                  sentToCom: false,
+                  ackByCom: false,
+                  gbairaiAlertSentByCom: false,
+                  publishedAt: '',
+                  publishedByDeptAt: '',
+                  payorSignature: null as any,
+                };
+                centralisationPurgePromises.push(
+                  setDoc(doc(db, 'projects', p.id), resetPayload, { merge: true }).catch(() => {})
+                );
+                loaded[i] = { ...p, ...resetPayload, payorSignature: undefined };
+              }
+            }
+          }
           setProjects(loaded);
         }
 
         if (finEventSnap.status === 'fulfilled') {
           const loaded: FinancialEvent[] = [];
-          finEventSnap.value.forEach(d => loaded.push({ id: d.id, ...(d.data() as any) }));
+          finEventSnap.value.forEach(d => {
+            const fe: FinancialEvent = { id: d.id, ...(d.data() as any) };
+            if (
+              needsTestBatchPurge &&
+              (fe.id === 'PROJ-001' || fe.id === 'PROJ-002' || (fe as any).batchId === 'BATCH-PROJ-1794992532283')
+            ) {
+              testBatchPurgePromises.push(deleteDoc(doc(db, 'financial_events', d.id)).catch(console.warn));
+              return;
+            }
+            loaded.push(fe);
+          });
+          if (needsWorkflowReset) {
+            for (let i = 0; i < loaded.length; i++) {
+              const fe = loaded[i];
+              if (fe.fund === 'LOISIRS' && fe.status === 'PUBLISHED') {
+                setDoc(doc(db, 'financial_events', fe.id), { status: 'ARCHIVED' }, { merge: true }).catch(() => {});
+                loaded[i] = { ...fe, status: 'ARCHIVED' };
+              }
+            }
+          }
           setFinancialEvents(loaded);
         }
 
@@ -1655,16 +1670,58 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           const loaded: ReligiousEvent[] = [];
           relEventSnap.value.forEach(d => {
             const data = d.data() as any;
+            const st = data.status || 'DRAFT';
             loaded.push({
               ...data,
               id: d.id,
-              status: data.status || (data.publishedAt ? 'PUBLISHED' : 'DRAFT'),
-              publishedToGbairai: Boolean(data.publishedToGbairai || data.publishedAt),
+              status: st,
+              publishedToGbairai: Boolean(st === 'PUBLISHED' && (data.publishedToGbairai || data.publishedAt)),
             });
           });
+          if (needsWorkflowReset || needsCentralisationPurge) {
+            for (let i = 0; i < loaded.length; i++) {
+              const evt = loaded[i];
+              const upStatus = String(evt.status || '').trim().toUpperCase();
+              if (upStatus === 'PUBLISHED' || upStatus === 'ACTIVE' || evt.publishedToGbairai) {
+                const resetPayload = {
+                  status: 'DRAFT' as const,
+                  publishedToGbairai: false,
+                  publishedAt: '',
+                  publishedByDeptAt: '',
+                  sentToSecretariat: false,
+                  sentToSuivi: false,
+                  sentToPayor: false,
+                  sentToCom: false,
+                  ackByCom: false,
+                  gbairaiAlertSentByCom: false,
+                  payorSignature: null as any,
+                };
+                centralisationPurgePromises.push(
+                  setDoc(doc(db, 'religious_events', evt.id), resetPayload, { merge: true }).catch(() => {})
+                );
+                loaded[i] = { ...evt, ...resetPayload, payorSignature: undefined };
+              }
+            }
+          }
           const currentNews = newsItemsRef.current || [];
           const reconciled = reconcileHistoricalSpiritualEvents(loaded, currentNews);
           setReligiousEvents(reconciled);
+        }
+
+        if (needsWorkflowReset) {
+          setDoc(doc(db, 'admin', 'workflow_reset_v3'), {
+            completedAt: new Date().toISOString(),
+            version: '2026.11.18.3',
+          }).catch(() => {});
+        }
+
+        if (needsCentralisationPurge && actSnap.status === 'fulfilled' && projSnap.status === 'fulfilled' && relEventSnap.status === 'fulfilled') {
+          Promise.allSettled(centralisationPurgePromises).then(() => {
+            setDoc(doc(db, 'admin', 'purge_centralisation_v1'), {
+              completedAt: new Date().toISOString(),
+              version: '2026.11.18.10',
+            }).catch(() => {});
+          });
         }
 
         if (pvsSnap.status === 'fulfilled') {
@@ -1716,16 +1773,49 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           });
         }
 
+        const purgedTaskIds = new Set<string>();
         if (progTaskSnap.status === 'fulfilled') {
           const loaded: ProgrammeTask[] = [];
-          progTaskSnap.value.forEach(d => loaded.push({ id: d.id, ...(d.data() as any) }));
+          progTaskSnap.value.forEach(d => {
+            const t: ProgrammeTask = { id: d.id, ...(d.data() as any) };
+            if (
+              needsTestBatchPurge &&
+              (t.sourceId === 'PROJ-001' || t.sourceId === 'PROJ-002' || t.sourceId === 'BATCH-PROJ-1794992532283')
+            ) {
+              purgedTaskIds.add(d.id);
+              testBatchPurgePromises.push(deleteDoc(doc(db, 'programme_tasks', d.id)).catch(console.warn));
+              return;
+            }
+            loaded.push(t);
+          });
           setProgrammeTasks(loaded);
         }
 
         if (progAlertSnap.status === 'fulfilled') {
           const loaded: ProgrammeAlert[] = [];
-          progAlertSnap.value.forEach(d => loaded.push({ id: d.id, ...(d.data() as any) }));
+          progAlertSnap.value.forEach(d => {
+            const a: ProgrammeAlert = { id: d.id, ...(d.data() as any) };
+            if (
+              needsTestBatchPurge &&
+              a.taskId &&
+              (purgedTaskIds.has(a.taskId) || a.taskId === 'PROJ-001' || a.taskId === 'PROJ-002' || a.taskId === 'BATCH-PROJ-1794992532283')
+            ) {
+              testBatchPurgePromises.push(deleteDoc(doc(db, 'programme_alerts', d.id)).catch(console.warn));
+              return;
+            }
+            loaded.push(a);
+          });
           setProgrammeAlerts(loaded);
+        }
+
+        if (needsTestBatchPurge && projSnap.status === 'fulfilled') {
+          Promise.allSettled(testBatchPurgePromises).then(() => {
+            setDoc(doc(db, 'admin', 'purge_test_batch_1794992532283'), {
+              completedAt: new Date().toISOString(),
+              purgedIds: ['PROJ-001', 'PROJ-002', 'BATCH-PROJ-1794992532283'],
+              version: '2026.11.18.9',
+            }).catch(() => {});
+          });
         }
 
         if (adminLogSnap.status === 'fulfilled') {
@@ -1831,11 +1921,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const loaded: ReligiousEvent[] = [];
       snapshot.forEach((d) => {
         const data = d.data() as any;
+        const st = data.status || 'DRAFT';
         loaded.push({
           ...data,
           id: d.id,
-          status: data.status || (data.publishedAt ? 'PUBLISHED' : 'DRAFT'),
-          publishedToGbairai: Boolean(data.publishedToGbairai || data.publishedAt),
+          status: st,
+          publishedToGbairai: Boolean(st === 'PUBLISHED' && (data.publishedToGbairai || data.publishedAt)),
         });
       });
       const currentNews = newsItemsRef.current || [];
@@ -2636,34 +2727,86 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return getMemberDuesDetail(memberId).status;
   };
 
+  const getEffectiveLoisirsEvents = (): FinancialEvent[] => {
+    const finLoisirs = financialEvents.filter(e => e.fund === 'LOISIRS' && e.status === 'PUBLISHED');
+    const actLoisirs: FinancialEvent[] = activities
+      .filter(a => a.status === 'PUBLISHED' && a.eventType === 'SIMPLE')
+      .filter(a => !finLoisirs.some(fe => fe.id === `EVT-ACT-${a.id}` || fe.title.toLowerCase().trim() === (a.title || '').toLowerCase().trim()))
+      .map(a => ({
+        id: `EVT-ACT-${a.id}`,
+        fund: 'LOISIRS' as const,
+        subCategory: a.title,
+        title: a.title,
+        description: a.description || a.title,
+        requiredAmountPerMember:
+          a.requiredAmountPerMember && a.requiredAmountPerMember > 0
+            ? a.requiredAmountPerMember
+            : a.budget && a.budget > 0
+            ? Math.round(a.budget / (members.length || 12))
+            : 5000,
+        totalTargetAmount: a.budget,
+        eventDate: a.eventDate,
+        paymentDeadline: a.paymentDeadline || a.eventDate,
+        status: 'PUBLISHED' as const,
+        createdAt: a.publishedAt || a.createdAt || new Date().toLocaleDateString('fr-FR'),
+        createdBy: a.createdBy || 'COMMISSION ORGANISATION',
+      }));
+    return [...finLoisirs, ...actLoisirs];
+  };
+
   const getActiveFinancialEvent = (fund: 'LOISIRS' | 'CAS_SOCIAUX'): FinancialEvent | undefined => {
+    if (fund === 'LOISIRS') {
+      return getEffectiveLoisirsEvents()[0];
+    }
     return financialEvents.find(e => e.fund === fund && e.status === 'PUBLISHED');
   };
 
   const getActiveAgrProject = (): AgrProject | undefined => {
-    return projects.find(p => p.status === 'PUBLISHED');
+    return projects.find(p => p.status === 'PUBLISHED' || p.status === 'active');
   };
 
   const getRequiredAmountForRubric = (fund: FundType, subCategory?: string): number => {
     switch (fund) {
-      case 'ANNIVERSAIRE':
-        return 10000;
+      case 'ANNIVERSAIRE': {
+        const annivActs = activities.filter(
+          a =>
+            a.status === 'PUBLISHED' &&
+            (a.fixedType === 'ANNIVERSAIRE' ||
+              a.id === 'ACT-ANNIVERSAIRE-2027' ||
+              a.title?.toUpperCase().includes('ANNIVERSAIRE'))
+        );
+        const annivAct = subCategory
+          ? annivActs.find(a => a.id === subCategory || a.title === subCategory) || annivActs[0]
+          : annivActs[0];
+        if (!annivAct) return 0;
+        if (annivAct.requiredAmountPerMember && annivAct.requiredAmountPerMember > 0) {
+          return annivAct.requiredAmountPerMember;
+        }
+        return annivAct.budget && annivAct.budget > 0
+          ? Math.round(annivAct.budget / (members.length || 12))
+          : 10000;
+      }
       case 'SOIREE_ROUAMA': {
-        const soireeActs = activities.filter(a => a.status === 'PUBLISHED' && (a.fixedType === 'SOIREE_ROUAMA' || a.title?.toLowerCase().includes('soirée') || a.title?.toLowerCase().includes('soiree')));
-        if (subCategory) {
-          const specific = soireeActs.find(a => a.id === subCategory || a.title === subCategory);
-          if (specific) {
-            return specific.budget && specific.budget > 0 ? Math.round(specific.budget / (members.length || 12)) : 10000;
-          }
+        const soireeActs = activities.filter(
+          a =>
+            a.status === 'PUBLISHED' &&
+            (a.fixedType === 'SOIREE_ROUAMA' ||
+              a.title?.toLowerCase().includes('soirée') ||
+              a.title?.toLowerCase().includes('soiree'))
+        );
+        const soireeAct = subCategory
+          ? soireeActs.find(a => a.id === subCategory || a.title === subCategory) || soireeActs[0]
+          : soireeActs[0];
+        if (!soireeAct) return 0;
+        if (soireeAct.requiredAmountPerMember && soireeAct.requiredAmountPerMember > 0) {
+          return soireeAct.requiredAmountPerMember;
         }
-        const soireeAct = soireeActs[0];
-        if (soireeAct) {
-          return soireeAct.budget && soireeAct.budget > 0 ? Math.round(soireeAct.budget / (members.length || 12)) : 10000;
-        }
-        return 0; // Si aucune soirée publiée, la rubrique est inactive (montant 0)
+        return soireeAct.budget && soireeAct.budget > 0
+          ? Math.round(soireeAct.budget / (members.length || 12))
+          : 10000;
       }
       case 'LOISIRS': {
-        const activeEvts = financialEvents.filter(e => e.fund === 'LOISIRS' && e.status === 'PUBLISHED');
+        const activeEvts = getEffectiveLoisirsEvents();
         if (subCategory) {
           const specific = activeEvts.find(e => e.id === subCategory || e.title === subCategory || e.subCategory === subCategory);
           if (specific) return specific.requiredAmountPerMember;
@@ -2683,8 +2826,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       case 'COTISATION': {
         const now = new Date();
         const currentMonthNum = now.getMonth() + 1; // 1-12
-        // Détermine le nombre de mois dus du début de l'année (Janvier 2026) jusqu'au MOIS PRÉCÉDENT le mois actuel.
-        // Exemple : En Septembre 2026, les mois dus courent de Janvier à Août = 8 mois (8 * 500 = 4 000 F CFA).
         const nbMoisDus = Math.max(0, currentMonthNum - 1);
         return nbMoisDus * 500;
       }
@@ -2770,8 +2911,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           title = `Cas Social (${subCategory})`;
         }
       } else if (fund === 'LOISIRS') {
-        const activeEvts = financialEvents.filter(e => e.fund === 'LOISIRS' && e.status === 'PUBLISHED');
-        const specific = subCategory ? activeEvts.find(e => e.id === subCategory || e.title === subCategory) : activeEvts[0];
+        const activeEvts = getEffectiveLoisirsEvents();
+        const specific = subCategory ? activeEvts.find(e => e.id === subCategory || e.title === subCategory || e.subCategory === subCategory) : activeEvts[0];
+        if (specific) {
+          title = specific.title;
+        }
+      } else if (fund === 'ANNIVERSAIRE') {
+        const annivActs = activities.filter(
+          a =>
+            a.status === 'PUBLISHED' &&
+            (a.fixedType === 'ANNIVERSAIRE' ||
+              a.id === 'ACT-ANNIVERSAIRE-2027' ||
+              a.title?.toUpperCase().includes('ANNIVERSAIRE'))
+        );
+        const specific = subCategory ? annivActs.find(a => a.id === subCategory || a.title === subCategory) : annivActs[0];
         if (specific) {
           title = specific.title;
         }
@@ -2782,7 +2935,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           title = specific.title;
         }
       } else if (fund === 'AGR') {
-        const activeProjs = projects.filter(p => p.status === 'PUBLISHED');
+        const activeProjs = projects.filter(p => p.status === 'PUBLISHED' || p.status === 'active');
         const specific = subCategory ? activeProjs.find(p => p.id === subCategory || p.title === subCategory) : activeProjs[0];
         if (specific) {
           title = specific.title;
@@ -4621,75 +4774,99 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const newAct: EventActivity = {
       ...activity,
       id: seqActId,
-      status: activity.status || 'DRAFT',
+      status: 'DRAFT',
       budgetStatus: (activity.budget && activity.budget > 0) ? 'PENDING_TRESORIER' : 'NONE',
       createdAt: new Date().toISOString(),
       sentToSecretariat: false,
       sentToPayor: false,
       sentToCom: false,
       ackByCom: false,
+      gbairaiAlertSentByCom: false,
       archivedBySecretariat: false,
     };
     setDoc(doc(db, 'activities', newAct.id), sanitizeFirestore(newAct)).catch(console.warn);
     setActivities(prev => [newAct, ...prev]);
-
-    if (newAct.status === 'PUBLISHED') {
-      publishNews(
-        `⛺ ÉVÉNEMENT PUBLIÉ : ${newAct.title}`,
-        `L'événement « ${newAct.title} » (${newAct.eventDate}) a été planifié et publié par la Commission Organisation ! Retrouvez le programme et le décompte dans l'onglet SHOW.`,
-        'ANNONCE',
-        'TOUS',
-        'COMMISSION ORGANISATION'
-      );
-      dispatchPushNotification({
-        title: '📢 Nouveauté Organisation',
-        body: newAct.title,
-        senderRole: 'ORGANISATION',
-        senderName: 'Commission Organisation',
-        targetRole: 'ALL',
-        type: 'GENERAL',
-        rawTitle: true,
-        priority: 'high',
-        sound: 'default',
-        requireInteraction: true,
-        url: '/',
-      }).catch(console.warn);
-    }
   };
 
   const publishActivity = (activityId: string) => {
-    const updates = { status: 'PUBLISHED' as const };
+    if (currentUser?.type === 'ADMIN') {
+      const allowedRoles = ['ORGANISATION', 'SUPER_ADMIN'];
+      if (!allowedRoles.includes(currentUser.adminRole || '')) {
+        console.warn(`[Workflow] Publication refusée pour ${currentUser.adminRole}. Seule la Commission Organisation peut publier dans SHOW.`);
+        return;
+      }
+    }
+
+    const act = activities.find(a => a.id === activityId);
+    if (!act) return;
+    if (act.status !== 'APPROVED' && !act.payorSignature?.signedBy) {
+      console.warn(`[Workflow] Publication refusée : l'activité ${activityId} n'a pas encore reçu le visa du Payor.`);
+      return;
+    }
+
+    const nowDisplay = new Date().toLocaleDateString('fr-FR', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+    const updates = {
+      status: 'PUBLISHED' as const,
+      publishedAt: nowDisplay,
+      publishedByDeptAt: new Date().toISOString(),
+      sentToCom: true,
+      gbairaiAlertSentByCom: false,
+    };
     setDoc(doc(db, 'activities', activityId), updates, { merge: true }).catch(console.warn);
     setActivities(prev => prev.map(a => a.id === activityId ? { ...a, ...updates } : a));
 
-    const act = activities.find(a => a.id === activityId);
-    if (act) {
-      publishNews(
-        `⛺ ÉVÉNEMENT DIFFUSÉ : ${act.title}`,
-        `Programme officiel diffusé pour « ${act.title} » (Date: ${act.eventDate}). Consultez la rubrique SHOW / Activités pour le détail des comités !`,
-        'ANNONCE',
-        'TOUS',
-        'COMMISSION ORGANISATION'
-      );
-      dispatchPushNotification({
-        title: '📢 Nouveauté Organisation',
-        body: act.title,
-        senderRole: 'ORGANISATION',
-        senderName: 'Commission Organisation',
-        targetRole: 'ALL',
-        type: 'GENERAL',
-        rawTitle: true,
-        priority: 'high',
-        sound: 'default',
-        requireInteraction: true,
-        url: '/',
-      }).catch(console.warn);
+    // Liaison automatique avec l'espace DJAI pour les activités Sorties & Loisirs (SIMPLE)
+    if (act.eventType === 'SIMPLE') {
+      const linkedFinId = `EVT-ACT-${act.id}`;
+      const reqAmt =
+        act.requiredAmountPerMember && act.requiredAmountPerMember > 0
+          ? act.requiredAmountPerMember
+          : act.budget && act.budget > 0
+          ? Math.round(act.budget / (members.length || 12))
+          : 5000;
+      const linkedEvent: FinancialEvent = {
+        id: linkedFinId,
+        fund: 'LOISIRS',
+        subCategory: act.title,
+        title: act.title,
+        description: act.description || act.title,
+        requiredAmountPerMember: reqAmt,
+        totalTargetAmount: act.budget,
+        eventDate: act.eventDate,
+        paymentDeadline: act.paymentDeadline || act.eventDate,
+        status: 'PUBLISHED',
+        createdAt: new Date().toLocaleDateString('fr-FR'),
+        createdBy: 'COMMISSION ORGANISATION',
+      };
+      setDoc(doc(db, 'financial_events', linkedFinId), sanitizeFirestore(linkedEvent), { merge: true }).catch(console.warn);
+      setFinancialEvents(prev => [linkedEvent, ...prev.filter(e => e.id !== linkedFinId)]);
     }
+
+    // Alerte automatique vers la Commission Communication (COM / BIC) pour notification globale sur Gbairai
+    dispatchPushNotification({
+      title: '🔔 Nouveau programme publié (SHOW)',
+      body: `La Commission Organisation a publié "${act.title}". Prêt pour l'envoi de l'alerte globale sur le Gbairai.`,
+      senderRole: 'ORGANISATION',
+      senderName: 'Commission Organisation',
+      targetRole: 'COM',
+      targetDepartment: 'com',
+      type: 'INFO_REQUEST',
+      rawTitle: true,
+      priority: 'high',
+      sound: 'default',
+      url: '/',
+    }).catch(console.warn);
   };
 
   const sendActivityToSecretariat = (activityId: string) => {
     const act = activities.find(a => a.id === activityId);
-    const updates = { status: 'SENT_TO_SECRETARIAT' as const, sentToSecretariat: true };
+    const updates = { status: 'SENT_TO_SECRETARIAT' as const, sentToSecretariat: true, sentToSuivi: false };
     setDoc(doc(db, 'activities', activityId), updates, { merge: true }).catch(console.warn);
     setActivities(prev => prev.map(a => a.id === activityId ? { ...a, ...updates } : a));
 
@@ -4708,11 +4885,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const sendActivitiesBatchToSecretariat = (activityIds: string[]) => {
     const batchId = 'BATCH-ACT-' + Date.now();
     activityIds.forEach(id => {
-      const updates = { status: 'SENT_TO_SECRETARIAT' as const, sentToSecretariat: true, batchId, isConsolidated: true };
+      const updates = { status: 'SENT_TO_SECRETARIAT' as const, sentToSecretariat: true, sentToSuivi: false, batchId, isConsolidated: true };
       setDoc(doc(db, 'activities', id), updates, { merge: true }).catch(console.warn);
     });
     setActivities(prev =>
-      prev.map(a => (activityIds.includes(a.id) ? { ...a, status: 'SENT_TO_SECRETARIAT', sentToSecretariat: true, batchId, isConsolidated: true } : a))
+      prev.map(a => (activityIds.includes(a.id) ? { ...a, status: 'SENT_TO_SECRETARIAT', sentToSecretariat: true, sentToSuivi: false, batchId, isConsolidated: true } : a))
     );
 
     dispatchPushNotification({
@@ -4727,17 +4904,56 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }).catch(console.warn);
   };
 
+  const sendActivityFromSecretariatToSuivi = (activityId: string) => {
+    const act = activities.find(a => a.id === activityId);
+    const updates = { status: 'SENT_TO_SUIVI' as const, sentToSecretariat: true, sentToSuivi: true };
+    setDoc(doc(db, 'activities', activityId), updates, { merge: true }).catch(console.warn);
+    setActivities(prev => prev.map(a => a.id === activityId ? { ...a, ...updates } : a));
+
+    dispatchPushNotification({
+      title: 'E-ROUAMA • Instruction Chargé de Suivi 🕵️',
+      body: `Le Secrétariat a transmis l'activité "${act?.title || activityId}" au Chargé de Suivi pour instruction avant la réunion de cadrage.`,
+      senderRole: 'SECRETARIAT',
+      senderName: 'Secrétariat Général',
+      targetRole: 'SDP',
+      targetDepartment: 'sdp',
+      type: 'INFO_REQUEST',
+      url: '/',
+    }).catch(console.warn);
+  };
+
+  const sendActivitiesBatchFromSecretariatToSuivi = (activityIds: string[]) => {
+    activityIds.forEach(id => {
+      const updates = { status: 'SENT_TO_SUIVI' as const, sentToSecretariat: true, sentToSuivi: true };
+      setDoc(doc(db, 'activities', id), updates, { merge: true }).catch(console.warn);
+    });
+    setActivities(prev =>
+      prev.map(a => (activityIds.includes(a.id) ? { ...a, status: 'SENT_TO_SUIVI', sentToSecretariat: true, sentToSuivi: true } : a))
+    );
+
+    dispatchPushNotification({
+      title: 'E-ROUAMA • Instruction Chargé de Suivi 🕵️',
+      body: `Le Secrétariat a transmis le Programme Global (${activityIds.length} activités) au Chargé de Suivi pour instruction pré-réunion.`,
+      senderRole: 'SECRETARIAT',
+      senderName: 'Secrétariat Général',
+      targetRole: 'SDP',
+      targetDepartment: 'sdp',
+      type: 'INFO_REQUEST',
+      url: '/',
+    }).catch(console.warn);
+  };
+
   const sendActivityFromSecretariatToPayor = (activityId: string) => {
     const act = activities.find(a => a.id === activityId);
-    const updates = { status: 'PENDING_PAYOR' as const, sentToPayor: true };
+    const updates = { status: 'PENDING_PAYOR' as const, sentToPayor: true, sentToSuivi: false, suiviReviewed: true };
     setDoc(doc(db, 'activities', activityId), updates, { merge: true }).catch(console.warn);
     setActivities(prev => prev.map(a => a.id === activityId ? { ...a, ...updates } : a));
 
     dispatchPushNotification({
       title: 'E-ROUAMA • Transmission Payor ⚖️',
-      body: `Le Secrétariat a transmis l'activité "${act?.title || activityId}" pour visa officiel du Payor.`,
+      body: `L'activité "${act?.title || activityId}" a été transmise pour visa officiel du Payor.`,
       senderRole: 'SECRÉTARIAT',
-      senderName: 'Secrétariat Général',
+      senderName: 'Secrétariat / Suivi',
       targetRole: 'PAYOR',
       targetDepartment: 'payor',
       type: 'INFO_REQUEST',
@@ -4747,18 +4963,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const sendActivitiesBatchFromSecretariatToPayor = (activityIds: string[]) => {
     activityIds.forEach(id => {
-      const updates = { status: 'PENDING_PAYOR' as const, sentToPayor: true };
+      const updates = { status: 'PENDING_PAYOR' as const, sentToPayor: true, sentToSuivi: false, suiviReviewed: true };
       setDoc(doc(db, 'activities', id), updates, { merge: true }).catch(console.warn);
     });
     setActivities(prev =>
-      prev.map(a => (activityIds.includes(a.id) ? { ...a, status: 'PENDING_PAYOR', sentToPayor: true } : a))
+      prev.map(a => (activityIds.includes(a.id) ? { ...a, status: 'PENDING_PAYOR', sentToPayor: true, sentToSuivi: false, suiviReviewed: true } : a))
     );
 
     dispatchPushNotification({
       title: 'E-ROUAMA • Transmission Payor ⚖️',
-      body: `Le Secrétariat a transmis le Programme Global (${activityIds.length} activités) pour visa du Payor.`,
+      body: `Le Programme Global (${activityIds.length} activités) a été transmis pour visa officiel du Payor.`,
       senderRole: 'SECRÉTARIAT',
-      senderName: 'Secrétariat Général',
+      senderName: 'Secrétariat / Suivi',
       targetRole: 'PAYOR',
       targetDepartment: 'payor',
       type: 'INFO_REQUEST',
@@ -4845,6 +5061,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       status: 'returned_for_correction' as const,
       payorFeedback: feedback,
       sentToSecretariat: true,
+      sentToSuivi: false,
+      suiviReviewed: true,
+      isPostMeetingRevision: true,
     };
     setDoc(doc(db, 'activities', activityId), updates, { merge: true }).catch(console.warn);
     setActivities(prev => prev.map(a => a.id === activityId ? { ...a, ...updates } : a));
@@ -4859,6 +5078,66 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       type: 'INFO_REQUEST',
       url: '/',
     }).catch(console.warn);
+  };
+
+  const returnActivitiesBatchForCorrectionPayor = (activityIds: string[], feedback: string) => {
+    activityIds.forEach(id => {
+      const updates = {
+        status: 'returned_for_correction' as const,
+        payorFeedback: feedback,
+        sentToSecretariat: true,
+        sentToSuivi: false,
+        suiviReviewed: true,
+        isPostMeetingRevision: true,
+      };
+      setDoc(doc(db, 'activities', id), updates, { merge: true }).catch(console.warn);
+    });
+    setActivities(prev =>
+      prev.map(a =>
+        activityIds.includes(a.id)
+          ? {
+              ...a,
+              status: 'returned_for_correction',
+              payorFeedback: feedback,
+              sentToSecretariat: true,
+              sentToSuivi: false,
+              suiviReviewed: true,
+              isPostMeetingRevision: true,
+            }
+          : a
+      )
+    );
+    dispatchPushNotification({
+      title: 'E-ROUAMA • Programme Global Retourné pour Correction ⚠️',
+      body: `Le Payor a retourné le Programme Global (${activityIds.length} activités) : ${feedback.substring(0, 100)}`,
+      senderRole: 'PAYOR',
+      senderName: 'Espace Payor',
+      targetRole: 'ORGANISATION',
+      targetDepartment: 'organisation',
+      type: 'INFO_REQUEST',
+      url: '/',
+    }).catch(console.warn);
+  };
+
+  const splitActivitiesBatchToIndividual = (activityIds: string[]) => {
+    activityIds.forEach(id => {
+      setDoc(
+        doc(db, 'activities', id),
+        {
+          isConsolidated: false,
+          batchId: deleteField(),
+          batchTitle: deleteField(),
+        },
+        { merge: true }
+      ).catch(console.warn);
+    });
+    setActivities(prev =>
+      prev.map(a =>
+        activityIds.includes(a.id)
+          ? { ...a, isConsolidated: false, batchId: undefined, batchTitle: undefined }
+          : a
+      )
+    );
   };
 
   const sendActivityNoteToCom = (activityId: string) => {
@@ -5049,7 +5328,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const sendProjectToSecretariat = (projectId: string) => {
     const proj = projects.find(p => p.id === projectId);
-    const updates = { status: 'SENT_TO_SECRETARIAT' as const, sentToSecretariat: true };
+    const updates = { status: 'SENT_TO_SECRETARIAT' as const, sentToSecretariat: true, sentToSuivi: false };
     setDoc(doc(db, 'projects', projectId), updates, { merge: true }).catch(console.warn);
     setProjects(prev => prev.map(p => (p.id === projectId ? { ...p, ...updates } : p)));
 
@@ -5068,11 +5347,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const sendProjectsBatchToSecretariat = (projectIds: string[]) => {
     const batchId = 'BATCH-PROJ-' + Date.now();
     projectIds.forEach(id => {
-      const updates = { status: 'SENT_TO_SECRETARIAT' as const, sentToSecretariat: true, batchId, isConsolidated: true };
+      const updates = { status: 'SENT_TO_SECRETARIAT' as const, sentToSecretariat: true, sentToSuivi: false, batchId, isConsolidated: true };
       setDoc(doc(db, 'projects', id), updates, { merge: true }).catch(console.warn);
     });
     setProjects(prev =>
-      prev.map(p => (projectIds.includes(p.id) ? { ...p, status: 'SENT_TO_SECRETARIAT', sentToSecretariat: true, batchId, isConsolidated: true } : p))
+      prev.map(p => (projectIds.includes(p.id) ? { ...p, status: 'SENT_TO_SECRETARIAT', sentToSecretariat: true, sentToSuivi: false, batchId, isConsolidated: true } : p))
     );
 
     dispatchPushNotification({
@@ -5087,17 +5366,56 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }).catch(console.warn);
   };
 
+  const sendProjectFromSecretariatToSuivi = (projectId: string) => {
+    const proj = projects.find(p => p.id === projectId);
+    const updates = { status: 'SENT_TO_SUIVI' as const, sentToSecretariat: true, sentToSuivi: true };
+    setDoc(doc(db, 'projects', projectId), updates, { merge: true }).catch(console.warn);
+    setProjects(prev => prev.map(p => (p.id === projectId ? { ...p, ...updates } : p)));
+
+    dispatchPushNotification({
+      title: 'E-ROUAMA • Instruction Chargé de Suivi 🕵️',
+      body: `Le Secrétariat a transmis le projet "${proj?.title || projectId}" au Chargé de Suivi pour instruction avant la réunion de cadrage.`,
+      senderRole: 'SECRETARIAT',
+      senderName: 'Secrétariat Général',
+      targetRole: 'SDP',
+      targetDepartment: 'sdp',
+      type: 'INFO_REQUEST',
+      url: '/',
+    }).catch(console.warn);
+  };
+
+  const sendProjectsBatchFromSecretariatToSuivi = (projectIds: string[]) => {
+    projectIds.forEach(id => {
+      const updates = { status: 'SENT_TO_SUIVI' as const, sentToSecretariat: true, sentToSuivi: true };
+      setDoc(doc(db, 'projects', id), updates, { merge: true }).catch(console.warn);
+    });
+    setProjects(prev =>
+      prev.map(p => (projectIds.includes(p.id) ? { ...p, status: 'SENT_TO_SUIVI', sentToSecretariat: true, sentToSuivi: true } : p))
+    );
+
+    dispatchPushNotification({
+      title: 'E-ROUAMA • Instruction Chargé de Suivi 🕵️',
+      body: `Le Secrétariat a transmis le Dossier Global (${projectIds.length} projets) au Chargé de Suivi pour instruction pré-réunion.`,
+      senderRole: 'SECRETARIAT',
+      senderName: 'Secrétariat Général',
+      targetRole: 'SDP',
+      targetDepartment: 'sdp',
+      type: 'INFO_REQUEST',
+      url: '/',
+    }).catch(console.warn);
+  };
+
   const sendProjectFromSecretariatToPayor = (projectId: string) => {
     const proj = projects.find(p => p.id === projectId);
-    const updates = { status: 'PENDING_PAYOR' as const, sentToPayor: true };
+    const updates = { status: 'PENDING_PAYOR' as const, sentToPayor: true, sentToSuivi: false, suiviReviewed: true };
     setDoc(doc(db, 'projects', projectId), updates, { merge: true }).catch(console.warn);
     setProjects(prev => prev.map(p => (p.id === projectId ? { ...p, ...updates } : p)));
 
     dispatchPushNotification({
       title: 'E-ROUAMA • Transmission Payor ⚖️',
-      body: `Le Secrétariat a transmis le projet "${proj?.title || projectId}" pour visa officiel du Payor.`,
+      body: `Le projet "${proj?.title || projectId}" a été transmis pour visa officiel du Payor.`,
       senderRole: 'SECRÉTARIAT',
-      senderName: 'Secrétariat Général',
+      senderName: 'Secrétariat / Suivi',
       targetRole: 'PAYOR',
       targetDepartment: 'payor',
       type: 'INFO_REQUEST',
@@ -5107,18 +5425,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const sendProjectsBatchFromSecretariatToPayor = (projectIds: string[]) => {
     projectIds.forEach(id => {
-      const updates = { status: 'PENDING_PAYOR' as const, sentToPayor: true };
+      const updates = { status: 'PENDING_PAYOR' as const, sentToPayor: true, sentToSuivi: false, suiviReviewed: true };
       setDoc(doc(db, 'projects', id), updates, { merge: true }).catch(console.warn);
     });
     setProjects(prev =>
-      prev.map(p => (projectIds.includes(p.id) ? { ...p, status: 'PENDING_PAYOR', sentToPayor: true } : p))
+      prev.map(p => (projectIds.includes(p.id) ? { ...p, status: 'PENDING_PAYOR', sentToPayor: true, sentToSuivi: false, suiviReviewed: true } : p))
     );
 
     dispatchPushNotification({
       title: 'E-ROUAMA • Transmission Payor ⚖️',
-      body: `Le Secrétariat a transmis le Dossier Global (${projectIds.length} projets) pour visa officiel du Payor.`,
+      body: `Le Dossier Global (${projectIds.length} projets) a été transmis pour visa officiel du Payor.`,
       senderRole: 'SECRÉTARIAT',
-      senderName: 'Secrétariat Général',
+      senderName: 'Secrétariat / Suivi',
       targetRole: 'PAYOR',
       targetDepartment: 'payor',
       type: 'INFO_REQUEST',
@@ -5239,6 +5557,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         status: 'returned_for_correction',
         payorFeedback: feedback,
         sentToSecretariat: true,
+        sentToSuivi: false,
+        suiviReviewed: true,
+        isPostMeetingRevision: true,
       },
       { merge: true }
     ).catch(console.warn);
@@ -5251,6 +5572,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               status: 'returned_for_correction',
               payorFeedback: feedback,
               sentToSecretariat: true,
+              sentToSuivi: false,
+              suiviReviewed: true,
+              isPostMeetingRevision: true,
             }
           : p
       )
@@ -5266,6 +5590,69 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       type: 'INFO_REQUEST',
       url: '/',
     }).catch(console.warn);
+  };
+
+  const returnProjectsBatchForCorrectionPayor = (projectIds: string[], feedback: string) => {
+    projectIds.forEach(id => {
+      setDoc(
+        doc(db, 'projects', id),
+        {
+          status: 'returned_for_correction',
+          payorFeedback: feedback,
+          sentToSecretariat: true,
+          sentToSuivi: false,
+          suiviReviewed: true,
+          isPostMeetingRevision: true,
+        },
+        { merge: true }
+      ).catch(console.warn);
+    });
+    setProjects(prev =>
+      prev.map(p =>
+        projectIds.includes(p.id)
+          ? {
+              ...p,
+              status: 'returned_for_correction',
+              payorFeedback: feedback,
+              sentToSecretariat: true,
+              sentToSuivi: false,
+              suiviReviewed: true,
+              isPostMeetingRevision: true,
+            }
+          : p
+      )
+    );
+    dispatchPushNotification({
+      title: 'E-ROUAMA • Dossier Global Retourné pour Correction ⚠️',
+      body: `Le Payor a retourné le Dossier Global (${projectIds.length} projets) : ${feedback.substring(0, 100)}`,
+      senderRole: 'PAYOR',
+      senderName: 'Espace Payor',
+      targetRole: 'PROJET',
+      targetDepartment: 'projet',
+      type: 'INFO_REQUEST',
+      url: '/',
+    }).catch(console.warn);
+  };
+
+  const splitProjectsBatchToIndividual = (projectIds: string[]) => {
+    projectIds.forEach(id => {
+      setDoc(
+        doc(db, 'projects', id),
+        {
+          isConsolidated: false,
+          batchId: deleteField(),
+          batchTitle: deleteField(),
+        },
+        { merge: true }
+      ).catch(console.warn);
+    });
+    setProjects(prev =>
+      prev.map(p =>
+        projectIds.includes(p.id)
+          ? { ...p, isConsolidated: false, batchId: undefined, batchTitle: undefined }
+          : p
+      )
+    );
   };
 
   const sendProjectNoteToCom = (projectId: string) => {
@@ -5295,46 +5682,60 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const publishProject = (projectId: string) => {
-    // Vérification stricte des droits de publication du projet
+    // Vérification stricte des droits : seul le Responsable Projets (ou Super Admin) publie dans Gagne-Pain
     if (currentUser?.type === 'ADMIN') {
-      const allowedRoles = ['PROJET', 'PAYOR', 'SUPER_ADMIN'];
+      const allowedRoles = ['PROJET', 'SUPER_ADMIN'];
       if (!allowedRoles.includes(currentUser.adminRole || '')) {
-        alert(`Action non autorisée : Seul le Responsable Projets (AGR) ou le Payor peut publier un projet.`);
+        console.warn(`[Workflow] Publication projet refusée pour ${currentUser.adminRole}.`);
         return;
       }
     }
 
-    setDoc(doc(db, 'projects', projectId), { status: 'active' }, { merge: true }).catch(console.warn);
-    setProjects(prev =>
-      prev.map(p => (p.id === projectId ? { ...p, status: 'active' } : p))
-    );
     const proj = projects.find(p => p.id === projectId);
-    if (proj) {
-      publishNews(
-        `🚀 PROJET AGR OUVERT AUX COTISATIONS : ${proj.title}`,
-        `Le projet AGR "${proj.title}" a reçu l'accord officiel du Payor (visé & signé) et est désormais ouvert aux cotisations des membres ! Montant total du projet : ${proj.estimatedCost.toLocaleString('fr-FR')} F CFA. Contribution requise par membre : ${(proj.requiredAmountPerMember || 0).toLocaleString('fr-FR')} F CFA. Consultez la rubrique GAGNE-PAIN et le Suivi des Acomptes.`,
-        'ANNONCE',
-        'TOUS',
-        'COMMISSION PROJET',
-        'APP',
-        'FINANCES'
-      );
-
-      // Notification Push FCM : TOUS LES MEMBRES
-      dispatchPushNotification({
-        title: '📢 Nouveauté Projet',
-        body: proj.title,
-        senderRole: 'PROJET',
-        senderName: 'Responsable Projets',
-        targetRole: 'ALL',
-        type: 'GENERAL',
-        rawTitle: true,
-        priority: 'high',
-        sound: 'default',
-        requireInteraction: true,
-        url: '/',
-      }).catch(console.warn);
+    if (!proj) return;
+    const isPayorSigned =
+      proj.status === 'approved_by_payor' ||
+      proj.status === 'APPROVED_PAYOR' ||
+      Boolean(proj.payorSignature?.signedBy);
+    if (!isPayorSigned) {
+      console.warn(`[Workflow] Publication refusée : le projet ${projectId} n'a pas encore reçu le visa du Payor.`);
+      return;
     }
+
+    const nowDisplay = new Date().toLocaleDateString('fr-FR', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+    const updates = {
+      status: 'PUBLISHED' as const,
+      publishedAt: nowDisplay,
+      publishedByDeptAt: new Date().toISOString(),
+      sentToCom: true,
+      gbairaiAlertSentByCom: false,
+    };
+
+    setDoc(doc(db, 'projects', projectId), updates, { merge: true }).catch(console.warn);
+    setProjects(prev =>
+      prev.map(p => (p.id === projectId ? { ...p, ...updates } : p))
+    );
+
+    // Alerte automatique vers la Commission Communication (COM / BIC) pour notification globale sur Gbairai
+    dispatchPushNotification({
+      title: '🔔 Nouveau projet AGR publié (Gagne-Pain)',
+      body: `La Commission Projets a publié "${proj.title}" (cotisations DJAI ouvertes). Prêt pour l'alerte globale sur le Gbairai.`,
+      senderRole: 'PROJET',
+      senderName: 'Responsable Projets',
+      targetRole: 'COM',
+      targetDepartment: 'com',
+      type: 'INFO_REQUEST',
+      rawTitle: true,
+      priority: 'high',
+      sound: 'default',
+      url: '/',
+    }).catch(console.warn);
   };
 
   const archiveProject = (projectId: string) => {
@@ -6382,39 +6783,149 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     eventId: string,
     dispatchChannel: 'APP' | 'MAIL' | 'GENERAL' = 'GENERAL'
   ) => {
+    if (currentUser?.type === 'ADMIN') {
+      const allowedRoles = ['SPIRITUALITE', 'SUPER_ADMIN'];
+      if (!allowedRoles.includes(currentUser.adminRole || '')) {
+        console.warn(`[Workflow] Publication spirituelle refusée pour ${currentUser.adminRole}.`);
+        return;
+      }
+    }
+
     const evt = religiousEvents.find(e => e.id === eventId);
     if (!evt) return;
+    if (evt.status !== 'APPROVED' && evt.status !== 'APPROVED_PAYOR' && !evt.payorSignature?.signedBy) {
+      console.warn(`[Workflow] Publication refusée : l'événement spirituel ${eventId} n'a pas encore reçu le visa du Payor.`);
+      return;
+    }
 
     const publishedDate = new Date().toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
     const updatedEvt: ReligiousEvent = {
       ...evt,
       status: 'PUBLISHED',
       publishedAt: publishedDate,
+      publishedByDeptAt: new Date().toISOString(),
       dispatchChannel,
       publishedToGbairai: true,
+      sentToCom: true,
+      gbairaiAlertSentByCom: false,
     };
 
-    await setDoc(doc(db, 'religious_events', eventId), sanitizeFirestore(updatedEvt)).catch(console.warn);
+    await setDoc(doc(db, 'religious_events', eventId), sanitizeFirestore(updatedEvt), { merge: true }).catch(console.warn);
     setReligiousEvents(prev => prev.map(e => e.id === eventId ? updatedEvt : e));
 
-    const title = `[ÉVÉNEMENT RELIGIEUX] ${evt.title}`;
-    const content = `Date: ${evt.eventDate} à ${evt.eventTime}\nLieu: ${evt.location}${evt.theme ? `\nThème: ${evt.theme}` : ''}`;
-    publishNews(title, content, 'ANNONCE', 'TOUS', 'SPIRITUALITÉ', dispatchChannel);
-
-    // Notification Push FCM : TOUS LES MEMBRES
+    // Alerte automatique vers la Commission Communication (COM / BIC) pour notification globale sur Gbairai
     dispatchPushNotification({
-      title: '📢 Événement Religieux',
-      body: `${evt.title} - ${evt.eventDate} à ${evt.location}`,
+      title: '🔔 Nouvel événement spirituel publié (Prière Rouama)',
+      body: `La Commission Spiritualité a publié "${evt.title}" (${evt.eventDate}). Prêt pour l'alerte globale sur le Gbairai.`,
       senderRole: 'SPIRITUALITE',
       senderName: 'Commission Spiritualité',
-      targetRole: 'ALL',
-      type: 'GENERAL',
+      targetRole: 'COM',
+      targetDepartment: 'com',
+      type: 'INFO_REQUEST',
       rawTitle: true,
       priority: 'high',
       sound: 'default',
-      requireInteraction: true,
       url: '/',
     }).catch(console.warn);
+  };
+
+  const sendComGbairaiAlert = (type: 'ACTIVITY' | 'PROJECT' | 'RELIGIOUS_EVENT', id: string) => {
+    if (type === 'ACTIVITY') {
+      const act = activities.find(a => a.id === id);
+      if (!act || act.status !== 'PUBLISHED') return;
+      const contribTxt = act.requiredAmountPerMember
+        ? ` Cotisation par membre : ${act.requiredAmountPerMember.toLocaleString('fr-FR')} F CFA (rubrique DJAI ouverte).`
+        : '';
+      publishNews(
+        `🎪 PROGRAMME OFFICIEL PUBLIÉ : ${act.title}`,
+        `L'événement « ${act.title} » (${act.eventDate}${act.location ? ` • Lieu : ${act.location}` : ''}) a été validé par le Payor et officiellement publié par la Commission Organisation dans la rubrique SHOW !${contribTxt}`,
+        'ANNONCE',
+        'TOUS',
+        'BIC / COMMUNICATION',
+        'GENERAL',
+        'ACTIVITES',
+        act.id
+      );
+      dispatchPushNotification({
+        title: '📢 Alerte Officielle • SHOW & DJAI',
+        body: `${act.title} (${act.eventDate}) est officiellement publié !`,
+        senderRole: 'COM',
+        senderName: 'Communication (BIC)',
+        targetRole: 'ALL',
+        type: 'GENERAL',
+        rawTitle: true,
+        priority: 'high',
+        sound: 'default',
+        requireInteraction: true,
+        url: '/',
+      }).catch(console.warn);
+      setDoc(doc(db, 'activities', id), { gbairaiAlertSentByCom: true }, { merge: true }).catch(console.warn);
+      setActivities(prev => prev.map(a => (a.id === id ? { ...a, gbairaiAlertSentByCom: true } : a)));
+      return;
+    }
+
+    if (type === 'PROJECT') {
+      const proj = projects.find(p => p.id === id);
+      if (!proj || (proj.status !== 'PUBLISHED' && proj.status !== 'active')) return;
+      publishNews(
+        `🚀 PROJET AGR OUVERT AUX COTISATIONS : ${proj.title}`,
+        `Le projet AGR "${proj.title}" a été validé par le Payor et officiellement publié par la Commission Projets ! Budget : ${(proj.estimatedCost || 0).toLocaleString('fr-FR')} F CFA. Contribution par membre : ${(proj.requiredAmountPerMember || 0).toLocaleString('fr-FR')} F CFA. Consultez GAGNE-PAIN et l'espace DJAI.`,
+        'ANNONCE',
+        'TOUS',
+        'BIC / COMMUNICATION',
+        'GENERAL',
+        'FINANCES',
+        proj.id
+      );
+      dispatchPushNotification({
+        title: '📢 Alerte Officielle • Projet AGR & DJAI',
+        body: `Le projet "${proj.title}" est publié et ouvert aux cotisations !`,
+        senderRole: 'COM',
+        senderName: 'Communication (BIC)',
+        targetRole: 'ALL',
+        type: 'GENERAL',
+        rawTitle: true,
+        priority: 'high',
+        sound: 'default',
+        requireInteraction: true,
+        url: '/',
+      }).catch(console.warn);
+      setDoc(doc(db, 'projects', id), { gbairaiAlertSentByCom: true }, { merge: true }).catch(console.warn);
+      setProjects(prev => prev.map(p => (p.id === id ? { ...p, gbairaiAlertSentByCom: true } : p)));
+      return;
+    }
+
+    if (type === 'RELIGIOUS_EVENT') {
+      const evt = religiousEvents.find(e => e.id === id);
+      if (!evt || evt.status !== 'PUBLISHED') return;
+      const title = `[ÉVÉNEMENT RELIGIEUX] ${evt.title}`;
+      const content = `Date: ${evt.eventDate} à ${evt.eventTime}\nLieu: ${evt.location}${evt.theme ? `\nThème: ${evt.theme}` : ''}`;
+      publishNews(
+        title,
+        content,
+        'ANNONCE',
+        'TOUS',
+        'BIC / COMMUNICATION',
+        evt.dispatchChannel || 'GENERAL',
+        'PRIERE_ROUAMA',
+        evt.id
+      );
+      dispatchPushNotification({
+        title: '📢 Alerte Officielle • Prière Rouama',
+        body: `${evt.title} — ${evt.eventDate} à ${evt.location}`,
+        senderRole: 'COM',
+        senderName: 'Communication (BIC)',
+        targetRole: 'ALL',
+        type: 'GENERAL',
+        rawTitle: true,
+        priority: 'high',
+        sound: 'default',
+        requireInteraction: true,
+        url: '/',
+      }).catch(console.warn);
+      setDoc(doc(db, 'religious_events', id), { gbairaiAlertSentByCom: true }, { merge: true }).catch(console.warn);
+      setReligiousEvents(prev => prev.map(e => (e.id === id ? { ...e, gbairaiAlertSentByCom: true } : e)));
+    }
   };
 
   const updateReligiousEvent = async (
@@ -6450,7 +6961,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     eventData: Omit<ReligiousEvent, 'id' | 'publishedAt'>,
     dispatchChannel: 'APP' | 'MAIL' | 'GENERAL' = 'GENERAL'
   ) => {
-    // Numérotation séquentielle automatique basée sur le dernier document existant (SPI-001, SPI-002, ...)
     let maxSpiSeq = 0;
     religiousEvents.forEach(e => {
       if (!e.id) return;
@@ -6466,38 +6976,25 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const newEvt: ReligiousEvent = {
       ...eventData,
       id: seqSpiId,
-      status: 'PUBLISHED',
-      publishedAt: new Date().toLocaleDateString('fr-FR'),
-      publishedToGbairai: true,
+      status: 'DRAFT',
+      publishedToGbairai: false,
+      gbairaiAlertSentByCom: false,
+      sentToSecretariat: false,
+      sentToPayor: false,
+      sentToCom: false,
+      ackByCom: false,
+      createdAt: new Date().toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }),
       dispatchChannel,
     };
     setDoc(doc(db, 'religious_events', newEvt.id), sanitizeFirestore(newEvt)).catch(console.warn);
     setReligiousEvents(prev => [newEvt, ...prev]);
-
-    const title = `[ÉVÉNEMENT RELIGIEUX] ${eventData.title}`;
-    const content = `Date: ${eventData.eventDate} à ${eventData.eventTime}\nLieu: ${eventData.location}${eventData.theme ? `\nThème: ${eventData.theme}` : ''}`;
-    publishNews(title, content, 'ANNONCE', 'TOUS', 'SPIRITUALITÉ', dispatchChannel);
-
-    // Notification Push FCM : TOUS LES MEMBRES
-    dispatchPushNotification({
-      title: '📢 Nouveauté Spiritualité',
-      body: eventData.title,
-      senderRole: 'SPIRITUALITE',
-      senderName: 'Commission Spiritualité',
-      targetRole: 'ALL',
-      type: 'GENERAL',
-      rawTitle: true,
-      priority: 'high',
-      sound: 'default',
-      requireInteraction: true,
-      url: '/',
-    }).catch(console.warn);
   };
 
   const sendReligiousEventToSecretariat = (eventId: string) => {
     const updates = {
       status: 'SENT_TO_SECRETARIAT' as const,
       sentToSecretariat: true,
+      sentToSuivi: false,
     };
     setDoc(doc(db, 'religious_events', eventId), updates, { merge: true }).catch(console.warn);
     setReligiousEvents(prev => prev.map(e => e.id === eventId ? { ...e, ...updates } : e));
@@ -6521,13 +7018,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const updates = {
         status: 'SENT_TO_SECRETARIAT' as const,
         sentToSecretariat: true,
+        sentToSuivi: false,
         batchId,
         isConsolidated: true,
       };
       setDoc(doc(db, 'religious_events', id), updates, { merge: true }).catch(console.warn);
     });
     setReligiousEvents(prev =>
-      prev.map(e => (eventIds.includes(e.id) ? { ...e, status: 'SENT_TO_SECRETARIAT', sentToSecretariat: true, batchId, isConsolidated: true } : e))
+      prev.map(e => (eventIds.includes(e.id) ? { ...e, status: 'SENT_TO_SECRETARIAT', sentToSecretariat: true, sentToSuivi: false, batchId, isConsolidated: true } : e))
     );
 
     dispatchPushNotification({
@@ -6542,10 +7040,59 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }).catch(console.warn);
   };
 
+  const sendReligiousEventFromSecretariatToSuivi = (eventId: string) => {
+    const updates = {
+      status: 'SENT_TO_SUIVI' as const,
+      sentToSecretariat: true,
+      sentToSuivi: true,
+    };
+    setDoc(doc(db, 'religious_events', eventId), updates, { merge: true }).catch(console.warn);
+    setReligiousEvents(prev => prev.map(e => e.id === eventId ? { ...e, ...updates } : e));
+
+    const ev = religiousEvents.find(e => e.id === eventId);
+    dispatchPushNotification({
+      title: 'E-ROUAMA • Instruction Chargé de Suivi 🕵️',
+      body: `Le Secrétariat a transmis l'activité spirituelle "${ev?.title || eventId}" au Chargé de Suivi pour instruction avant la réunion de cadrage.`,
+      senderRole: 'SECRETARIAT',
+      senderName: 'Secrétariat Général',
+      targetRole: 'SDP',
+      targetDepartment: 'sdp',
+      type: 'DOCUMENT_TRANSMITTED',
+      url: '/',
+    }).catch(console.warn);
+  };
+
+  const sendReligiousEventsBatchFromSecretariatToSuivi = (eventIds: string[]) => {
+    eventIds.forEach(id => {
+      const updates = {
+        status: 'SENT_TO_SUIVI' as const,
+        sentToSecretariat: true,
+        sentToSuivi: true,
+      };
+      setDoc(doc(db, 'religious_events', id), updates, { merge: true }).catch(console.warn);
+    });
+    setReligiousEvents(prev =>
+      prev.map(e => (eventIds.includes(e.id) ? { ...e, status: 'SENT_TO_SUIVI', sentToSecretariat: true, sentToSuivi: true } : e))
+    );
+
+    dispatchPushNotification({
+      title: 'E-ROUAMA • Instruction Chargé de Suivi 🕵️',
+      body: `Le Secrétariat a transmis le programme spirituel consolidé (${eventIds.length} activités) au Chargé de Suivi pour instruction pré-réunion.`,
+      senderRole: 'SECRETARIAT',
+      senderName: 'Secrétariat Général',
+      targetRole: 'SDP',
+      targetDepartment: 'sdp',
+      type: 'DOCUMENT_TRANSMITTED',
+      url: '/',
+    }).catch(console.warn);
+  };
+
   const sendReligiousEventFromSecretariatToPayor = (eventId: string) => {
     const updates = {
       status: 'PENDING_PAYOR' as const,
       sentToPayor: true,
+      sentToSuivi: false,
+      suiviReviewed: true,
     };
     setDoc(doc(db, 'religious_events', eventId), updates, { merge: true }).catch(console.warn);
     setReligiousEvents(prev => prev.map(e => e.id === eventId ? { ...e, ...updates } : e));
@@ -6553,9 +7100,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const ev = religiousEvents.find(e => e.id === eventId);
     dispatchPushNotification({
       title: 'E-ROUAMA • Fiche Spiritualité Soumise au Payor ⚖️',
-      body: `Le Secrétariat a transmis l'activité spirituelle "${ev?.title || eventId}" au Payor pour validation.`,
+      body: `L'activité spirituelle "${ev?.title || eventId}" a été transmise au Payor pour validation.`,
       senderRole: 'SECRETAIRE',
-      senderName: 'Secrétariat Général',
+      senderName: 'Secrétariat / Suivi',
       targetRole: 'PAYOR',
       targetDepartment: 'payor',
       type: 'DOCUMENT_TRANSMITTED',
@@ -6568,18 +7115,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const updates = {
         status: 'PENDING_PAYOR' as const,
         sentToPayor: true,
+        sentToSuivi: false,
+        suiviReviewed: true,
       };
       setDoc(doc(db, 'religious_events', id), updates, { merge: true }).catch(console.warn);
     });
     setReligiousEvents(prev =>
-      prev.map(e => (eventIds.includes(e.id) ? { ...e, status: 'PENDING_PAYOR', sentToPayor: true } : e))
+      prev.map(e => (eventIds.includes(e.id) ? { ...e, status: 'PENDING_PAYOR', sentToPayor: true, sentToSuivi: false, suiviReviewed: true } : e))
     );
 
     dispatchPushNotification({
       title: 'E-ROUAMA • Programme Global Spiritualité Soumis au Payor ⚖️',
-      body: `Le Secrétariat a transmis le programme consolidé (${eventIds.length} activités) pour validation au Payor.`,
+      body: `Le programme spirituel consolidé (${eventIds.length} activités) a été transmis pour validation au Payor.`,
       senderRole: 'SECRETAIRE',
-      senderName: 'Secrétariat Général',
+      senderName: 'Secrétariat / Suivi',
       targetRole: 'PAYOR',
       targetDepartment: 'payor',
       type: 'DOCUMENT_TRANSMITTED',
@@ -6667,6 +7216,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       status: 'returned_for_correction' as const,
       payorFeedback: feedback,
       sentToSecretariat: true,
+      sentToSuivi: false,
+      suiviReviewed: true,
+      isPostMeetingRevision: true,
     };
     setDoc(doc(db, 'religious_events', eventId), updates, { merge: true }).catch(console.warn);
     setReligiousEvents(prev => prev.map(e => e.id === eventId ? { ...e, ...updates } : e));
@@ -6682,6 +7234,66 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       type: 'INFO_REQUEST',
       url: '/',
     }).catch(console.warn);
+  };
+
+  const returnReligiousEventsBatchForCorrectionPayor = (eventIds: string[], feedback: string) => {
+    eventIds.forEach(id => {
+      const updates = {
+        status: 'returned_for_correction' as const,
+        payorFeedback: feedback,
+        sentToSecretariat: true,
+        sentToSuivi: false,
+        suiviReviewed: true,
+        isPostMeetingRevision: true,
+      };
+      setDoc(doc(db, 'religious_events', id), updates, { merge: true }).catch(console.warn);
+    });
+    setReligiousEvents(prev =>
+      prev.map(e =>
+        eventIds.includes(e.id)
+          ? {
+              ...e,
+              status: 'returned_for_correction',
+              payorFeedback: feedback,
+              sentToSecretariat: true,
+              sentToSuivi: false,
+              suiviReviewed: true,
+              isPostMeetingRevision: true,
+            }
+          : e
+      )
+    );
+    dispatchPushNotification({
+      title: 'E-ROUAMA • Programme Spirituel Global Retourné ⚠️',
+      body: `Le Payor a retourné le Programme Spirituel Global (${eventIds.length} événements) : ${feedback.substring(0, 100)}`,
+      senderRole: 'PAYOR',
+      senderName: 'Espace Payor',
+      targetRole: 'SPIRITUALITE',
+      targetDepartment: 'spiritualite',
+      type: 'INFO_REQUEST',
+      url: '/',
+    }).catch(console.warn);
+  };
+
+  const splitReligiousEventsBatchToIndividual = (eventIds: string[]) => {
+    eventIds.forEach(id => {
+      setDoc(
+        doc(db, 'religious_events', id),
+        {
+          isConsolidated: false,
+          batchId: deleteField(),
+          batchTitle: deleteField(),
+        },
+        { merge: true }
+      ).catch(console.warn);
+    });
+    setReligiousEvents(prev =>
+      prev.map(e =>
+        eventIds.includes(e.id)
+          ? { ...e, isConsolidated: false, batchId: undefined, batchTitle: undefined }
+          : e
+      )
+    );
   };
 
   const sendReligiousEventNoteToCom = (eventId: string) => {
@@ -6756,11 +7368,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         deleteReligiousEvent,
         sendReligiousEventToSecretariat,
         sendReligiousEventsBatchToSecretariat,
+        sendReligiousEventFromSecretariatToSuivi,
+        sendReligiousEventsBatchFromSecretariatToSuivi,
         sendReligiousEventFromSecretariatToPayor,
         sendReligiousEventsBatchFromSecretariatToPayor,
         approveReligiousEventPayor,
         approveReligiousEventsBatchPayor,
         returnReligiousEventForCorrectionPayor,
+        returnReligiousEventsBatchForCorrectionPayor,
+        splitReligiousEventsBatchToIndividual,
         sendReligiousEventNoteToCom,
         ackReligiousEventCOM,
         archiveReligiousEventSecretariat,
@@ -6805,11 +7421,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         publishActivity,
         sendActivityToSecretariat,
         sendActivitiesBatchToSecretariat,
+        sendActivityFromSecretariatToSuivi,
+        sendActivitiesBatchFromSecretariatToSuivi,
         sendActivityFromSecretariatToPayor,
         sendActivitiesBatchFromSecretariatToPayor,
         approveActivityPayor,
         approveActivitiesBatchPayor,
         returnActivityForCorrectionPayor,
+        returnActivitiesBatchForCorrectionPayor,
+        splitActivitiesBatchToIndividual,
         sendActivityNoteToCom,
         ackActivityCOM,
         archiveActivitySecretariat,
@@ -6822,17 +7442,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         deleteProject,
         sendProjectToSecretariat,
         sendProjectsBatchToSecretariat,
+        sendProjectFromSecretariatToSuivi,
+        sendProjectsBatchFromSecretariatToSuivi,
         sendProjectFromSecretariatToPayor,
         sendProjectsBatchFromSecretariatToPayor,
         approveProjectPayor,
         approveProjectsBatchPayor,
         returnProjectForCorrectionPayor,
+        returnProjectsBatchForCorrectionPayor,
+        splitProjectsBatchToIndividual,
         sendProjectNoteToCom,
         ackProjectCOM,
         archiveProjectSecretariat,
         assessProjectTresorier,
         publishProject,
         archiveProject,
+        sendComGbairaiAlert,
         createSecretaryPV,
         updateSecretaryPV,
         sendPVFromSecretariatToPayor,

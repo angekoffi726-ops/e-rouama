@@ -11,7 +11,6 @@ import { dispatchPushNotification } from '../../utils/pushNotificationService';
 import { fetchAELFDailyReadings, AELFDayData } from '../../utils/aelfService';
 import { getDailyVerseForDate, PRAYER_ROUAMA } from '../../utils/versesData';
 import { computeBilanData, extractBilanPeriodParams } from '../../utils/bilanCalculator';
-import { RbacWarningBanner } from './RbacWarningBanner';
 import { CerveauMembersCredentialsViewer } from './CerveauMembersCredentialsViewer';
 import { SuiviProgrammeConsole } from './SuiviProgrammeConsole';
 import { InfoRequestsModule, isRoleEligibleForInfoModule, normalizeToEligibleDeptKey, isDeptMatch, OFFICIAL_WHATSAPP_GROUP_URL, buildWhatsAppShareUrl, copyToClipboardSafely } from './InfoRequestsModule';
@@ -465,36 +464,49 @@ export const AdminPortal: React.FC = () => {
     sendBilanFromSecretariatToPayor,
     publishActivity,
     sendActivityToSecretariat,
+    sendActivityFromSecretariatToSuivi,
     sendActivityFromSecretariatToPayor,
     returnActivityForCorrectionPayor,
+    returnActivitiesBatchForCorrectionPayor,
+    splitActivitiesBatchToIndividual,
     sendActivityNoteToCom,
     ackActivityCOM,
     archiveActivitySecretariat,
     sendProjectToSecretariat,
+    sendProjectFromSecretariatToSuivi,
     sendProjectFromSecretariatToPayor,
     sendProjectsBatchToSecretariat,
+    sendProjectsBatchFromSecretariatToSuivi,
     sendProjectsBatchFromSecretariatToPayor,
     approveProjectsBatchPayor,
+    returnProjectsBatchForCorrectionPayor,
+    splitProjectsBatchToIndividual,
     sendProjectNoteToCom,
     ackProjectCOM,
     archiveProjectSecretariat,
     sendActivitiesBatchToSecretariat,
+    sendActivitiesBatchFromSecretariatToSuivi,
     sendActivitiesBatchFromSecretariatToPayor,
     approveActivitiesBatchPayor,
     sendReligiousEventToSecretariat,
     sendReligiousEventsBatchToSecretariat,
+    sendReligiousEventFromSecretariatToSuivi,
+    sendReligiousEventsBatchFromSecretariatToSuivi,
     sendReligiousEventFromSecretariatToPayor,
     sendReligiousEventsBatchFromSecretariatToPayor,
     approveReligiousEventPayor,
     approveReligiousEventsBatchPayor,
     returnReligiousEventForCorrectionPayor,
+    returnReligiousEventsBatchForCorrectionPayor,
+    splitReligiousEventsBatchToIndividual,
     sendReligiousEventNoteToCom,
     ackReligiousEventCOM,
     archiveReligiousEventSecretariat,
+    sendComGbairaiAlert,
   } = useApp();
 
-  // Sous-onglet actif par console ('METIER' ou 'NAVETTE') pour les départements éligibles
-  const [adminActiveSubTab, setAdminActiveSubTab] = useState<Record<string, 'METIER' | 'NAVETTE'>>({});
+  // État d'ouverture du bloc interne Canal de Navette & Échanges par département (ouvert par défaut)
+  const [navetteExpandedByRole, setNavetteExpandedByRole] = useState<Record<string, boolean>>({});
 
   // Détermination du rôle natif normalisé de l'utilisateur connecté
   const userNativeRole: AdminRole = useMemo(() => {
@@ -617,14 +629,79 @@ export const AdminPortal: React.FC = () => {
     }
   }, [activeRole, currentUser?.member?.id, currentUser?.id, recordAdminActivity]);
 
-  // Compteur temps réel des demandes d'information non lues pour la console active
-  const unreadInfoRequestsForActiveRole = useMemo(() => {
-    if (!isRoleEligibleForInfoModule(activeRole)) return 0;
-    const normalizedKey = normalizeToEligibleDeptKey(activeRole);
-    return (infoRequests || []).filter(
+  const renderInternalNavetteBlock = (role: AdminRole) => {
+    if (!isRoleEligibleForInfoModule(role)) return null;
+    const normalizedKey = normalizeToEligibleDeptKey(role);
+    const roleUnreadCount = (infoRequests || []).filter(
       r => (isDeptMatch(r.recipientRole, normalizedKey) || isDeptMatch(r.recipientRoleLabel, normalizedKey)) && !r.isRead
     ).length;
-  }, [infoRequests, activeRole]);
+    const isExpanded = navetteExpandedByRole[role] !== false;
+
+    return (
+      <div
+        id={`canal-navette-interne-${role}`}
+        className="bg-slate-900/95 border border-indigo-500/35 rounded-[2.5rem] p-5 sm:p-7 shadow-2xl space-y-5 scroll-mt-24"
+      >
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-800 pb-4">
+          <div className="flex items-start sm:items-center gap-3.5">
+            <div className="w-11 h-11 rounded-2xl bg-indigo-500/15 border border-indigo-500/30 flex items-center justify-center text-indigo-400 shrink-0 shadow-inner">
+              <MessageSquare className="w-5 h-5" />
+            </div>
+            <div>
+              <div className="flex flex-wrap items-center gap-2">
+                <h3 className="text-lg sm:text-xl font-black text-white">
+                  📨 Canal de Navette &amp; Échanges
+                </h3>
+                <span className="bg-indigo-500/15 text-indigo-300 border border-indigo-500/30 text-[10px] font-black px-2.5 py-0.5 rounded-full uppercase">
+                  Intégré à l'espace {CONSOLE_CONFIG[role]?.shortName}
+                </span>
+                {roleUnreadCount > 0 && (
+                  <span className="bg-rose-500 text-white text-[10px] font-black px-2.5 py-0.5 rounded-full animate-pulse shadow-sm">
+                    {roleUnreadCount} non lu{roleUnreadCount > 1 ? 's' : ''}
+                  </span>
+                )}
+              </div>
+              <p className="text-xs text-slate-400 mt-0.5">
+                Discussion directe, transmissions et demandes d'information inter-départements en temps réel sans quitter votre espace de travail.
+              </p>
+            </div>
+          </div>
+
+          <button
+            type="button"
+            onClick={() =>
+              setNavetteExpandedByRole(prev => ({
+                ...prev,
+                [role]: !isExpanded,
+              }))
+            }
+            className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2 rounded-xl bg-slate-950 hover:bg-slate-800 border border-slate-700 text-xs font-black text-slate-200 transition-all cursor-pointer shrink-0 self-end sm:self-center"
+          >
+            {isExpanded ? (
+              <>
+                <ChevronUp className="w-4 h-4 text-indigo-400" />
+                <span>Réduire le canal</span>
+              </>
+            ) : (
+              <>
+                <ChevronDown className="w-4 h-4 text-indigo-400" />
+                <span>Afficher le canal</span>
+              </>
+            )}
+          </button>
+        </div>
+
+        {isExpanded && (
+          <div className="w-full min-w-0">
+            <InfoRequestsModule
+              currentRole={role}
+              senderNameOverride={CONSOLE_CONFIG[role]?.shortName}
+            />
+          </div>
+        )}
+      </div>
+    );
+  };
 
   // 1. RECALCUL AUTOMATIQUE ET DYNAMIQUE DES SOLDES (FIRESTORE) :
   const calculateBalances = (paymentsList: any[], withdrawalsList: any[] = []) => {
@@ -2262,6 +2339,7 @@ export const AdminPortal: React.FC = () => {
   const [actDesc, setActDesc] = useState<string>('');
   const [actProgram, setActProgram] = useState<string>('');
   const [actRequiredAmount, setActRequiredAmount] = useState<string>('5000');
+  const [actPaymentDeadline, setActPaymentDeadline] = useState<string>('');
   const [pcoRoles, setPcoRoles] = useState<string[]>([]);
   const [pcoAdjRoles, setPcoAdjRoles] = useState<string[]>([]);
   const [restaurationRoles, setRestaurationRoles] = useState<string[]>([]);
@@ -2301,9 +2379,10 @@ export const AdminPortal: React.FC = () => {
     | null
   >(null);
   const [payorReturnDocModal, setPayorReturnDocModal] = useState<{
-    type: 'PV' | 'PROJECT' | 'BILAN' | 'ACTIVITY' | 'RELIGIOUS_EVENT';
+    type: 'PV' | 'PROJECT' | 'BILAN' | 'ACTIVITY' | 'RELIGIOUS_EVENT' | 'CONSOLIDATED_PROJECTS' | 'CONSOLIDATED_ACTIVITIES' | 'CONSOLIDATED_RELIGIOUS_EVENTS';
     id: string;
     title: string;
+    itemIds?: string[];
   } | null>(null);
   const [payorReturnDocFeedback, setPayorReturnDocFeedback] = useState<string>('');
   const [payorReturnDocFeedbackError, setPayorReturnDocFeedbackError] = useState<string | null>(null);
@@ -5467,74 +5546,11 @@ export const AdminPortal: React.FC = () => {
         </div>
       </div>
 
-      {/* ========================================================= */}
-      {/* BARRE DE SOUS-NAVIGATION POUR DÉPARTEMENTS ÉLIGIBLES (HORS CERVEAU ET SUPER ADMIN) */}
-      {/* ========================================================= */}
-      {isRoleEligibleForInfoModule(activeRole) && (
-        <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 bg-slate-900/90 p-2.5 rounded-2xl border border-slate-800 shadow-md w-full min-w-0">
-          <div className="grid grid-cols-2 sm:flex sm:items-center gap-2 w-full sm:w-auto">
-            <button
-              type="button"
-              onClick={() => setAdminActiveSubTab(prev => ({ ...prev, [activeRole]: 'METIER' }))}
-              className={`flex items-center justify-center gap-1.5 sm:gap-2 px-3 sm:px-4 py-2.5 rounded-xl text-xs font-black transition-all cursor-pointer text-center ${
-                (adminActiveSubTab[activeRole] || 'METIER') === 'METIER'
-                  ? 'bg-amber-500 text-slate-950 shadow-md font-black'
-                  : 'text-slate-400 hover:text-white hover:bg-slate-800 bg-slate-950/60'
-              }`}
-            >
-              <span className="shrink-0">{CONSOLE_CONFIG[activeRole]?.icon}</span>
-              <span className="truncate">CONSOLE {CONSOLE_CONFIG[activeRole]?.shortName?.toUpperCase() || 'MÉTIER'}</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => setAdminActiveSubTab(prev => ({ ...prev, [activeRole]: 'NAVETTE' }))}
-              className={`flex items-center justify-center gap-1.5 sm:gap-2 px-3 sm:px-4 py-2.5 rounded-xl text-xs font-black transition-all cursor-pointer text-center relative ${
-                adminActiveSubTab[activeRole] === 'NAVETTE'
-                  ? 'bg-indigo-600 text-white shadow-md font-black'
-                  : 'text-slate-400 hover:text-white hover:bg-slate-800 bg-slate-950/60'
-              }`}
-            >
-              <MessageSquare className="w-4 h-4 text-indigo-400 shrink-0" />
-              <span>NAVETTE D'ÉCHANGE</span>
-              {unreadInfoRequestsForActiveRole > 0 && (
-                <span className="bg-rose-500 text-white text-[10px] font-black px-1.5 py-0.5 rounded-full animate-pulse shadow-sm shrink-0">
-                  {unreadInfoRequestsForActiveRole}
-                </span>
-              )}
-            </button>
-          </div>
-
-          <span className="hidden sm:inline-block text-[11px] text-slate-400 font-bold px-3 py-1 bg-slate-950 rounded-xl border border-slate-800 self-center">
-            {adminActiveSubTab[activeRole] === 'NAVETTE'
-              ? "📨 Navette d'Échange Continue • Temps Réel"
-              : '💼 Espace Métier Opérationnel'}
-          </span>
-        </div>
-      )}
-
-      {/* ========================================================= */}
-      {/* AFFICHAGE DU MODULE NAVETTE OU DES CONSOLES MÉTIERS */}
-      {/* ========================================================= */}
-      {isRoleEligibleForInfoModule(activeRole) && adminActiveSubTab[activeRole] === 'NAVETTE' ? (
-        <div className="w-full min-w-0 flex-1 overflow-y-auto">
-          <InfoRequestsModule
-            currentRole={activeRole}
-            senderNameOverride={CONSOLE_CONFIG[activeRole]?.shortName}
-          />
-        </div>
-      ) : (
-        <>
           {/* ========================================================= */}
           {/* 1. ESPACE TRÉSORIER GÉNÉRAL */}
           {/* ========================================================= */}
           {activeRole === 'TRESORIER' && (
         <div className="space-y-8">
-          {/* RBAC Lock Badge */}
-          <RbacWarningBanner
-            roleName="TRÉSORIER GÉNÉRAL"
-            allowedActionsText="Validation des reçus, relances, décaissements, historique et bilans financiers PDF."
-          />
 
           {/* ========================================================= */}
           {/* 1. HEADER DU SOLDE DE LA CAISSE TOTAL ET SOUS-SOLDES */}
@@ -8855,6 +8871,8 @@ export const AdminPortal: React.FC = () => {
               )}
             </div>
           )}
+
+          {renderInternalNavetteBlock('TRESORIER')}
         </div>
       )}
 
@@ -8863,11 +8881,6 @@ export const AdminPortal: React.FC = () => {
       {/* ========================================================= */}
       {activeRole === 'COM' && (
         <div className="space-y-8">
-          {/* RBAC Lock Badge */}
-          <RbacWarningBanner
-            roleName="BASE D'INFORMATION ET DE COMMUNICATION (BIC)"
-            allowedActionsText="Studio de diffusion d'annonces, accusé de réception (ACK) & publication officielle dans le fil."
-          />
 
           {/* Réception des Notes d'Information et Fichiers Officiels (Du Secrétariat Général) & Actions BIC */}
           <div className="bg-slate-900 rounded-[2.5rem] p-6 sm:p-8 border border-slate-800 shadow-xl space-y-8">
@@ -9021,7 +9034,7 @@ export const AdminPortal: React.FC = () => {
 
               {projects.filter(p => p.sentToCom).length === 0 ? (
                 <div className="text-center py-5 bg-slate-950 rounded-2xl border border-dashed border-slate-800 text-slate-500 text-xs">
-                  Aucune note de projet AGR transmise par le Secrétariat Général pour le moment.
+                  Aucun projet AGR publié par la Commission Projets dans Gagne-Pain pour le moment.
                 </div>
               ) : (
                 <div className="space-y-3">
@@ -9037,11 +9050,11 @@ export const AdminPortal: React.FC = () => {
                             <p className="font-extrabold text-white text-sm">{p.title}</p>
                             {p.ackByCom ? (
                               <span className="bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-2.5 py-0.5 rounded-full text-[10px] font-black">
-                                🟢 ACK Validé (Signal Secrétariat OK)
+                                🟢 Réception COM confirmée
                               </span>
                             ) : (
                               <span className="bg-amber-500/20 text-amber-400 border border-amber-500/30 px-2.5 py-0.5 rounded-full text-[10px] font-black animate-pulse">
-                                ⏳ En attente de votre Accusé de Réception
+                                ⏳ Publié par Projets • En attente de votre ACK
                               </span>
                             )}
                           </div>
@@ -9081,18 +9094,33 @@ export const AdminPortal: React.FC = () => {
                             </span>
                           )}
 
-                          {/* 3. Diffuser */}
-                          <button
-                            type="button"
-                            onClick={() => {
-                              publishProject(p.id);
-                              setToastMessage(`📢 Projet AGR "${p.title}" ouvert aux cotisations des membres !`);
-                            }}
-                            className="bg-emerald-600 hover:bg-emerald-500 text-white font-black px-3 py-2 rounded-xl flex items-center gap-1.5 shadow-lg active:scale-95 transition-all text-xs cursor-pointer"
-                          >
-                            <Send className="w-3.5 h-3.5" />
-                            <span>📢 Diffuser dans Gagne-Pain</span>
-                          </button>
+                          {/* 3. Alerte Globale Gbairai (après publication autonome par le département) */}
+                          {(p.status === 'PUBLISHED' || p.status === 'active') ? (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                sendComGbairaiAlert('PROJECT', p.id);
+                                setToastMessage(`📢 Alerte globale envoyée sur le Gbairai pour le projet « ${p.title} » !`);
+                              }}
+                              className={`${
+                                p.gbairaiAlertSentByCom
+                                  ? 'bg-emerald-800/70 hover:bg-emerald-700 border border-emerald-500/40'
+                                  : 'bg-emerald-600 hover:bg-emerald-500 animate-pulse'
+                              } text-white font-black px-3 py-2 rounded-xl flex items-center gap-1.5 shadow-lg active:scale-95 transition-all text-xs cursor-pointer`}
+                            >
+                              <Send className="w-3.5 h-3.5" />
+                              <span>
+                                {p.gbairaiAlertSentByCom
+                                  ? '✅ Alerte Gbairai diffusée (Re-diffuser)'
+                                  : "📢 Envoyer l'Alerte Globale sur le Gbairai"}
+                              </span>
+                            </button>
+                          ) : (
+                            <span className="bg-slate-800/80 text-slate-300 border border-slate-700 font-bold px-3 py-2 rounded-xl text-xs flex items-center gap-1.5">
+                              <Clock className="w-3.5 h-3.5 text-amber-400" />
+                              <span>⏳ En attente de publication par la Commission Projets</span>
+                            </span>
+                          )}
 
                           {/* 4. Partager dans le groupe WhatsApp */}
                           {(() => {
@@ -9129,7 +9157,7 @@ export const AdminPortal: React.FC = () => {
 
               {activities.filter(a => a.sentToCom).length === 0 ? (
                 <div className="text-center py-5 bg-slate-950 rounded-2xl border border-dashed border-slate-800 text-slate-500 text-xs">
-                  Aucune note de programme d'événement transmise par le Secrétariat Général pour le moment.
+                  Aucun programme d'événement publié par la Commission Organisation dans SHOW pour le moment.
                 </div>
               ) : (
                 <div className="space-y-3">
@@ -9145,11 +9173,11 @@ export const AdminPortal: React.FC = () => {
                             <p className="font-extrabold text-white text-sm">{a.title}</p>
                             {a.ackByCom ? (
                               <span className="bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-2.5 py-0.5 rounded-full text-[10px] font-black">
-                                🟢 ACK Validé (Signal Secrétariat OK)
+                                🟢 Réception COM confirmée
                               </span>
                             ) : (
                               <span className="bg-amber-500/20 text-amber-400 border border-amber-500/30 px-2.5 py-0.5 rounded-full text-[10px] font-black animate-pulse">
-                                ⏳ En attente de votre Accusé de Réception
+                                ⏳ Publié par Organisation • En attente de votre ACK
                               </span>
                             )}
                           </div>
@@ -9189,18 +9217,33 @@ export const AdminPortal: React.FC = () => {
                             </span>
                           )}
 
-                          {/* 3. Diffuser */}
-                          <button
-                            type="button"
-                            onClick={() => {
-                              publishActivity(a.id);
-                              setToastMessage(`📢 Programme "${a.title}" diffusé dans l'espace SHOW des membres !`);
-                            }}
-                            className="bg-sky-600 hover:bg-sky-500 text-white font-black px-3 py-2 rounded-xl flex items-center gap-1.5 shadow-lg active:scale-95 transition-all text-xs cursor-pointer"
-                          >
-                            <Send className="w-3.5 h-3.5" />
-                            <span>📢 Diffuser dans SHOW</span>
-                          </button>
+                          {/* 3. Alerte Globale Gbairai (après publication autonome par l'Organisation) */}
+                          {a.status === 'PUBLISHED' ? (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                sendComGbairaiAlert('ACTIVITY', a.id);
+                                setToastMessage(`📢 Alerte globale envoyée sur le Gbairai pour l'événement « ${a.title} » !`);
+                              }}
+                              className={`${
+                                a.gbairaiAlertSentByCom
+                                  ? 'bg-sky-800/70 hover:bg-sky-700 border border-sky-500/40'
+                                  : 'bg-sky-600 hover:bg-sky-500 animate-pulse'
+                              } text-white font-black px-3 py-2 rounded-xl flex items-center gap-1.5 shadow-lg active:scale-95 transition-all text-xs cursor-pointer`}
+                            >
+                              <Send className="w-3.5 h-3.5" />
+                              <span>
+                                {a.gbairaiAlertSentByCom
+                                  ? '✅ Alerte Gbairai diffusée (Re-diffuser)'
+                                  : "📢 Envoyer l'Alerte Globale sur le Gbairai"}
+                              </span>
+                            </button>
+                          ) : (
+                            <span className="bg-slate-800/80 text-slate-300 border border-slate-700 font-bold px-3 py-2 rounded-xl text-xs flex items-center gap-1.5">
+                              <Clock className="w-3.5 h-3.5 text-sky-400" />
+                              <span>⏳ En attente de publication par l'Organisation</span>
+                            </span>
+                          )}
 
                           {/* 4. Partager dans le groupe WhatsApp */}
                           {(() => {
@@ -9237,7 +9280,7 @@ export const AdminPortal: React.FC = () => {
 
               {religiousEvents.filter(e => e.sentToCom).length === 0 ? (
                 <div className="text-center py-5 bg-slate-950 rounded-2xl border border-dashed border-slate-800 text-slate-500 text-xs">
-                  Aucune note d'événement spirituel transmise par le Secrétariat Général pour le moment.
+                  Aucun événement spirituel publié par la Commission Spiritualité dans Prière Rouama pour le moment.
                 </div>
               ) : (
                 <div className="space-y-3">
@@ -9253,11 +9296,11 @@ export const AdminPortal: React.FC = () => {
                             <p className="font-extrabold text-white text-sm">{e.title}</p>
                             {e.ackByCom ? (
                               <span className="bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-2.5 py-0.5 rounded-full text-[10px] font-black">
-                                🟢 ACK Validé (Signal Secrétariat OK)
+                                🟢 Réception COM confirmée
                               </span>
                             ) : (
                               <span className="bg-amber-500/20 text-amber-400 border border-amber-500/30 px-2.5 py-0.5 rounded-full text-[10px] font-black animate-pulse">
-                                ⏳ En attente de votre Accusé de Réception
+                                ⏳ Publié par Spiritualité • En attente de votre ACK
                               </span>
                             )}
                           </div>
@@ -9297,18 +9340,33 @@ export const AdminPortal: React.FC = () => {
                             </span>
                           )}
 
-                          {/* 3. Diffuser */}
-                          <button
-                            type="button"
-                            onClick={() => {
-                              publishReligiousEventToGbairai(e.id);
-                              setToastMessage(`📢 Événement spirituel "${e.title}" diffusé sur le Gbairai des membres !`);
-                            }}
-                            className="bg-purple-600 hover:bg-purple-500 text-white font-black px-3 py-2 rounded-xl flex items-center gap-1.5 shadow-lg active:scale-95 transition-all text-xs cursor-pointer"
-                          >
-                            <Send className="w-3.5 h-3.5" />
-                            <span>📢 Diffuser sur Gbairai</span>
-                          </button>
+                          {/* 3. Alerte Globale Gbairai (après publication autonome par la Spiritualité) */}
+                          {e.status === 'PUBLISHED' ? (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                sendComGbairaiAlert('RELIGIOUS_EVENT', e.id);
+                                setToastMessage(`📢 Alerte globale envoyée sur le Gbairai pour l'événement « ${e.title} » !`);
+                              }}
+                              className={`${
+                                e.gbairaiAlertSentByCom
+                                  ? 'bg-purple-800/70 hover:bg-purple-700 border border-purple-500/40'
+                                  : 'bg-purple-600 hover:bg-purple-500 animate-pulse'
+                              } text-white font-black px-3 py-2 rounded-xl flex items-center gap-1.5 shadow-lg active:scale-95 transition-all text-xs cursor-pointer`}
+                            >
+                              <Send className="w-3.5 h-3.5" />
+                              <span>
+                                {e.gbairaiAlertSentByCom
+                                  ? '✅ Alerte Gbairai diffusée (Re-diffuser)'
+                                  : "📢 Envoyer l'Alerte Globale sur le Gbairai"}
+                              </span>
+                            </button>
+                          ) : (
+                            <span className="bg-slate-800/80 text-slate-300 border border-slate-700 font-bold px-3 py-2 rounded-xl text-xs flex items-center gap-1.5">
+                              <Clock className="w-3.5 h-3.5 text-purple-400" />
+                              <span>⏳ En attente de publication par la Spiritualité</span>
+                            </span>
+                          )}
 
                           {/* 4. Partager dans le groupe WhatsApp */}
                           {(() => {
@@ -9749,6 +9807,8 @@ export const AdminPortal: React.FC = () => {
               </div>
             )}
           </div>
+
+          {renderInternalNavetteBlock('COM')}
         </div>
       )}
 
@@ -9757,41 +9817,6 @@ export const AdminPortal: React.FC = () => {
       {/* ========================================================= */}
       {activeRole === 'SECRETARIAT' && (
         <div className="space-y-8">
-          {/* RBAC Lock Badge */}
-          <RbacWarningBanner
-            roleName="SECRÉTARIAT GÉNÉRAL"
-            allowedActionsText="Rédaction des Procès-Verbaux (PV), gestion des archives et transmissions officielles."
-          />
-
-          {/* Raccourci Navette Administrative pour le Secrétariat */}
-          <div className="bg-gradient-to-r from-indigo-950/70 via-slate-900 to-slate-950 border border-indigo-500/40 rounded-3xl p-5 sm:p-6 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-xl">
-            <div className="flex items-start sm:items-center gap-3.5">
-              <div className="w-11 h-11 rounded-2xl bg-indigo-500/15 border border-indigo-500/30 flex items-center justify-center text-indigo-400 shrink-0 shadow-inner">
-                <MessageSquare className="w-6 h-6" />
-              </div>
-              <div>
-                <h4 className="text-sm sm:text-base font-black text-white flex items-center gap-2">
-                  <span>Navette d'Échange Inter-Admins</span>
-                  {unreadInfoRequestsForActiveRole > 0 && (
-                    <span className="bg-rose-500 text-white text-[10px] font-black px-2 py-0.5 rounded-full animate-pulse shadow-sm">
-                      {unreadInfoRequestsForActiveRole} non lue{unreadInfoRequestsForActiveRole > 1 ? 's' : ''}
-                    </span>
-                  )}
-                </h4>
-                <p className="text-xs text-slate-400 mt-0.5">
-                  Besoin de vérifier un montant précis auprès de la Trésorerie ou une décision logistique avec l'Organisation avant de clôturer un PV ?
-                </p>
-              </div>
-            </div>
-            <button
-              type="button"
-              onClick={() => setAdminActiveSubTab(prev => ({ ...prev, [activeRole]: 'NAVETTE' }))}
-              className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-black px-4 py-2.5 rounded-xl transition-all shadow-md shrink-0 cursor-pointer flex items-center gap-2 self-end sm:self-center"
-            >
-              <Send className="w-4 h-4" />
-              <span>Ouvrir la Navette d'Échange</span>
-            </button>
-          </div>
 
           {/* Draft PV Form */}
           <div className="bg-slate-900 rounded-[2.5rem] p-6 sm:p-8 border border-slate-800 shadow-xl space-y-6">
@@ -10251,7 +10276,7 @@ export const AdminPortal: React.FC = () => {
                 <span>🏛️ Centralisation & Circuit Hiérarchique des Dossiers Reçus</span>
               </h2>
               <p className="text-xs text-slate-400 mt-1">
-                Le Secrétariat Général est le point de passage obligatoire. Vérifiez chaque dossier, transmettez-le au Payor pour visa/audit, puis diffusez la Note d'Information à la COM (BIC) et archivez après accusé de réception (ACK).
+                Le Secrétariat Général est le point de centralisation hiérarchique : vérifiez chaque dossier, transmettez-le au Chargé de Suivi / Payor puis observez le visa Payor. La notification à la Communication (COM / BIC) est déclenchée automatiquement lorsque le responsable du département publie son programme dans son canal dédié.
               </p>
             </div>
 
@@ -10410,485 +10435,1007 @@ export const AdminPortal: React.FC = () => {
             </div>
 
             {/* 2. SECTION PROJETS AGR (COMMISSION PROJETS) */}
-            <div className="space-y-4 pt-4 border-t border-slate-800">
-              <div className="flex items-center justify-between gap-2 border-b border-slate-800/80 pb-2">
-                <h3 className="text-sm font-black text-emerald-400 uppercase tracking-wider flex items-center gap-2">
-                  <span>💼 2. Dossiers Projets AGR (Commission Projets)</span>
-                  <span className="bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 px-2 py-0.5 rounded-full text-[10px]">
-                    {projects.filter(p => p.sentToSecretariat).length}
-                  </span>
-                </h3>
-              </div>
+            {(() => {
+              const secProjs = projects.filter(p => p.sentToSecretariat);
+              const projBatches = new Map<string, AgrProject[]>();
+              const singleProjs: AgrProject[] = [];
+              secProjs.forEach(p => {
+                if (p.isConsolidated && p.batchId) {
+                  const list = projBatches.get(p.batchId) || [];
+                  list.push(p);
+                  projBatches.set(p.batchId, list);
+                } else {
+                  singleProjs.push(p);
+                }
+              });
+              const totalDistinctProjs = projBatches.size + singleProjs.length;
 
-              {projects.filter(p => p.sentToSecretariat).length === 0 ? (
-                <div className="text-center py-6 text-slate-500 text-xs bg-slate-950 rounded-2xl border border-dashed border-slate-800">
-                  Aucun dossier projet AGR transmis par la Commission Projets pour le moment.
-                </div>
-              ) : (
-                <div className="space-y-3">
-                  {projects
-                    .filter(p => p.sentToSecretariat)
-                    .map(p => {
-                      const isApproved = p.status === 'APPROVED_PAYOR' || p.status === 'approved_by_payor' || p.status === 'active' || p.status === 'PUBLISHED' || p.status === 'archived';
-                      const isReturned = p.status === 'returned_for_correction';
-                      return (
-                        <div
-                          key={p.id}
-                          className="bg-slate-950 p-4 sm:p-5 rounded-2xl border border-slate-800 flex flex-col space-y-3 text-xs"
-                        >
-                          <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-3">
-                            <div className="space-y-1 flex-1">
-                              <div className="flex flex-wrap items-center gap-2">
-                                <p className="font-extrabold text-white text-sm">{p.title}</p>
-                                <span className="font-mono text-emerald-300 text-[10px] bg-emerald-500/10 px-2 py-0.5 rounded-md border border-emerald-500/20">{p.id}</span>
-                                {isApproved ? (
-                                  <span className="bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-2.5 py-0.5 rounded-full text-[10px] font-black">
-                                    🟢 Visé Payor (SS.png)
+              return (
+                <div className="space-y-4 pt-4 border-t border-slate-800">
+                  <div className="flex items-center justify-between gap-2 border-b border-slate-800/80 pb-2">
+                    <h3 className="text-sm font-black text-emerald-400 uppercase tracking-wider flex items-center gap-2">
+                      <span>💼 2. Dossiers Projets AGR (Commission Projets)</span>
+                      <span className="bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 px-2 py-0.5 rounded-full text-[10px]">
+                        {totalDistinctProjs}
+                      </span>
+                    </h3>
+                  </div>
+
+                  {totalDistinctProjs === 0 ? (
+                    <div className="text-center py-6 text-slate-500 text-xs bg-slate-950 rounded-2xl border border-dashed border-slate-800">
+                      Aucun dossier projet AGR transmis par la Commission Projets pour le moment.
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      {Array.from(projBatches.entries()).map(([batchId, batchProjs]) => {
+                        const first = batchProjs[0];
+                        const batchIds = batchProjs.map(x => x.id);
+                        const allApproved = batchProjs.every(p => p.status === 'APPROVED_PAYOR' || p.status === 'approved_by_payor' || p.status === 'active' || p.status === 'PUBLISHED' || p.status === 'archived');
+                        const anyReturned = batchProjs.some(p => p.status === 'returned_for_correction');
+                        const anySentToSuivi = batchProjs.some(p => p.status === 'SENT_TO_SUIVI');
+                        const anyPendingPayor = batchProjs.some(p => p.status === 'PENDING_PAYOR' || p.status === 'pending_payor_approval');
+                        const isPostRevision = batchProjs.some(p => p.isPostMeetingRevision || p.suiviReviewed);
+                        const canRoute = batchProjs.some(p => !p.status || p.status === 'SENT_TO_SECRETARIAT' || p.status === 'returned_for_correction');
+                        const anyNotSentToCom = batchProjs.some(p => !p.sentToCom);
+                        const allAckByCom = batchProjs.every(p => p.ackByCom);
+                        const allArchived = batchProjs.every(p => p.archivedBySecretariat);
+                        const totalCost = batchProjs.reduce((sum, p) => sum + (p.estimatedCost || 0), 0);
+                        const batchDisplayTitle = first.batchTitle || `Dossier Global de Projets AGR (${batchProjs.length} projets)`;
+                        const feedbackItem = batchProjs.find(p => p.payorFeedback);
+
+                        return (
+                          <div
+                            key={batchId}
+                            className="bg-slate-950 p-4 sm:p-5 rounded-2xl border-2 border-purple-500/40 flex flex-col space-y-3 text-xs shadow-lg"
+                          >
+                            <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-3">
+                              <div className="space-y-1.5 flex-1">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <p className="font-extrabold text-white text-sm">{batchDisplayTitle}</p>
+                                  <span className="font-mono text-purple-300 text-[10px] bg-purple-500/15 px-2 py-0.5 rounded-md border border-purple-500/30">
+                                    {batchId}
                                   </span>
-                                ) : isReturned ? (
-                                  <span className="bg-rose-500/20 text-rose-300 border border-rose-500/40 px-2.5 py-0.5 rounded-full text-[10px] font-black">
-                                    ⚠️ Retourné par Payor
+                                  <span className="bg-purple-500/20 text-purple-200 border border-purple-500/40 px-2.5 py-0.5 rounded-full text-[10px] font-black">
+                                    📦 Lot Global Unique ({batchProjs.length} projets)
                                   </span>
-                                ) : p.status === 'PENDING_PAYOR' || p.status === 'pending_payor_approval' ? (
-                                  <span className="bg-amber-500/20 text-amber-300 border border-amber-500/30 px-2.5 py-0.5 rounded-full text-[10px] font-bold">
-                                    ⏳ En examen chez le Payor
-                                  </span>
-                                ) : (
-                                  <span className="bg-sky-500/20 text-sky-300 border border-sky-500/30 px-2.5 py-0.5 rounded-full text-[10px] font-bold">
-                                    📥 Reçu au Secrétariat
-                                  </span>
-                                )}
-                                {p.isConsolidated && (
-                                  <span className="bg-purple-500/20 text-purple-300 border border-purple-500/30 px-2 py-0.5 rounded-full text-[10px] font-bold">
-                                    📦 Dossier Consolidé
-                                  </span>
-                                )}
+                                  {allApproved ? (
+                                    <span className="bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-2.5 py-0.5 rounded-full text-[10px] font-black">
+                                      🟢 Visé Payor (SS.png)
+                                    </span>
+                                  ) : anyReturned ? (
+                                    <span className="bg-rose-500/20 text-rose-300 border border-rose-500/40 px-2.5 py-0.5 rounded-full text-[10px] font-black">
+                                      ⚠️ Retourné par Payor
+                                    </span>
+                                  ) : anyPendingPayor ? (
+                                    <span className="bg-amber-500/20 text-amber-300 border border-amber-500/30 px-2.5 py-0.5 rounded-full text-[10px] font-bold">
+                                      ⏳ En examen chez le Payor
+                                    </span>
+                                  ) : anySentToSuivi ? (
+                                    <span className="bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 px-2.5 py-0.5 rounded-full text-[10px] font-bold">
+                                      🕵️ En instruction chez le Chargé de Suivi
+                                    </span>
+                                  ) : (
+                                    <span className="bg-sky-500/20 text-sky-300 border border-sky-500/30 px-2.5 py-0.5 rounded-full text-[10px] font-bold">
+                                      📥 Reçu au Secrétariat
+                                    </span>
+                                  )}
+                                  {isPostRevision && !allApproved && !anyPendingPayor && (
+                                    <span className="bg-amber-500/15 text-amber-300 border border-amber-500/30 px-2 py-0.5 rounded-full text-[10px] font-bold">
+                                      🔄 Révision post-réunion (Routage direct Payor)
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="flex flex-wrap gap-1.5 pt-0.5">
+                                  {batchProjs.map(bp => (
+                                    <span key={bp.id} className="bg-slate-900 text-slate-200 border border-slate-700 px-2 py-0.5 rounded-md text-[11px] font-bold">
+                                      • {bp.title} ({(bp.estimatedCost ?? 0).toLocaleString('fr-FR')} F)
+                                    </span>
+                                  ))}
+                                </div>
+                                <p className="text-slate-400">
+                                  Budget Global Cumulé : <strong className="text-amber-400">{totalCost.toLocaleString('fr-FR')} F CFA</strong>
+                                </p>
                               </div>
-                              <p className="text-slate-400">
-                                Coût : <strong className="text-amber-400">{(p.estimatedCost ?? 0).toLocaleString('fr-FR')} F CFA</strong> • Contribution : <strong className="text-emerald-400">{p.requiredAmountPerMember ? `${p.requiredAmountPerMember.toLocaleString('fr-FR')} F` : 'Libre'}</strong>
-                              </p>
-                            </div>
 
-                            <div className="flex flex-wrap items-center gap-2 shrink-0 self-end md:self-center">
-                              {/* 1. Visualiser */}
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  if (p.isConsolidated && p.batchId) {
-                                    const batchProjs = projects.filter(item => item.batchId === p.batchId);
+                              <div className="flex flex-wrap items-center gap-2 shrink-0 self-end md:self-center">
+                                <button
+                                  type="button"
+                                  onClick={() => {
                                     setPayorViewingOfficialDoc({
                                       type: 'CONSOLIDATED_PROJECTS',
                                       data: {
-                                        id: p.batchId,
-                                        title: p.batchTitle || `Dossier Global de Projets AGR (${batchProjs.length} projets)`,
-                                        status: p.status,
+                                        id: batchId,
+                                        title: batchDisplayTitle,
+                                        status: first.status,
                                         items: batchProjs,
                                         isConsolidated: true,
                                       },
                                     });
-                                  } else {
-                                    setPayorViewingOfficialDoc({ type: 'PROJECT', data: p });
-                                  }
-                                }}
-                                className="bg-slate-800 hover:bg-slate-700 text-amber-300 font-bold px-3 py-1.5 rounded-xl border border-slate-700 flex items-center gap-1.5 text-xs active:scale-95 cursor-pointer"
-                              >
-                                <Eye className="w-3.5 h-3.5 text-amber-400" />
-                                <span>👁️ Visualiser</span>
-                              </button>
+                                  }}
+                                  className="bg-slate-800 hover:bg-slate-700 text-amber-300 font-bold px-3 py-1.5 rounded-xl border border-slate-700 flex items-center gap-1.5 text-xs active:scale-95 cursor-pointer"
+                                >
+                                  <Eye className="w-3.5 h-3.5 text-amber-400" />
+                                  <span>👁️ Visualiser le Dossier Global</span>
+                                </button>
 
-                              <button
-                                type="button"
-                                onClick={() => handleGeneratePDFProject(p)}
-                                className="bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold px-2.5 py-1.5 rounded-xl border border-slate-700 flex items-center gap-1 text-xs active:scale-95 cursor-pointer"
-                              >
-                                <Printer className="w-3.5 h-3.5" />
-                                <span>PDF</span>
-                              </button>
-
-                              {/* 2. Transmettre au Payor */}
-                              {(!p.status || p.status === 'SENT_TO_SECRETARIAT' || p.status === 'returned_for_correction') && (
                                 <button
                                   type="button"
-                                  onClick={() => {
-                                    sendProjectFromSecretariatToPayor(p.id);
-                                    setToastMessage("📤 Dossier Projet transmis au Payor pour accord/visa !");
-                                  }}
-                                  className="bg-amber-600 hover:bg-amber-500 text-white font-black px-3.5 py-1.5 rounded-xl flex items-center gap-1.5 shadow active:scale-95 transition-all text-xs cursor-pointer"
+                                  onClick={() => handleGeneratePDFConsolidatedProjects(batchProjs)}
+                                  className="bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold px-2.5 py-1.5 rounded-xl border border-slate-700 flex items-center gap-1 text-xs active:scale-95 cursor-pointer"
                                 >
-                                  <Send className="w-3.5 h-3.5" />
-                                  <span>📤 Transmettre au Payor</span>
+                                  <Printer className="w-3.5 h-3.5" />
+                                  <span>PDF</span>
                                 </button>
-                              )}
 
-                              {/* 3. Transmettre Note d'Info à la COM */}
-                              {isApproved && !p.sentToCom && (
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    sendProjectNoteToCom(p.id);
-                                    setToastMessage("📢 Note d'information projet transmise à la Base d'Information et de Communication (BIC) !");
-                                  }}
-                                  className="bg-blue-600 hover:bg-blue-500 text-white font-black px-3.5 py-1.5 rounded-xl flex items-center gap-1.5 shadow active:scale-95 transition-all text-xs cursor-pointer"
-                                >
-                                  <Send className="w-3.5 h-3.5" />
-                                  <span>📢 Transmettre à la COM</span>
-                                </button>
-                              )}
-
-                              {/* 4. Archiver */}
-                              {isApproved && (
-                                <button
-                                  type="button"
-                                  disabled={!p.ackByCom || p.archivedBySecretariat}
-                                  onClick={() => {
-                                    archiveProjectSecretariat(p.id);
-                                    setToastMessage("📦 Dossier Projet classé définitivement dans les Archives Officielles !");
-                                  }}
-                                  className={`px-3.5 py-1.5 rounded-xl font-black flex items-center gap-1.5 transition-all shadow text-xs ${
-                                    p.archivedBySecretariat
-                                      ? 'bg-slate-800 text-slate-500 cursor-default'
-                                      : p.ackByCom
-                                      ? 'bg-emerald-600 hover:bg-emerald-500 text-white cursor-pointer active:scale-95'
-                                      : 'bg-slate-800 text-slate-500 cursor-not-allowed opacity-60 border border-slate-700'
-                                  }`}
-                                >
-                                  <Archive className="w-3.5 h-3.5" />
-                                  <span>{p.archivedBySecretariat ? '📦 Archivé' : p.ackByCom ? '🟢 Archiver' : '⚪ Archiver'}</span>
-                                </button>
-                              )}
-                            </div>
-                          </div>
-
-                          {isReturned && p.payorFeedback && (
-                            <div className="p-3 bg-rose-900/30 border border-rose-500/30 rounded-xl space-y-1">
-                              <span className="text-[11px] font-bold text-rose-300 uppercase flex items-center gap-1">
-                                <AlertTriangle className="w-3.5 h-3.5 text-rose-400" />
-                                <span>Motif du retour formulé par le Payor :</span>
-                              </span>
-                              <p className="text-xs text-rose-100 italic bg-slate-950/60 p-2 rounded-lg">{p.payorFeedback}</p>
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
-                </div>
-              )}
-            </div>
-
-            {/* 3. SECTION PROGRAMMES D'ÉVÉNEMENTS (ORGANISATION) */}
-            <div className="space-y-4 pt-4 border-t border-slate-800">
-              <div className="flex items-center justify-between gap-2 border-b border-slate-800/80 pb-2">
-                <h3 className="text-sm font-black text-sky-400 uppercase tracking-wider flex items-center gap-2">
-                  <span>🎪 3. Programmes d'Événements (Commission Organisation)</span>
-                  <span className="bg-sky-500/20 text-sky-300 border border-sky-500/30 px-2 py-0.5 rounded-full text-[10px]">
-                    {activities.filter(a => a.sentToSecretariat).length}
-                  </span>
-                </h3>
-              </div>
-
-              {activities.filter(a => a.sentToSecretariat).length === 0 ? (
-                <div className="text-center py-6 text-slate-500 text-xs bg-slate-950 rounded-2xl border border-dashed border-slate-800">
-                  Aucun programme d'événement transmis par la Commission Organisation pour le moment.
-                </div>
-              ) : (
-                <div className="space-y-3">
-                  {activities
-                    .filter(a => a.sentToSecretariat)
-                    .map(a => {
-                      const isApproved = a.status === 'APPROVED' || a.status === 'PUBLISHED';
-                      const isReturned = a.status === 'returned_for_correction';
-                      return (
-                        <div
-                          key={a.id}
-                          className="bg-slate-950 p-4 sm:p-5 rounded-2xl border border-slate-800 flex flex-col space-y-3 text-xs"
-                        >
-                          <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-3">
-                            <div className="space-y-1 flex-1">
-                              <div className="flex flex-wrap items-center gap-2">
-                                <p className="font-extrabold text-white text-sm">{a.title}</p>
-                                <span className="font-mono text-sky-300 text-[10px] bg-sky-500/10 px-2 py-0.5 rounded-md border border-sky-500/20">{a.id}</span>
-                                {isApproved ? (
-                                  <span className="bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-2.5 py-0.5 rounded-full text-[10px] font-black">
-                                    🟢 Visé Payor (SS.png)
-                                  </span>
-                                ) : isReturned ? (
-                                  <span className="bg-rose-500/20 text-rose-300 border border-rose-500/40 px-2.5 py-0.5 rounded-full text-[10px] font-black">
-                                    ⚠️ Retourné par Payor
-                                  </span>
-                                ) : a.status === 'PENDING_PAYOR' ? (
-                                  <span className="bg-amber-500/20 text-amber-300 border border-amber-500/30 px-2.5 py-0.5 rounded-full text-[10px] font-bold">
-                                    ⏳ En examen chez le Payor
-                                  </span>
-                                ) : (
-                                  <span className="bg-sky-500/20 text-sky-300 border border-sky-500/30 px-2.5 py-0.5 rounded-full text-[10px] font-bold">
-                                    📥 Reçu au Secrétariat
-                                  </span>
+                                {canRoute && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      splitProjectsBatchToIndividual(batchIds);
+                                      setToastMessage(`✂️ Lot global éclaté en ${batchProjs.length} projets individuels (${batchProjs.map(x => x.title).join(', ')}).`);
+                                    }}
+                                    className="bg-purple-950/80 hover:bg-purple-900 text-purple-200 border border-purple-500/40 font-bold px-3 py-1.5 rounded-xl flex items-center gap-1.5 text-xs active:scale-95 transition-all cursor-pointer"
+                                    title="Détacher les projets de ce lot pour les transmettre et les suivre individuellement"
+                                  >
+                                    <span>✂️ Éclater le lot global en projets individuels</span>
+                                  </button>
                                 )}
-                                {a.isConsolidated && (
-                                  <span className="bg-purple-500/20 text-purple-300 border border-purple-500/30 px-2 py-0.5 rounded-full text-[10px] font-bold">
-                                    📦 Programme Consolidé
-                                  </span>
+
+                                {canRoute && (
+                                  isPostRevision ? (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        sendProjectsBatchFromSecretariatToPayor(batchIds);
+                                        setToastMessage(`📤 Révision post-réunion du Dossier Global (${batchProjs.length} projets) transmise directement au Payor !`);
+                                      }}
+                                      className="bg-amber-600 hover:bg-amber-500 text-white font-black px-3.5 py-1.5 rounded-xl flex items-center gap-1.5 shadow active:scale-95 transition-all text-xs cursor-pointer"
+                                    >
+                                      <Send className="w-3.5 h-3.5" />
+                                      <span>📤 Transmettre le Lot au Payor</span>
+                                    </button>
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        sendProjectsBatchFromSecretariatToSuivi(batchIds);
+                                        setToastMessage(`🕵️ Dossier Global (${batchProjs.length} projets) transmis au Chargé de Suivi pour instruction avant la réunion de cadrage !`);
+                                      }}
+                                      className="bg-indigo-600 hover:bg-indigo-500 text-white font-black px-3.5 py-1.5 rounded-xl flex items-center gap-1.5 shadow active:scale-95 transition-all text-xs cursor-pointer"
+                                    >
+                                      <Send className="w-3.5 h-3.5" />
+                                      <span>🕵️ Transmettre le Lot au Chargé de Suivi</span>
+                                    </button>
+                                  )
+                                )}
+
+                                {allApproved && (
+                                  <button
+                                    type="button"
+                                    disabled={allArchived}
+                                    onClick={() => {
+                                      batchIds.forEach(id => archiveProjectSecretariat(id));
+                                      setToastMessage("📦 Dossier Global classé définitivement dans les Archives Officielles !");
+                                    }}
+                                    className={`px-3.5 py-1.5 rounded-xl font-black flex items-center gap-1.5 transition-all shadow text-xs ${
+                                      allArchived
+                                        ? 'bg-slate-800 text-slate-500 cursor-default'
+                                        : 'bg-emerald-600 hover:bg-emerald-500 text-white cursor-pointer active:scale-95'
+                                    }`}
+                                  >
+                                    <Archive className="w-3.5 h-3.5" />
+                                    <span>{allArchived ? '📦 Archivé' : '🟢 Archiver'}</span>
+                                  </button>
                                 )}
                               </div>
-                              <p className="text-slate-400">
-                                Date : <strong className="text-white">{a.eventDate}</strong> {a.location ? `• Lieu : ${a.location}` : ''} {a.budget ? `• Budget : ${a.budget.toLocaleString('fr-FR')} F CFA` : ''}
-                              </p>
                             </div>
 
-                            <div className="flex flex-wrap items-center gap-2 shrink-0 self-end md:self-center">
-                              {/* 1. Visualiser */}
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  if (a.isConsolidated && a.batchId) {
-                                    const batchActs = activities.filter(item => item.batchId === a.batchId);
+                            {anyReturned && feedbackItem?.payorFeedback && (
+                              <div className="p-3 bg-rose-900/30 border border-rose-500/30 rounded-xl space-y-1">
+                                <span className="text-[11px] font-bold text-rose-300 uppercase flex items-center gap-1">
+                                  <AlertTriangle className="w-3.5 h-3.5 text-rose-400" />
+                                  <span>Motif du retour formulé par le Payor :</span>
+                                </span>
+                                <p className="text-xs text-rose-100 italic bg-slate-950/60 p-2 rounded-lg">{feedbackItem.payorFeedback}</p>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+
+                      {singleProjs.map(p => {
+                        const isApproved = p.status === 'APPROVED_PAYOR' || p.status === 'approved_by_payor' || p.status === 'active' || p.status === 'PUBLISHED' || p.status === 'archived';
+                        const isReturned = p.status === 'returned_for_correction';
+                        const isSentToSuivi = p.status === 'SENT_TO_SUIVI';
+                        const isPostRevision = Boolean(p.isPostMeetingRevision || p.suiviReviewed);
+                        return (
+                          <div
+                            key={p.id}
+                            className="bg-slate-950 p-4 sm:p-5 rounded-2xl border border-slate-800 flex flex-col space-y-3 text-xs"
+                          >
+                            <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-3">
+                              <div className="space-y-1 flex-1">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <p className="font-extrabold text-white text-sm">{p.title}</p>
+                                  <span className="font-mono text-emerald-300 text-[10px] bg-emerald-500/10 px-2 py-0.5 rounded-md border border-emerald-500/20">{p.id}</span>
+                                  {isApproved ? (
+                                    <span className="bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-2.5 py-0.5 rounded-full text-[10px] font-black">
+                                      🟢 Visé Payor (SS.png)
+                                    </span>
+                                  ) : isReturned ? (
+                                    <span className="bg-rose-500/20 text-rose-300 border border-rose-500/40 px-2.5 py-0.5 rounded-full text-[10px] font-black">
+                                      ⚠️ Retourné par Payor
+                                    </span>
+                                  ) : p.status === 'PENDING_PAYOR' || p.status === 'pending_payor_approval' ? (
+                                    <span className="bg-amber-500/20 text-amber-300 border border-amber-500/30 px-2.5 py-0.5 rounded-full text-[10px] font-bold">
+                                      ⏳ En examen chez le Payor
+                                    </span>
+                                  ) : isSentToSuivi ? (
+                                    <span className="bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 px-2.5 py-0.5 rounded-full text-[10px] font-bold">
+                                      🕵️ En instruction chez le Chargé de Suivi
+                                    </span>
+                                  ) : (
+                                    <span className="bg-sky-500/20 text-sky-300 border border-sky-500/30 px-2.5 py-0.5 rounded-full text-[10px] font-bold">
+                                      📥 Reçu au Secrétariat
+                                    </span>
+                                  )}
+                                  {isPostRevision && !isApproved && p.status !== 'PENDING_PAYOR' && p.status !== 'pending_payor_approval' && (
+                                    <span className="bg-amber-500/15 text-amber-300 border border-amber-500/30 px-2 py-0.5 rounded-full text-[10px] font-bold">
+                                      🔄 Révision post-réunion (Routage direct Payor)
+                                    </span>
+                                  )}
+                                </div>
+                                <p className="text-slate-400">
+                                  Coût : <strong className="text-amber-400">{(p.estimatedCost ?? 0).toLocaleString('fr-FR')} F CFA</strong> • Contribution : <strong className="text-emerald-400">{p.requiredAmountPerMember ? `${p.requiredAmountPerMember.toLocaleString('fr-FR')} F` : 'Libre'}</strong>
+                                </p>
+                              </div>
+
+                              <div className="flex flex-wrap items-center gap-2 shrink-0 self-end md:self-center">
+                                <button
+                                  type="button"
+                                  onClick={() => setPayorViewingOfficialDoc({ type: 'PROJECT', data: p })}
+                                  className="bg-slate-800 hover:bg-slate-700 text-amber-300 font-bold px-3 py-1.5 rounded-xl border border-slate-700 flex items-center gap-1.5 text-xs active:scale-95 cursor-pointer"
+                                >
+                                  <Eye className="w-3.5 h-3.5 text-amber-400" />
+                                  <span>👁️ Visualiser</span>
+                                </button>
+
+                                <button
+                                  type="button"
+                                  onClick={() => handleGeneratePDFProject(p)}
+                                  className="bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold px-2.5 py-1.5 rounded-xl border border-slate-700 flex items-center gap-1 text-xs active:scale-95 cursor-pointer"
+                                >
+                                  <Printer className="w-3.5 h-3.5" />
+                                  <span>PDF</span>
+                                </button>
+
+                                {(!p.status || p.status === 'SENT_TO_SECRETARIAT' || p.status === 'returned_for_correction') && (
+                                  isPostRevision ? (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        sendProjectFromSecretariatToPayor(p.id);
+                                        setToastMessage("📤 Révision post-réunion transmise directement au Payor (sans repasser par le Suivi) !");
+                                      }}
+                                      className="bg-amber-600 hover:bg-amber-500 text-white font-black px-3.5 py-1.5 rounded-xl flex items-center gap-1.5 shadow active:scale-95 transition-all text-xs cursor-pointer"
+                                    >
+                                      <Send className="w-3.5 h-3.5" />
+                                      <span>📤 Transmettre directement au Payor</span>
+                                    </button>
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        sendProjectFromSecretariatToSuivi(p.id);
+                                        setToastMessage("🕵️ Dossier Projet transmis au Chargé de Suivi pour instruction avant la réunion de cadrage !");
+                                      }}
+                                      className="bg-indigo-600 hover:bg-indigo-500 text-white font-black px-3.5 py-1.5 rounded-xl flex items-center gap-1.5 shadow active:scale-95 transition-all text-xs cursor-pointer"
+                                    >
+                                      <Send className="w-3.5 h-3.5" />
+                                      <span>🕵️ Transmettre au Chargé de Suivi</span>
+                                    </button>
+                                  )
+                                )}
+
+                                {isApproved && (
+                                  <button
+                                    type="button"
+                                    disabled={p.archivedBySecretariat}
+                                    onClick={() => {
+                                      archiveProjectSecretariat(p.id);
+                                      setToastMessage("📦 Dossier Projet classé définitivement dans les Archives Officielles !");
+                                    }}
+                                    className={`px-3.5 py-1.5 rounded-xl font-black flex items-center gap-1.5 transition-all shadow text-xs ${
+                                      p.archivedBySecretariat
+                                        ? 'bg-slate-800 text-slate-500 cursor-default'
+                                        : 'bg-emerald-600 hover:bg-emerald-500 text-white cursor-pointer active:scale-95'
+                                    }`}
+                                  >
+                                    <Archive className="w-3.5 h-3.5" />
+                                    <span>{p.archivedBySecretariat ? '📦 Archivé' : '🟢 Archiver'}</span>
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+
+                            {isReturned && p.payorFeedback && (
+                              <div className="p-3 bg-rose-900/30 border border-rose-500/30 rounded-xl space-y-1">
+                                <span className="text-[11px] font-bold text-rose-300 uppercase flex items-center gap-1">
+                                  <AlertTriangle className="w-3.5 h-3.5 text-rose-400" />
+                                  <span>Motif du retour formulé par le Payor :</span>
+                                </span>
+                                <p className="text-xs text-rose-100 italic bg-slate-950/60 p-2 rounded-lg">{p.payorFeedback}</p>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+
+            {/* 3. SECTION PROGRAMMES D'ÉVÉNEMENTS (ORGANISATION) */}
+            {(() => {
+              const secActs = activities.filter(a => a.sentToSecretariat);
+              const actBatches = new Map<string, EventActivity[]>();
+              const singleActs: EventActivity[] = [];
+              secActs.forEach(a => {
+                if (a.isConsolidated && a.batchId) {
+                  const list = actBatches.get(a.batchId) || [];
+                  list.push(a);
+                  actBatches.set(a.batchId, list);
+                } else {
+                  singleActs.push(a);
+                }
+              });
+              const totalDistinctActs = actBatches.size + singleActs.length;
+
+              return (
+                <div className="space-y-4 pt-4 border-t border-slate-800">
+                  <div className="flex items-center justify-between gap-2 border-b border-slate-800/80 pb-2">
+                    <h3 className="text-sm font-black text-sky-400 uppercase tracking-wider flex items-center gap-2">
+                      <span>🎪 3. Programmes d'Événements (Commission Organisation)</span>
+                      <span className="bg-sky-500/20 text-sky-300 border border-sky-500/30 px-2 py-0.5 rounded-full text-[10px]">
+                        {totalDistinctActs}
+                      </span>
+                    </h3>
+                  </div>
+
+                  {totalDistinctActs === 0 ? (
+                    <div className="text-center py-6 text-slate-500 text-xs bg-slate-950 rounded-2xl border border-dashed border-slate-800">
+                      Aucun programme d'événement transmis par la Commission Organisation pour le moment.
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      {Array.from(actBatches.entries()).map(([batchId, batchActs]) => {
+                        const first = batchActs[0];
+                        const batchIds = batchActs.map(x => x.id);
+                        const allApproved = batchActs.every(a => a.status === 'APPROVED' || a.status === 'PUBLISHED');
+                        const anyReturned = batchActs.some(a => a.status === 'returned_for_correction');
+                        const anySentToSuivi = batchActs.some(a => a.status === 'SENT_TO_SUIVI');
+                        const anyPendingPayor = batchActs.some(a => a.status === 'PENDING_PAYOR');
+                        const isPostRevision = batchActs.some(a => a.isPostMeetingRevision || a.suiviReviewed);
+                        const canRoute = batchActs.some(a => !a.status || a.status === 'SENT_TO_SECRETARIAT' || a.status === 'returned_for_correction');
+                        const anyNotSentToCom = batchActs.some(a => !a.sentToCom);
+                        const allAckByCom = batchActs.every(a => a.ackByCom);
+                        const allArchived = batchActs.every(a => a.archivedBySecretariat);
+                        const batchDisplayTitle = first.batchTitle || `Programme Global d'Activités (${batchActs.length} activités)`;
+                        const feedbackItem = batchActs.find(a => a.payorFeedback);
+
+                        return (
+                          <div
+                            key={batchId}
+                            className="bg-slate-950 p-4 sm:p-5 rounded-2xl border-2 border-purple-500/40 flex flex-col space-y-3 text-xs shadow-lg"
+                          >
+                            <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-3">
+                              <div className="space-y-1.5 flex-1">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <p className="font-extrabold text-white text-sm">{batchDisplayTitle}</p>
+                                  <span className="font-mono text-purple-300 text-[10px] bg-purple-500/15 px-2 py-0.5 rounded-md border border-purple-500/30">
+                                    {batchId}
+                                  </span>
+                                  <span className="bg-purple-500/20 text-purple-200 border border-purple-500/40 px-2.5 py-0.5 rounded-full text-[10px] font-black">
+                                    📦 Programme Global Unique ({batchActs.length} activités)
+                                  </span>
+                                  {allApproved ? (
+                                    <span className="bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-2.5 py-0.5 rounded-full text-[10px] font-black">
+                                      🟢 Visé Payor (SS.png)
+                                    </span>
+                                  ) : anyReturned ? (
+                                    <span className="bg-rose-500/20 text-rose-300 border border-rose-500/40 px-2.5 py-0.5 rounded-full text-[10px] font-black">
+                                      ⚠️ Retourné par Payor
+                                    </span>
+                                  ) : anyPendingPayor ? (
+                                    <span className="bg-amber-500/20 text-amber-300 border border-amber-500/30 px-2.5 py-0.5 rounded-full text-[10px] font-bold">
+                                      ⏳ En examen chez le Payor
+                                    </span>
+                                  ) : anySentToSuivi ? (
+                                    <span className="bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 px-2.5 py-0.5 rounded-full text-[10px] font-bold">
+                                      🕵️ En instruction chez le Chargé de Suivi
+                                    </span>
+                                  ) : (
+                                    <span className="bg-sky-500/20 text-sky-300 border border-sky-500/30 px-2.5 py-0.5 rounded-full text-[10px] font-bold">
+                                      📥 Reçu au Secrétariat
+                                    </span>
+                                  )}
+                                  {isPostRevision && !allApproved && !anyPendingPayor && (
+                                    <span className="bg-amber-500/15 text-amber-300 border border-amber-500/30 px-2 py-0.5 rounded-full text-[10px] font-bold">
+                                      🔄 Révision post-réunion (Routage direct Payor)
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="flex flex-wrap gap-1.5 pt-0.5">
+                                  {batchActs.map(ba => (
+                                    <span key={ba.id} className="bg-slate-900 text-slate-200 border border-slate-700 px-2 py-0.5 rounded-md text-[11px] font-bold">
+                                      • {ba.title} ({ba.eventDate})
+                                    </span>
+                                  ))}
+                                </div>
+                              </div>
+
+                              <div className="flex flex-wrap items-center gap-2 shrink-0 self-end md:self-center">
+                                <button
+                                  type="button"
+                                  onClick={() => {
                                     setPayorViewingOfficialDoc({
                                       type: 'CONSOLIDATED_ACTIVITIES',
                                       data: {
-                                        id: a.batchId,
-                                        title: a.batchTitle || `Programme Global d'Activités (${batchActs.length} activités)`,
-                                        status: a.status,
+                                        id: batchId,
+                                        title: batchDisplayTitle,
+                                        status: first.status,
                                         items: batchActs,
                                         isConsolidated: true,
                                       },
                                     });
-                                  } else {
-                                    setPayorViewingOfficialDoc({ type: 'ACTIVITY', data: a });
-                                  }
-                                }}
-                                className="bg-slate-800 hover:bg-slate-700 text-amber-300 font-bold px-3 py-1.5 rounded-xl border border-slate-700 flex items-center gap-1.5 text-xs active:scale-95 cursor-pointer"
-                              >
-                                <Eye className="w-3.5 h-3.5 text-amber-400" />
-                                <span>👁️ Visualiser</span>
-                              </button>
+                                  }}
+                                  className="bg-slate-800 hover:bg-slate-700 text-amber-300 font-bold px-3 py-1.5 rounded-xl border border-slate-700 flex items-center gap-1.5 text-xs active:scale-95 cursor-pointer"
+                                >
+                                  <Eye className="w-3.5 h-3.5 text-amber-400" />
+                                  <span>👁️ Visualiser le Programme Global</span>
+                                </button>
 
-                              {/* 2. Transmettre au Payor */}
-                              {(!a.status || a.status === 'SENT_TO_SECRETARIAT' || a.status === 'returned_for_correction') && (
                                 <button
                                   type="button"
-                                  onClick={() => {
-                                    sendActivityFromSecretariatToPayor(a.id);
-                                    setToastMessage("📤 Programme d'événement transmis au Payor pour accord/visa !");
-                                  }}
-                                  className="bg-amber-600 hover:bg-amber-500 text-white font-black px-3.5 py-1.5 rounded-xl flex items-center gap-1.5 shadow active:scale-95 transition-all text-xs cursor-pointer"
+                                  onClick={() => handleGeneratePDFConsolidatedActivities(batchActs)}
+                                  className="bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold px-2.5 py-1.5 rounded-xl border border-slate-700 flex items-center gap-1 text-xs active:scale-95 cursor-pointer"
                                 >
-                                  <Send className="w-3.5 h-3.5" />
-                                  <span>📤 Transmettre au Payor</span>
+                                  <Printer className="w-3.5 h-3.5" />
+                                  <span>PDF</span>
                                 </button>
-                              )}
 
-                              {/* 3. Transmettre Note d'Info à la COM */}
-                              {isApproved && !a.sentToCom && (
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    sendActivityNoteToCom(a.id);
-                                    setToastMessage("📢 Note d'information d'événement transmise à la Base d'Information et de Communication (BIC) !");
-                                  }}
-                                  className="bg-blue-600 hover:bg-blue-500 text-white font-black px-3.5 py-1.5 rounded-xl flex items-center gap-1.5 shadow active:scale-95 transition-all text-xs cursor-pointer"
-                                >
-                                  <Send className="w-3.5 h-3.5" />
-                                  <span>📢 Transmettre à la COM</span>
-                                </button>
-                              )}
-
-                              {/* 4. Archiver */}
-                              {isApproved && (
-                                <button
-                                  type="button"
-                                  disabled={!a.ackByCom || a.archivedBySecretariat}
-                                  onClick={() => {
-                                    archiveActivitySecretariat(a.id);
-                                    setToastMessage("📦 Dossier d'activité classé définitivement dans les Archives Officielles !");
-                                  }}
-                                  className={`px-3.5 py-1.5 rounded-xl font-black flex items-center gap-1.5 transition-all shadow text-xs ${
-                                    a.archivedBySecretariat
-                                      ? 'bg-slate-800 text-slate-500 cursor-default'
-                                      : a.ackByCom
-                                      ? 'bg-emerald-600 hover:bg-emerald-500 text-white cursor-pointer active:scale-95'
-                                      : 'bg-slate-800 text-slate-500 cursor-not-allowed opacity-60 border border-slate-700'
-                                  }`}
-                                >
-                                  <Archive className="w-3.5 h-3.5" />
-                                  <span>{a.archivedBySecretariat ? '📦 Archivé' : a.ackByCom ? '🟢 Archiver' : '⚪ Archiver'}</span>
-                                </button>
-                              )}
-                            </div>
-                          </div>
-
-                          {isReturned && a.payorFeedback && (
-                            <div className="p-3 bg-rose-900/30 border border-rose-500/30 rounded-xl space-y-1">
-                              <span className="text-[11px] font-bold text-rose-300 uppercase flex items-center gap-1">
-                                <AlertTriangle className="w-3.5 h-3.5 text-rose-400" />
-                                <span>Motif du retour formulé par le Payor :</span>
-                              </span>
-                              <p className="text-xs text-rose-100 italic bg-slate-950/60 p-2 rounded-lg">{a.payorFeedback}</p>
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
-                </div>
-              )}
-            </div>
-
-            {/* 4. SECTION ÉVÉNEMENTS RELIGIEUX (SPIRITUALITÉ) */}
-            <div className="space-y-4 pt-4 border-t border-slate-800">
-              <div className="flex items-center justify-between gap-2 border-b border-slate-800/80 pb-2">
-                <h3 className="text-sm font-black text-purple-400 uppercase tracking-wider flex items-center gap-2">
-                  <span>🕊️ 4. Événements Religieux (Commission Spiritualité)</span>
-                  <span className="bg-purple-500/20 text-purple-300 border border-purple-500/30 px-2 py-0.5 rounded-full text-[10px]">
-                    {religiousEvents.filter(e => e.sentToSecretariat).length}
-                  </span>
-                </h3>
-              </div>
-
-              {religiousEvents.filter(e => e.sentToSecretariat).length === 0 ? (
-                <div className="text-center py-6 text-slate-500 text-xs bg-slate-950 rounded-2xl border border-dashed border-slate-800">
-                  Aucun événement spirituel transmis par la Commission Spiritualité pour le moment.
-                </div>
-              ) : (
-                <div className="space-y-3">
-                  {religiousEvents
-                    .filter(e => e.sentToSecretariat)
-                    .map(e => {
-                      const isApproved = e.status === 'APPROVED' || e.status === 'APPROVED_PAYOR' || e.status === 'PUBLISHED';
-                      const isReturned = e.status === 'returned_for_correction';
-                      return (
-                        <div
-                          key={e.id}
-                          className="bg-slate-950 p-4 sm:p-5 rounded-2xl border border-slate-800 flex flex-col space-y-3 text-xs"
-                        >
-                          <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-3">
-                            <div className="space-y-1 flex-1">
-                              <div className="flex flex-wrap items-center gap-2">
-                                <p className="font-extrabold text-white text-sm">{e.title}</p>
-                                <span className="font-mono text-purple-300 text-[10px] bg-purple-500/10 px-2 py-0.5 rounded-md border border-purple-500/20">{e.id}</span>
-                                {isApproved ? (
-                                  <span className="bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-2.5 py-0.5 rounded-full text-[10px] font-black">
-                                    🟢 Visé Payor (SS.png)
-                                  </span>
-                                ) : isReturned ? (
-                                  <span className="bg-rose-500/20 text-rose-300 border border-rose-500/40 px-2.5 py-0.5 rounded-full text-[10px] font-black">
-                                    ⚠️ Retourné par Payor
-                                  </span>
-                                ) : e.status === 'PENDING_PAYOR' ? (
-                                  <span className="bg-amber-500/20 text-amber-300 border border-amber-500/30 px-2.5 py-0.5 rounded-full text-[10px] font-bold">
-                                    ⏳ En examen chez le Payor
-                                  </span>
-                                ) : (
-                                  <span className="bg-sky-500/20 text-sky-300 border border-sky-500/30 px-2.5 py-0.5 rounded-full text-[10px] font-bold">
-                                    📥 Reçu au Secrétariat
-                                  </span>
+                                {canRoute && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      splitActivitiesBatchToIndividual(batchIds);
+                                      setToastMessage(`✂️ Programme global éclaté en ${batchActs.length} activités individuelles.`);
+                                    }}
+                                    className="bg-purple-950/80 hover:bg-purple-900 text-purple-200 border border-purple-500/40 font-bold px-3 py-1.5 rounded-xl flex items-center gap-1.5 text-xs active:scale-95 transition-all cursor-pointer"
+                                    title="Détacher les activités de ce lot pour les transmettre et les suivre individuellement"
+                                  >
+                                    <span>✂️ Éclater le lot global en activités individuelles</span>
+                                  </button>
                                 )}
-                                {e.isConsolidated && (
-                                  <span className="bg-purple-500/20 text-purple-300 border border-purple-500/30 px-2 py-0.5 rounded-full text-[10px] font-bold">
-                                    📦 Programme Consolidé
-                                  </span>
+
+                                {canRoute && (
+                                  isPostRevision ? (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        sendActivitiesBatchFromSecretariatToPayor(batchIds);
+                                        setToastMessage(`📤 Révision post-réunion du Programme Global (${batchActs.length} activités) transmise directement au Payor !`);
+                                      }}
+                                      className="bg-amber-600 hover:bg-amber-500 text-white font-black px-3.5 py-1.5 rounded-xl flex items-center gap-1.5 shadow active:scale-95 transition-all text-xs cursor-pointer"
+                                    >
+                                      <Send className="w-3.5 h-3.5" />
+                                      <span>📤 Transmettre le Lot au Payor</span>
+                                    </button>
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        sendActivitiesBatchFromSecretariatToSuivi(batchIds);
+                                        setToastMessage(`🕵️ Programme Global (${batchActs.length} activités) transmis au Chargé de Suivi pour instruction avant la réunion de cadrage !`);
+                                      }}
+                                      className="bg-indigo-600 hover:bg-indigo-500 text-white font-black px-3.5 py-1.5 rounded-xl flex items-center gap-1.5 shadow active:scale-95 transition-all text-xs cursor-pointer"
+                                    >
+                                      <Send className="w-3.5 h-3.5" />
+                                      <span>🕵️ Transmettre le Lot au Chargé de Suivi</span>
+                                    </button>
+                                  )
+                                )}
+
+                                {allApproved && (
+                                  <button
+                                    type="button"
+                                    disabled={allArchived}
+                                    onClick={() => {
+                                      batchIds.forEach(id => archiveActivitySecretariat(id));
+                                      setToastMessage("📦 Programme Global classé définitivement dans les Archives Officielles !");
+                                    }}
+                                    className={`px-3.5 py-1.5 rounded-xl font-black flex items-center gap-1.5 transition-all shadow text-xs ${
+                                      allArchived
+                                        ? 'bg-slate-800 text-slate-500 cursor-default'
+                                        : 'bg-emerald-600 hover:bg-emerald-500 text-white cursor-pointer active:scale-95'
+                                    }`}
+                                  >
+                                    <Archive className="w-3.5 h-3.5" />
+                                    <span>{allArchived ? '📦 Archivé' : '🟢 Archiver'}</span>
+                                  </button>
                                 )}
                               </div>
-                              <p className="text-slate-400">
-                                Date : <strong className="text-white">{e.eventDate}</strong> {e.eventTime ? `à ${e.eventTime}` : ''} {e.location ? `• Lieu : ${e.location}` : ''} {e.theme ? `• Thème : "${e.theme}"` : ''}
-                              </p>
                             </div>
 
-                            <div className="flex flex-wrap items-center gap-2 shrink-0 self-end md:self-center">
-                              {/* 1. Visualiser */}
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  if (e.isConsolidated && e.batchId) {
-                                    const batchEvts = religiousEvents.filter(item => item.batchId === e.batchId);
+                            {anyReturned && feedbackItem?.payorFeedback && (
+                              <div className="p-3 bg-rose-900/30 border border-rose-500/30 rounded-xl space-y-1">
+                                <span className="text-[11px] font-bold text-rose-300 uppercase flex items-center gap-1">
+                                  <AlertTriangle className="w-3.5 h-3.5 text-rose-400" />
+                                  <span>Motif du retour formulé par le Payor :</span>
+                                </span>
+                                <p className="text-xs text-rose-100 italic bg-slate-950/60 p-2 rounded-lg">{feedbackItem.payorFeedback}</p>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+
+                      {singleActs.map(a => {
+                        const isApproved = a.status === 'APPROVED' || a.status === 'PUBLISHED';
+                        const isReturned = a.status === 'returned_for_correction';
+                        const isSentToSuivi = a.status === 'SENT_TO_SUIVI';
+                        const isPostRevision = Boolean(a.isPostMeetingRevision || a.suiviReviewed);
+                        return (
+                          <div
+                            key={a.id}
+                            className="bg-slate-950 p-4 sm:p-5 rounded-2xl border border-slate-800 flex flex-col space-y-3 text-xs"
+                          >
+                            <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-3">
+                              <div className="space-y-1 flex-1">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <p className="font-extrabold text-white text-sm">{a.title}</p>
+                                  <span className="font-mono text-sky-300 text-[10px] bg-sky-500/10 px-2 py-0.5 rounded-md border border-sky-500/20">{a.id}</span>
+                                  {isApproved ? (
+                                    <span className="bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-2.5 py-0.5 rounded-full text-[10px] font-black">
+                                      🟢 Visé Payor (SS.png)
+                                    </span>
+                                  ) : isReturned ? (
+                                    <span className="bg-rose-500/20 text-rose-300 border border-rose-500/40 px-2.5 py-0.5 rounded-full text-[10px] font-black">
+                                      ⚠️ Retourné par Payor
+                                    </span>
+                                  ) : a.status === 'PENDING_PAYOR' ? (
+                                    <span className="bg-amber-500/20 text-amber-300 border border-amber-500/30 px-2.5 py-0.5 rounded-full text-[10px] font-bold">
+                                      ⏳ En examen chez le Payor
+                                    </span>
+                                  ) : isSentToSuivi ? (
+                                    <span className="bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 px-2.5 py-0.5 rounded-full text-[10px] font-bold">
+                                      🕵️ En instruction chez le Chargé de Suivi
+                                    </span>
+                                  ) : (
+                                    <span className="bg-sky-500/20 text-sky-300 border border-sky-500/30 px-2.5 py-0.5 rounded-full text-[10px] font-bold">
+                                      📥 Reçu au Secrétariat
+                                    </span>
+                                  )}
+                                  {isPostRevision && !isApproved && a.status !== 'PENDING_PAYOR' && (
+                                    <span className="bg-amber-500/15 text-amber-300 border border-amber-500/30 px-2 py-0.5 rounded-full text-[10px] font-bold">
+                                      🔄 Révision post-réunion (Routage direct Payor)
+                                    </span>
+                                  )}
+                                </div>
+                                <p className="text-slate-400">
+                                  Date : <strong className="text-white">{a.eventDate}</strong> {a.location ? `• Lieu : ${a.location}` : ''} {a.budget ? `• Budget : ${a.budget.toLocaleString('fr-FR')} F CFA` : ''}
+                                </p>
+                              </div>
+
+                              <div className="flex flex-wrap items-center gap-2 shrink-0 self-end md:self-center">
+                                <button
+                                  type="button"
+                                  onClick={() => setPayorViewingOfficialDoc({ type: 'ACTIVITY', data: a })}
+                                  className="bg-slate-800 hover:bg-slate-700 text-amber-300 font-bold px-3 py-1.5 rounded-xl border border-slate-700 flex items-center gap-1.5 text-xs active:scale-95 cursor-pointer"
+                                >
+                                  <Eye className="w-3.5 h-3.5 text-amber-400" />
+                                  <span>👁️ Visualiser</span>
+                                </button>
+
+                                {(!a.status || a.status === 'SENT_TO_SECRETARIAT' || a.status === 'returned_for_correction') && (
+                                  isPostRevision ? (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        sendActivityFromSecretariatToPayor(a.id);
+                                        setToastMessage("📤 Révision post-réunion transmise directement au Payor (sans repasser par le Suivi) !");
+                                      }}
+                                      className="bg-amber-600 hover:bg-amber-500 text-white font-black px-3.5 py-1.5 rounded-xl flex items-center gap-1.5 shadow active:scale-95 transition-all text-xs cursor-pointer"
+                                    >
+                                      <Send className="w-3.5 h-3.5" />
+                                      <span>📤 Transmettre directement au Payor</span>
+                                    </button>
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        sendActivityFromSecretariatToSuivi(a.id);
+                                        setToastMessage("🕵️ Programme d'événement transmis au Chargé de Suivi pour instruction avant la réunion de cadrage !");
+                                      }}
+                                      className="bg-indigo-600 hover:bg-indigo-500 text-white font-black px-3.5 py-1.5 rounded-xl flex items-center gap-1.5 shadow active:scale-95 transition-all text-xs cursor-pointer"
+                                    >
+                                      <Send className="w-3.5 h-3.5" />
+                                      <span>🕵️ Transmettre au Chargé de Suivi</span>
+                                    </button>
+                                  )
+                                )}
+
+                                {isApproved && (
+                                  <button
+                                    type="button"
+                                    disabled={a.archivedBySecretariat}
+                                    onClick={() => {
+                                      archiveActivitySecretariat(a.id);
+                                      setToastMessage("📦 Dossier d'activité classé définitivement dans les Archives Officielles !");
+                                    }}
+                                    className={`px-3.5 py-1.5 rounded-xl font-black flex items-center gap-1.5 transition-all shadow text-xs ${
+                                      a.archivedBySecretariat
+                                        ? 'bg-slate-800 text-slate-500 cursor-default'
+                                        : 'bg-emerald-600 hover:bg-emerald-500 text-white cursor-pointer active:scale-95'
+                                    }`}
+                                  >
+                                    <Archive className="w-3.5 h-3.5" />
+                                    <span>{a.archivedBySecretariat ? '📦 Archivé' : '🟢 Archiver'}</span>
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+
+                            {isReturned && a.payorFeedback && (
+                              <div className="p-3 bg-rose-900/30 border border-rose-500/30 rounded-xl space-y-1">
+                                <span className="text-[11px] font-bold text-rose-300 uppercase flex items-center gap-1">
+                                  <AlertTriangle className="w-3.5 h-3.5 text-rose-400" />
+                                  <span>Motif du retour formulé par le Payor :</span>
+                                </span>
+                                <p className="text-xs text-rose-100 italic bg-slate-950/60 p-2 rounded-lg">{a.payorFeedback}</p>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+
+            {/* 4. SECTION ÉVÉNEMENTS RELIGIEUX (SPIRITUALITÉ) */}
+            {(() => {
+              const secEvts = religiousEvents.filter(e => e.sentToSecretariat);
+              const evtBatches = new Map<string, ReligiousEvent[]>();
+              const singleEvts: ReligiousEvent[] = [];
+              secEvts.forEach(e => {
+                if (e.isConsolidated && e.batchId) {
+                  const list = evtBatches.get(e.batchId) || [];
+                  list.push(e);
+                  evtBatches.set(e.batchId, list);
+                } else {
+                  singleEvts.push(e);
+                }
+              });
+              const totalDistinctEvts = evtBatches.size + singleEvts.length;
+
+              return (
+                <div className="space-y-4 pt-4 border-t border-slate-800">
+                  <div className="flex items-center justify-between gap-2 border-b border-slate-800/80 pb-2">
+                    <h3 className="text-sm font-black text-purple-400 uppercase tracking-wider flex items-center gap-2">
+                      <span>🕊️ 4. Événements Religieux (Commission Spiritualité)</span>
+                      <span className="bg-purple-500/20 text-purple-300 border border-purple-500/30 px-2 py-0.5 rounded-full text-[10px]">
+                        {totalDistinctEvts}
+                      </span>
+                    </h3>
+                  </div>
+
+                  {totalDistinctEvts === 0 ? (
+                    <div className="text-center py-6 text-slate-500 text-xs bg-slate-950 rounded-2xl border border-dashed border-slate-800">
+                      Aucun événement spirituel transmis par la Commission Spiritualité pour le moment.
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      {Array.from(evtBatches.entries()).map(([batchId, batchEvts]) => {
+                        const first = batchEvts[0];
+                        const batchIds = batchEvts.map(x => x.id);
+                        const allApproved = batchEvts.every(e => e.status === 'APPROVED' || e.status === 'APPROVED_PAYOR' || e.status === 'PUBLISHED');
+                        const anyReturned = batchEvts.some(e => e.status === 'returned_for_correction');
+                        const anySentToSuivi = batchEvts.some(e => e.status === 'SENT_TO_SUIVI');
+                        const anyPendingPayor = batchEvts.some(e => e.status === 'PENDING_PAYOR');
+                        const isPostRevision = batchEvts.some(e => e.isPostMeetingRevision || e.suiviReviewed);
+                        const canRoute = batchEvts.some(e => !e.status || e.status === 'SENT_TO_SECRETARIAT' || e.status === 'returned_for_correction');
+                        const anyNotSentToCom = batchEvts.some(e => !e.sentToCom);
+                        const allAckByCom = batchEvts.every(e => e.ackByCom);
+                        const allArchived = batchEvts.every(e => e.archivedBySecretariat);
+                        const batchDisplayTitle = first.batchTitle || `Programme Global des Événements Religieux (${batchEvts.length} événements)`;
+                        const feedbackItem = batchEvts.find(e => e.payorFeedback);
+
+                        return (
+                          <div
+                            key={batchId}
+                            className="bg-slate-950 p-4 sm:p-5 rounded-2xl border-2 border-purple-500/40 flex flex-col space-y-3 text-xs shadow-lg"
+                          >
+                            <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-3">
+                              <div className="space-y-1.5 flex-1">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <p className="font-extrabold text-white text-sm">{batchDisplayTitle}</p>
+                                  <span className="font-mono text-purple-300 text-[10px] bg-purple-500/15 px-2 py-0.5 rounded-md border border-purple-500/30">
+                                    {batchId}
+                                  </span>
+                                  <span className="bg-purple-500/20 text-purple-200 border border-purple-500/40 px-2.5 py-0.5 rounded-full text-[10px] font-black">
+                                    📦 Programme Spirituel Unique ({batchEvts.length} événements)
+                                  </span>
+                                  {allApproved ? (
+                                    <span className="bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-2.5 py-0.5 rounded-full text-[10px] font-black">
+                                      🟢 Visé Payor (SS.png)
+                                    </span>
+                                  ) : anyReturned ? (
+                                    <span className="bg-rose-500/20 text-rose-300 border border-rose-500/40 px-2.5 py-0.5 rounded-full text-[10px] font-black">
+                                      ⚠️ Retourné par Payor
+                                    </span>
+                                  ) : anyPendingPayor ? (
+                                    <span className="bg-amber-500/20 text-amber-300 border border-amber-500/30 px-2.5 py-0.5 rounded-full text-[10px] font-bold">
+                                      ⏳ En examen chez le Payor
+                                    </span>
+                                  ) : anySentToSuivi ? (
+                                    <span className="bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 px-2.5 py-0.5 rounded-full text-[10px] font-bold">
+                                      🕵️ En instruction chez le Chargé de Suivi
+                                    </span>
+                                  ) : (
+                                    <span className="bg-sky-500/20 text-sky-300 border border-sky-500/30 px-2.5 py-0.5 rounded-full text-[10px] font-bold">
+                                      📥 Reçu au Secrétariat
+                                    </span>
+                                  )}
+                                  {isPostRevision && !allApproved && !anyPendingPayor && (
+                                    <span className="bg-amber-500/15 text-amber-300 border border-amber-500/30 px-2 py-0.5 rounded-full text-[10px] font-bold">
+                                      🔄 Révision post-réunion (Routage direct Payor)
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="flex flex-wrap gap-1.5 pt-0.5">
+                                  {batchEvts.map(be => (
+                                    <span key={be.id} className="bg-slate-900 text-slate-200 border border-slate-700 px-2 py-0.5 rounded-md text-[11px] font-bold">
+                                      • {be.title} ({be.eventDate})
+                                    </span>
+                                  ))}
+                                </div>
+                              </div>
+
+                              <div className="flex flex-wrap items-center gap-2 shrink-0 self-end md:self-center">
+                                <button
+                                  type="button"
+                                  onClick={() => {
                                     setPayorViewingOfficialDoc({
                                       type: 'CONSOLIDATED_RELIGIOUS_EVENTS',
                                       data: {
-                                        id: e.batchId,
-                                        title: e.batchTitle || `Programme Global des Événements Religieux (${batchEvts.length} événements)`,
-                                        status: e.status,
+                                        id: batchId,
+                                        title: batchDisplayTitle,
+                                        status: first.status,
                                         items: batchEvts,
                                         isConsolidated: true,
                                       },
                                     });
-                                  } else {
-                                    setPayorViewingOfficialDoc({ type: 'RELIGIOUS_EVENT', data: e });
-                                  }
-                                }}
-                                className="bg-slate-800 hover:bg-slate-700 text-amber-300 font-bold px-3 py-1.5 rounded-xl border border-slate-700 flex items-center gap-1.5 text-xs active:scale-95 cursor-pointer"
-                              >
-                                <Eye className="w-3.5 h-3.5 text-amber-400" />
-                                <span>👁️ Visualiser</span>
-                              </button>
+                                  }}
+                                  className="bg-slate-800 hover:bg-slate-700 text-amber-300 font-bold px-3 py-1.5 rounded-xl border border-slate-700 flex items-center gap-1.5 text-xs active:scale-95 cursor-pointer"
+                                >
+                                  <Eye className="w-3.5 h-3.5 text-amber-400" />
+                                  <span>👁️ Visualiser le Programme Global</span>
+                                </button>
 
-                              {/* 2. Transmettre au Payor */}
-                              {(!e.status || e.status === 'SENT_TO_SECRETARIAT' || e.status === 'returned_for_correction') && (
                                 <button
                                   type="button"
-                                  onClick={() => {
-                                    sendReligiousEventFromSecretariatToPayor(e.id);
-                                    setToastMessage("📤 Événement spirituel transmis au Payor pour accord/visa !");
-                                  }}
-                                  className="bg-amber-600 hover:bg-amber-500 text-white font-black px-3.5 py-1.5 rounded-xl flex items-center gap-1.5 shadow active:scale-95 transition-all text-xs cursor-pointer"
+                                  onClick={() => handleGeneratePDFConsolidatedReligiousEvents(batchEvts)}
+                                  className="bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold px-2.5 py-1.5 rounded-xl border border-slate-700 flex items-center gap-1 text-xs active:scale-95 cursor-pointer"
                                 >
-                                  <Send className="w-3.5 h-3.5" />
-                                  <span>📤 Transmettre au Payor</span>
+                                  <Printer className="w-3.5 h-3.5" />
+                                  <span>PDF</span>
                                 </button>
-                              )}
 
-                              {/* 3. Transmettre Note d'Info à la COM */}
-                              {isApproved && !e.sentToCom && (
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    sendReligiousEventNoteToCom(e.id);
-                                    setToastMessage("📢 Note d'information spirituelle transmise à la Base d'Information et de Communication (BIC) !");
-                                  }}
-                                  className="bg-blue-600 hover:bg-blue-500 text-white font-black px-3.5 py-1.5 rounded-xl flex items-center gap-1.5 shadow active:scale-95 transition-all text-xs cursor-pointer"
-                                >
-                                  <Send className="w-3.5 h-3.5" />
-                                  <span>📢 Transmettre à la COM</span>
-                                </button>
-                              )}
+                                {canRoute && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      splitReligiousEventsBatchToIndividual(batchIds);
+                                      setToastMessage(`✂️ Programme spirituel global éclaté en ${batchEvts.length} événements individuels.`);
+                                    }}
+                                    className="bg-purple-950/80 hover:bg-purple-900 text-purple-200 border border-purple-500/40 font-bold px-3 py-1.5 rounded-xl flex items-center gap-1.5 text-xs active:scale-95 transition-all cursor-pointer"
+                                    title="Détacher les événements de ce lot pour les transmettre et les suivre individuellement"
+                                  >
+                                    <span>✂️ Éclater le lot global en événements individuels</span>
+                                  </button>
+                                )}
 
-                              {/* 4. Archiver */}
-                              {isApproved && (
-                                <button
-                                  type="button"
-                                  disabled={!e.ackByCom || e.archivedBySecretariat}
-                                  onClick={() => {
-                                    archiveReligiousEventSecretariat(e.id);
-                                    setToastMessage("📦 Événement spirituel classé définitivement dans les Archives Officielles !");
-                                  }}
-                                  className={`px-3.5 py-1.5 rounded-xl font-black flex items-center gap-1.5 transition-all shadow text-xs ${
-                                    e.archivedBySecretariat
-                                      ? 'bg-slate-800 text-slate-500 cursor-default'
-                                      : e.ackByCom
-                                      ? 'bg-emerald-600 hover:bg-emerald-500 text-white cursor-pointer active:scale-95'
-                                      : 'bg-slate-800 text-slate-500 cursor-not-allowed opacity-60 border border-slate-700'
-                                  }`}
-                                >
-                                  <Archive className="w-3.5 h-3.5" />
-                                  <span>{e.archivedBySecretariat ? '📦 Archivé' : e.ackByCom ? '🟢 Archiver' : '⚪ Archiver'}</span>
-                                </button>
-                              )}
+                                {canRoute && (
+                                  isPostRevision ? (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        sendReligiousEventsBatchFromSecretariatToPayor(batchIds);
+                                        setToastMessage(`📤 Révision post-réunion du Programme Spirituel Global (${batchEvts.length} événements) transmise directement au Payor !`);
+                                      }}
+                                      className="bg-amber-600 hover:bg-amber-500 text-white font-black px-3.5 py-1.5 rounded-xl flex items-center gap-1.5 shadow active:scale-95 transition-all text-xs cursor-pointer"
+                                    >
+                                      <Send className="w-3.5 h-3.5" />
+                                      <span>📤 Transmettre le Lot au Payor</span>
+                                    </button>
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        sendReligiousEventsBatchFromSecretariatToSuivi(batchIds);
+                                        setToastMessage(`🕵️ Programme Spirituel Global (${batchEvts.length} événements) transmis au Chargé de Suivi pour instruction avant la réunion de cadrage !`);
+                                      }}
+                                      className="bg-indigo-600 hover:bg-indigo-500 text-white font-black px-3.5 py-1.5 rounded-xl flex items-center gap-1.5 shadow active:scale-95 transition-all text-xs cursor-pointer"
+                                    >
+                                      <Send className="w-3.5 h-3.5" />
+                                      <span>🕵️ Transmettre le Lot au Chargé de Suivi</span>
+                                    </button>
+                                  )
+                                )}
+
+                                {allApproved && (
+                                  <button
+                                    type="button"
+                                    disabled={allArchived}
+                                    onClick={() => {
+                                      batchIds.forEach(id => archiveReligiousEventSecretariat(id));
+                                      setToastMessage("📦 Programme Spirituel Global classé définitivement dans les Archives Officielles !");
+                                    }}
+                                    className={`px-3.5 py-1.5 rounded-xl font-black flex items-center gap-1.5 transition-all shadow text-xs ${
+                                      allArchived
+                                        ? 'bg-slate-800 text-slate-500 cursor-default'
+                                        : 'bg-emerald-600 hover:bg-emerald-500 text-white cursor-pointer active:scale-95'
+                                    }`}
+                                  >
+                                    <Archive className="w-3.5 h-3.5" />
+                                    <span>{allArchived ? '📦 Archivé' : '🟢 Archiver'}</span>
+                                  </button>
+                                )}
+                              </div>
                             </div>
+
+                            {anyReturned && feedbackItem?.payorFeedback && (
+                              <div className="p-3 bg-rose-900/30 border border-rose-500/30 rounded-xl space-y-1">
+                                <span className="text-[11px] font-bold text-rose-300 uppercase flex items-center gap-1">
+                                  <AlertTriangle className="w-3.5 h-3.5 text-rose-400" />
+                                  <span>Motif du retour formulé par le Payor :</span>
+                                </span>
+                                <p className="text-xs text-rose-100 italic bg-slate-950/60 p-2 rounded-lg">{feedbackItem.payorFeedback}</p>
+                              </div>
+                            )}
                           </div>
+                        );
+                      })}
 
-                          {isReturned && e.payorFeedback && (
-                            <div className="p-3 bg-rose-900/30 border border-rose-500/30 rounded-xl space-y-1">
-                              <span className="text-[11px] font-bold text-rose-300 uppercase flex items-center gap-1">
-                                <AlertTriangle className="w-3.5 h-3.5 text-rose-400" />
-                                <span>Motif du retour formulé par le Payor :</span>
-                              </span>
-                              <p className="text-xs text-rose-100 italic bg-slate-950/60 p-2 rounded-lg">{e.payorFeedback}</p>
+                      {singleEvts.map(e => {
+                        const isApproved = e.status === 'APPROVED' || e.status === 'APPROVED_PAYOR' || e.status === 'PUBLISHED';
+                        const isReturned = e.status === 'returned_for_correction';
+                        const isSentToSuivi = e.status === 'SENT_TO_SUIVI';
+                        const isPostRevision = Boolean(e.isPostMeetingRevision || e.suiviReviewed);
+                        return (
+                          <div
+                            key={e.id}
+                            className="bg-slate-950 p-4 sm:p-5 rounded-2xl border border-slate-800 flex flex-col space-y-3 text-xs"
+                          >
+                            <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-3">
+                              <div className="space-y-1 flex-1">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <p className="font-extrabold text-white text-sm">{e.title}</p>
+                                  <span className="font-mono text-purple-300 text-[10px] bg-purple-500/10 px-2 py-0.5 rounded-md border border-purple-500/20">{e.id}</span>
+                                  {isApproved ? (
+                                    <span className="bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-2.5 py-0.5 rounded-full text-[10px] font-black">
+                                      🟢 Visé Payor (SS.png)
+                                    </span>
+                                  ) : isReturned ? (
+                                    <span className="bg-rose-500/20 text-rose-300 border border-rose-500/40 px-2.5 py-0.5 rounded-full text-[10px] font-black">
+                                      ⚠️ Retourné par Payor
+                                    </span>
+                                  ) : e.status === 'PENDING_PAYOR' ? (
+                                    <span className="bg-amber-500/20 text-amber-300 border border-amber-500/30 px-2.5 py-0.5 rounded-full text-[10px] font-bold">
+                                      ⏳ En examen chez le Payor
+                                    </span>
+                                  ) : isSentToSuivi ? (
+                                    <span className="bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 px-2.5 py-0.5 rounded-full text-[10px] font-bold">
+                                      🕵️ En instruction chez le Chargé de Suivi
+                                    </span>
+                                  ) : (
+                                    <span className="bg-sky-500/20 text-sky-300 border border-sky-500/30 px-2.5 py-0.5 rounded-full text-[10px] font-bold">
+                                      📥 Reçu au Secrétariat
+                                    </span>
+                                  )}
+                                  {isPostRevision && !isApproved && e.status !== 'PENDING_PAYOR' && (
+                                    <span className="bg-amber-500/15 text-amber-300 border border-amber-500/30 px-2 py-0.5 rounded-full text-[10px] font-bold">
+                                      🔄 Révision post-réunion (Routage direct Payor)
+                                    </span>
+                                  )}
+                                </div>
+                                <p className="text-slate-400">
+                                  Date : <strong className="text-white">{e.eventDate}</strong> {e.eventTime ? `à ${e.eventTime}` : ''} {e.location ? `• Lieu : ${e.location}` : ''} {e.theme ? `• Thème : "${e.theme}"` : ''}
+                                </p>
+                              </div>
+
+                              <div className="flex flex-wrap items-center gap-2 shrink-0 self-end md:self-center">
+                                <button
+                                  type="button"
+                                  onClick={() => setPayorViewingOfficialDoc({ type: 'RELIGIOUS_EVENT', data: e })}
+                                  className="bg-slate-800 hover:bg-slate-700 text-amber-300 font-bold px-3 py-1.5 rounded-xl border border-slate-700 flex items-center gap-1.5 text-xs active:scale-95 cursor-pointer"
+                                >
+                                  <Eye className="w-3.5 h-3.5 text-amber-400" />
+                                  <span>👁️ Visualiser</span>
+                                </button>
+
+                                {(!e.status || e.status === 'SENT_TO_SECRETARIAT' || e.status === 'returned_for_correction') && (
+                                  isPostRevision ? (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        sendReligiousEventFromSecretariatToPayor(e.id);
+                                        setToastMessage("📤 Révision post-réunion transmise directement au Payor (sans repasser par le Suivi) !");
+                                      }}
+                                      className="bg-amber-600 hover:bg-amber-500 text-white font-black px-3.5 py-1.5 rounded-xl flex items-center gap-1.5 shadow active:scale-95 transition-all text-xs cursor-pointer"
+                                    >
+                                      <Send className="w-3.5 h-3.5" />
+                                      <span>📤 Transmettre directement au Payor</span>
+                                    </button>
+                                  ) : (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        sendReligiousEventFromSecretariatToSuivi(e.id);
+                                        setToastMessage("🕵️ Événement spirituel transmis au Chargé de Suivi pour instruction avant la réunion de cadrage !");
+                                      }}
+                                      className="bg-indigo-600 hover:bg-indigo-500 text-white font-black px-3.5 py-1.5 rounded-xl flex items-center gap-1.5 shadow active:scale-95 transition-all text-xs cursor-pointer"
+                                    >
+                                      <Send className="w-3.5 h-3.5" />
+                                      <span>🕵️ Transmettre au Chargé de Suivi</span>
+                                    </button>
+                                  )
+                                )}
+
+                                {isApproved && (
+                                  <button
+                                    type="button"
+                                    disabled={e.archivedBySecretariat}
+                                    onClick={() => {
+                                      archiveReligiousEventSecretariat(e.id);
+                                      setToastMessage("📦 Événement spirituel classé définitivement dans les Archives Officielles !");
+                                    }}
+                                    className={`px-3.5 py-1.5 rounded-xl font-black flex items-center gap-1.5 transition-all shadow text-xs ${
+                                      e.archivedBySecretariat
+                                        ? 'bg-slate-800 text-slate-500 cursor-default'
+                                        : 'bg-emerald-600 hover:bg-emerald-500 text-white cursor-pointer active:scale-95'
+                                    }`}
+                                  >
+                                    <Archive className="w-3.5 h-3.5" />
+                                    <span>{e.archivedBySecretariat ? '📦 Archivé' : '🟢 Archiver'}</span>
+                                  </button>
+                                )}
+                              </div>
                             </div>
-                          )}
-                        </div>
-                      );
-                    })}
+
+                            {isReturned && e.payorFeedback && (
+                              <div className="p-3 bg-rose-900/30 border border-rose-500/30 rounded-xl space-y-1">
+                                <span className="text-[11px] font-bold text-rose-300 uppercase flex items-center gap-1">
+                                  <AlertTriangle className="w-3.5 h-3.5 text-rose-400" />
+                                  <span>Motif du retour formulé par le Payor :</span>
+                                </span>
+                                <p className="text-xs text-rose-100 italic bg-slate-950/60 p-2 rounded-lg">{e.payorFeedback}</p>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
-              )}
-            </div>
+              );
+            })()}
           </div>
+
+          {renderInternalNavetteBlock('SECRETARIAT')}
         </div>
       )}
 
@@ -10897,11 +11444,6 @@ export const AdminPortal: React.FC = () => {
       {/* ========================================================= */}
       {activeRole === 'PAYOR' && (
         <div className="space-y-8">
-          {/* RBAC Lock Badge */}
-          <RbacWarningBanner
-            roleName="ESPACE PAYOR"
-            allowedActionsText="Audit financier en lecture seule, co-validation des PV/dossiers et exportation des bilans."
-          />
 
           {/* Read-Only Audit Dashboard of Fund Balances */}
           <div className="bg-slate-900 rounded-[2.5rem] p-6 sm:p-8 border border-slate-800 shadow-xl space-y-6">
@@ -11055,389 +11597,584 @@ export const AdminPortal: React.FC = () => {
             </div>
 
             {/* Validation Activities */}
-            <div className="space-y-4 pt-4 border-t border-slate-800">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                <h3 className="text-xs font-black text-slate-400 uppercase tracking-wider flex items-center gap-2">
-                  <span>B. Programmes d'Événements (Commission Organisation)</span>
-                  {activities.filter(a => a.status === 'PENDING_PAYOR').length > 0 && (
-                    <span className="bg-amber-500/20 text-amber-300 border border-amber-500/40 px-2 py-0.5 rounded-full text-[10px] font-bold">
-                      {activities.filter(a => a.status === 'PENDING_PAYOR').length} en attente
+            {(() => {
+              const pendingActs = activities.filter(a => a.status === 'PENDING_PAYOR');
+              const payorActBatches = new Map<string, EventActivity[]>();
+              const payorSingleActs: EventActivity[] = [];
+              pendingActs.forEach(a => {
+                if (a.isConsolidated && a.batchId) {
+                  const list = payorActBatches.get(a.batchId) || [];
+                  list.push(a);
+                  payorActBatches.set(a.batchId, list);
+                } else {
+                  payorSingleActs.push(a);
+                }
+              });
+              const totalDistinctPendingActs = payorActBatches.size + payorSingleActs.length;
+
+              return (
+                <div className="space-y-4 pt-4 border-t border-slate-800">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <h3 className="text-xs font-black text-slate-400 uppercase tracking-wider flex items-center gap-2">
+                      <span>B. Programmes d'Événements (Commission Organisation)</span>
+                      {totalDistinctPendingActs > 0 && (
+                        <span className="bg-amber-500/20 text-amber-300 border border-amber-500/40 px-2 py-0.5 rounded-full text-[10px] font-bold">
+                          {totalDistinctPendingActs} en attente
+                        </span>
+                      )}
+                    </h3>
+                    <span className="text-[10px] text-slate-500 font-medium">
+                      Processus officiel : Examen ➜ Visa & Signature Payor OU Retour pour correction
                     </span>
-                  )}
-                </h3>
-                <span className="text-[10px] text-slate-500 font-medium">
-                  Processus officiel : Examen ➜ Visa & Signature Payor OU Retour pour correction
-                </span>
-              </div>
+                  </div>
 
-              {activities.filter(a => a.status === 'PENDING_PAYOR').length === 0 ? (
-                <div className="p-4 bg-slate-950/60 rounded-2xl border border-slate-800/80 text-center">
-                  <p className="text-xs text-slate-500 italic">Aucun programme d'événement en attente de validation pour le moment.</p>
-                </div>
-              ) : (
-                <div className="space-y-3">
-                  {activities
-                    .filter(a => a.status === 'PENDING_PAYOR')
-                    .map(a => (
-                      <div
-                        key={a.id}
-                        className="bg-slate-950 p-5 rounded-2xl border-2 border-amber-500/40 shadow-lg flex flex-col space-y-4 text-xs"
-                      >
-                        <div className="flex flex-col md:flex-row md:items-center justify-between gap-2 border-b border-slate-800 pb-3">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <span className="text-base font-black text-white">{a.title}</span>
-                            {a.isConsolidated && (
-                              <span className="bg-purple-500/20 text-purple-300 border border-purple-500/30 px-2 py-0.5 rounded-full text-[10px] font-bold">
-                                📦 Programme Consolidé
-                              </span>
-                            )}
-                            <span className="bg-amber-400 text-slate-950 font-black px-2.5 py-0.5 rounded-full text-[10px] flex items-center gap-1">
-                              <span>⏳ En Attente Accord Payor</span>
-                            </span>
-                          </div>
-                          <span className="text-[11px] text-slate-400 font-mono">Réf : {a.id}</span>
-                        </div>
+                  {totalDistinctPendingActs === 0 ? (
+                    <div className="p-4 bg-slate-950/60 rounded-2xl border border-slate-800/80 text-center">
+                      <p className="text-xs text-slate-500 italic">Aucun programme d'événement en attente de validation pour le moment.</p>
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      {Array.from(payorActBatches.entries()).map(([batchId, batchActs]) => {
+                        const first = batchActs[0];
+                        const batchIds = batchActs.map(x => x.id);
+                        const batchDisplayTitle = first.batchTitle || `Programme Global d'Activités (${batchActs.length} activités)`;
+                        const totalBudget = batchActs.reduce((sum, a) => sum + (a.budget || 0), 0);
 
-                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 bg-slate-900/80 p-3.5 rounded-xl border border-slate-800">
-                          <div>
-                            <span className="text-[10px] uppercase font-bold text-slate-400 block">📅 Date Prévue</span>
-                            <span className="text-xs font-bold text-white">{a.eventDate}</span>
-                          </div>
-                          <div>
-                            <span className="text-[10px] uppercase font-bold text-slate-400 block">📍 Lieu</span>
-                            <span className="text-xs font-bold text-white">{a.location || 'Non spécifié'}</span>
-                          </div>
-                          <div>
-                            <span className="text-[10px] uppercase font-bold text-slate-400 block">💰 Budget Prévisionnel</span>
-                            <span className="text-xs font-bold text-amber-400">{a.budget ? `${a.budget.toLocaleString('fr-FR')} F CFA` : 'Non renseigné'}</span>
-                          </div>
-                        </div>
-
-                        {a.program && (
-                          <div className="p-3 bg-slate-900/60 rounded-xl border border-slate-800/80 text-slate-300 text-xs leading-relaxed whitespace-pre-line line-clamp-3">
-                            {a.program}
-                          </div>
-                        )}
-
-                        {/* Action Buttons for Payor */}
-                        <div className="flex flex-wrap items-center justify-end gap-2.5 pt-2 border-t border-slate-800">
-                          {/* 1. Ouvrir le document officiel */}
-                          <button
-                            type="button"
-                            onClick={() => {
-                              if (a.isConsolidated && a.batchId) {
-                                const batchActs = activities.filter(item => item.batchId === a.batchId);
-                                setPayorViewingOfficialDoc({
-                                  type: 'CONSOLIDATED_ACTIVITIES',
-                                  data: {
-                                    id: a.batchId,
-                                    title: a.batchTitle || `Programme Global d'Activités (${batchActs.length} activités)`,
-                                    status: a.status,
-                                    items: batchActs,
-                                    isConsolidated: true,
-                                  },
-                                });
-                              } else {
-                                setPayorViewingOfficialDoc({ type: 'ACTIVITY', data: a });
-                              }
-                            }}
-                            className="bg-slate-800 hover:bg-slate-700 text-amber-300 border border-slate-700 font-bold px-3.5 py-2 rounded-xl flex items-center gap-1.5 transition-all text-xs active:scale-95 cursor-pointer"
-                            title="Ouvrir et examiner l'aperçu officiel grand format"
+                        return (
+                          <div
+                            key={batchId}
+                            className="bg-slate-950 p-5 rounded-2xl border-2 border-purple-500/50 shadow-lg flex flex-col space-y-4 text-xs"
                           >
-                            <Eye className="w-3.5 h-3.5 text-amber-400" />
-                            <span>👁️ Aperçu Document Officiel</span>
-                          </button>
-
-                          {/* 2. Action Retour pour correction */}
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setPayorReturnDocModal({ type: 'ACTIVITY', id: a.id, title: a.title });
-                              setPayorReturnDocFeedback('');
-                              setPayorReturnDocFeedbackError(null);
-                            }}
-                            className="bg-rose-950/80 hover:bg-rose-900 text-rose-200 border border-rose-700/60 font-bold px-3.5 py-2 rounded-xl flex items-center gap-1.5 transition-all text-xs active:scale-95 cursor-pointer"
-                            title="Renvoyer ce programme à l'Organisation avec un motif"
-                          >
-                            <XCircle className="w-3.5 h-3.5 text-rose-400" />
-                            <span>↩️ Retour pour correction</span>
-                          </button>
-
-                          {/* 3. Action Supprimer l'activité */}
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setDeleteConfirmModal({
-                                title: "Supprimer ce Programme d'Événement",
-                                itemTitle: a.title,
-                                itemId: a.id,
-                                description: `Supprimer définitivement le programme "${a.title}" (${a.id}) ? Cette action sera synchronisée avec la Commission Organisation.`,
-                                onConfirm: () => {
-                                  deleteActivity(a.id);
-                                  setToastMessage(`🗑️ Programme "${a.title}" supprimé.`);
-                                },
-                              });
-                            }}
-                            className="bg-rose-950/40 hover:bg-rose-900 text-rose-300 border border-rose-800/60 font-bold px-2.5 py-2 rounded-xl flex items-center gap-1 transition-all text-xs active:scale-95 cursor-pointer"
-                            title="Supprimer définitivement ce programme"
-                          >
-                            <Trash2 className="w-3.5 h-3.5 text-rose-400" />
-                            <span>Supprimer</span>
-                          </button>
-
-                          {/* 4. Action Approuver l'activité */}
-                          <button
-                            type="button"
-                            onClick={() => {
-                              approveActivityPayor(a.id);
-                              setToastMessage(`✅ Programme "${a.title}" approuvé et visé par le Payor (SS.png) !`);
-                            }}
-                            className="bg-emerald-600 hover:bg-emerald-500 text-white font-black px-4 py-2 rounded-xl flex items-center gap-1.5 shadow-lg active:scale-95 transition-all text-xs cursor-pointer"
-                          >
-                            <CheckCircle2 className="w-4 h-4" />
-                            <span>✅ Approuver & Signer (SS.png)</span>
-                          </button>
-                        </div>
-                      </div>
-                    ))}
-                </div>
-              )}
-
-              {/* Historique des décisions Activités Organisation */}
-              {activities.filter(a => a.status !== 'PENDING_PAYOR' && a.status !== 'DRAFT' && a.status !== 'SENT_TO_SECRETARIAT').length > 0 && (
-                <div className="pt-2">
-                  <details className="bg-slate-950/80 rounded-2xl border border-slate-800 p-3.5 group">
-                    <summary className="text-xs font-bold text-slate-400 cursor-pointer flex items-center justify-between">
-                      <span>Historique des programmes d'événements traités par le Payor ({activities.filter(a => a.status !== 'PENDING_PAYOR' && a.status !== 'DRAFT' && a.status !== 'SENT_TO_SECRETARIAT').length})</span>
-                      <span className="text-[10px] text-slate-500 group-open:rotate-180 transition-transform">▼</span>
-                    </summary>
-                    <div className="space-y-2 mt-3 pt-3 border-t border-slate-800">
-                      {activities
-                        .filter(a => a.status !== 'PENDING_PAYOR' && a.status !== 'DRAFT' && a.status !== 'SENT_TO_SECRETARIAT')
-                        .map(a => {
-                          const isApproved = a.status === 'APPROVED' || a.status === 'PUBLISHED';
-                          return (
-                            <div key={a.id} className="p-3 bg-slate-900/60 rounded-xl border border-slate-800 flex items-center justify-between gap-2 text-xs">
-                              <div>
-                                <span className="font-bold text-white">{a.title}</span>
-                                <span className="text-slate-400 ml-2">({a.eventDate})</span>
-                                {a.status === 'returned_for_correction' && (
-                                  <p className="text-[11px] text-rose-400 italic mt-0.5">Motif : {a.payorFeedback}</p>
-                                )}
+                            <div className="flex flex-col md:flex-row md:items-center justify-between gap-2 border-b border-slate-800 pb-3">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className="text-base font-black text-white">{batchDisplayTitle}</span>
+                                <span className="bg-purple-500/20 text-purple-200 border border-purple-500/40 px-2.5 py-0.5 rounded-full text-[10px] font-black">
+                                  📦 Programme Global Consolidé ({batchActs.length} activités)
+                                </span>
+                                <span className="bg-amber-400 text-slate-950 font-black px-2.5 py-0.5 rounded-full text-[10px] flex items-center gap-1">
+                                  <span>⏳ En Attente Accord Payor</span>
+                                </span>
                               </div>
-                              <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                                a.status === 'returned_for_correction'
-                                  ? 'bg-rose-500/20 text-rose-300 border border-rose-500/30'
-                                  : isApproved
-                                  ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
-                                  : 'bg-slate-800 text-slate-400'
-                              }`}>
-                                {a.status === 'returned_for_correction' ? '⚠️ Retourné' : isApproved ? '🟢 Visé Payor' : a.status}
+                              <span className="text-[11px] text-purple-300 font-mono">Réf : {batchId}</span>
+                            </div>
+
+                            <div className="space-y-2">
+                              {batchActs.map(ba => (
+                                <div key={ba.id} className="grid grid-cols-1 sm:grid-cols-3 gap-2 bg-slate-900/80 p-3 rounded-xl border border-slate-800">
+                                  <div>
+                                    <span className="text-[10px] uppercase font-bold text-slate-400 block">🎪 Activité</span>
+                                    <span className="text-xs font-black text-white">{ba.title}</span>
+                                  </div>
+                                  <div>
+                                    <span className="text-[10px] uppercase font-bold text-slate-400 block">📅 Date & Lieu</span>
+                                    <span className="text-xs font-bold text-slate-200">{ba.eventDate} • {ba.location || 'À définir'}</span>
+                                  </div>
+                                  <div>
+                                    <span className="text-[10px] uppercase font-bold text-slate-400 block">💰 Budget</span>
+                                    <span className="text-xs font-bold text-amber-400">{ba.budget ? `${ba.budget.toLocaleString('fr-FR')} F CFA` : 'Non renseigné'}</span>
+                                  </div>
+                                </div>
+                              ))}
+                              {totalBudget > 0 && (
+                                <p className="text-[11px] text-slate-400">
+                                  Budget global cumulé du programme : <strong className="text-amber-400">{totalBudget.toLocaleString('fr-FR')} F CFA</strong>
+                                </p>
+                              )}
+                            </div>
+
+                            <div className="flex flex-wrap items-center justify-end gap-2.5 pt-2 border-t border-slate-800">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setPayorViewingOfficialDoc({
+                                    type: 'CONSOLIDATED_ACTIVITIES',
+                                    data: {
+                                      id: batchId,
+                                      title: batchDisplayTitle,
+                                      status: first.status,
+                                      items: batchActs,
+                                      isConsolidated: true,
+                                    },
+                                  });
+                                }}
+                                className="bg-slate-800 hover:bg-slate-700 text-amber-300 border border-slate-700 font-bold px-3.5 py-2 rounded-xl flex items-center gap-1.5 transition-all text-xs active:scale-95 cursor-pointer"
+                              >
+                                <Eye className="w-3.5 h-3.5 text-amber-400" />
+                                <span>👁️ Aperçu Programme Global</span>
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() => handleGeneratePDFConsolidatedActivities(batchActs)}
+                                className="bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 font-bold px-3 py-2 rounded-xl flex items-center gap-1.5 transition-all text-xs active:scale-95 cursor-pointer"
+                              >
+                                <Printer className="w-3.5 h-3.5 text-slate-400" />
+                                <span>PDF</span>
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setPayorReturnDocModal({
+                                    type: 'CONSOLIDATED_ACTIVITIES',
+                                    id: batchId,
+                                    title: batchDisplayTitle,
+                                    itemIds: batchIds,
+                                  });
+                                  setPayorReturnDocFeedback('');
+                                  setPayorReturnDocFeedbackError(null);
+                                }}
+                                className="bg-rose-950/80 hover:bg-rose-900 text-rose-200 border border-rose-700/60 font-bold px-3.5 py-2 rounded-xl flex items-center gap-1.5 transition-all text-xs active:scale-95 cursor-pointer"
+                              >
+                                <XCircle className="w-3.5 h-3.5 text-rose-400" />
+                                <span>↩️ Retourner le Lot</span>
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  approveActivitiesBatchPayor(batchIds);
+                                  setToastMessage(`✅ Programme Global (${batchActs.length} activités) approuvé et visé par le Payor (SS.png) !`);
+                                }}
+                                className="bg-emerald-600 hover:bg-emerald-500 text-white font-black px-4 py-2 rounded-xl flex items-center gap-1.5 shadow-lg active:scale-95 transition-all text-xs cursor-pointer"
+                              >
+                                <CheckCircle2 className="w-4 h-4" />
+                                <span>✅ Approuver & Viser le Lot (SS.png)</span>
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+
+                      {payorSingleActs.map(a => (
+                        <div
+                          key={a.id}
+                          className="bg-slate-950 p-5 rounded-2xl border-2 border-amber-500/40 shadow-lg flex flex-col space-y-4 text-xs"
+                        >
+                          <div className="flex flex-col md:flex-row md:items-center justify-between gap-2 border-b border-slate-800 pb-3">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="text-base font-black text-white">{a.title}</span>
+                              <span className="bg-amber-400 text-slate-950 font-black px-2.5 py-0.5 rounded-full text-[10px] flex items-center gap-1">
+                                <span>⏳ En Attente Accord Payor</span>
                               </span>
                             </div>
-                          );
-                        })}
-                    </div>
-                  </details>
-                </div>
-              )}
-            </div>
+                            <span className="text-[11px] text-slate-400 font-mono">Réf : {a.id}</span>
+                          </div>
 
-            {/* Validation Projets AGR (Montage Bi-Niveau & Approval Payor) */}
-            <div className="space-y-4 pt-4 border-t border-slate-800">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                <h3 className="text-xs font-black text-slate-400 uppercase tracking-wider flex items-center gap-2">
-                  <span>C. Dossiers Projets AGR à Approuver (Commission Projets)</span>
-                  {projects.filter(p => p.status === 'pending_payor_approval' || p.status === 'PENDING_PAYOR').length > 0 && (
-                    <span className="bg-amber-500/20 text-amber-300 border border-amber-500/40 px-2 py-0.5 rounded-full text-[10px] font-bold">
-                      {projects.filter(p => p.status === 'pending_payor_approval' || p.status === 'PENDING_PAYOR').length} en attente
-                    </span>
-                  )}
-                </h3>
-                <span className="text-[10px] text-slate-500 font-medium">
-                  Processus officiel : Examen ➜ Visa & Signature Payor OU Retour pour correction
-                </span>
-              </div>
+                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 bg-slate-900/80 p-3.5 rounded-xl border border-slate-800">
+                            <div>
+                              <span className="text-[10px] uppercase font-bold text-slate-400 block">📅 Date Prévue</span>
+                              <span className="text-xs font-bold text-white">{a.eventDate}</span>
+                            </div>
+                            <div>
+                              <span className="text-[10px] uppercase font-bold text-slate-400 block">📍 Lieu</span>
+                              <span className="text-xs font-bold text-white">{a.location || 'Non spécifié'}</span>
+                            </div>
+                            <div>
+                              <span className="text-[10px] uppercase font-bold text-slate-400 block">💰 Budget Prévisionnel</span>
+                              <span className="text-xs font-bold text-amber-400">{a.budget ? `${a.budget.toLocaleString('fr-FR')} F CFA` : 'Non renseigné'}</span>
+                            </div>
+                          </div>
 
-              {/* Projets en attente de validation */}
-              {projects.filter(p => p.status === 'pending_payor_approval' || p.status === 'PENDING_PAYOR').length === 0 ? (
-                <div className="p-4 bg-slate-950/60 rounded-2xl border border-slate-800/80 text-center">
-                  <p className="text-xs text-slate-500 italic">Aucun dossier projet AGR en attente d'approbation pour le moment.</p>
-                </div>
-              ) : (
-                <div className="space-y-3">
-                  {projects
-                    .filter(p => p.status === 'pending_payor_approval' || p.status === 'PENDING_PAYOR')
-                    .map(p => (
-                      <div
-                        key={p.id}
-                        className="bg-slate-950 p-5 rounded-2xl border-2 border-amber-500/40 shadow-lg flex flex-col space-y-4 text-xs"
-                      >
-                        <div className="flex flex-col md:flex-row md:items-center justify-between gap-2 border-b border-slate-800 pb-3">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <span className="text-base font-black text-white">{p.title}</span>
-                            <span className="bg-amber-500/10 text-amber-300 border border-amber-500/30 px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase">
-                              {p.category}
-                            </span>
-                            {p.isConsolidated && (
-                              <span className="bg-purple-500/20 text-purple-300 border border-purple-500/30 px-2 py-0.5 rounded-full text-[10px] font-bold">
-                                📦 Dossier Consolidé
-                              </span>
-                            )}
-                            <span className="bg-amber-400 text-slate-950 font-black px-2.5 py-0.5 rounded-full text-[10px] flex items-center gap-1">
-                              <span>⏳ En Attente Accord Payor</span>
-                            </span>
-                          </div>
-                          <span className="text-[11px] text-slate-400 font-mono">Réf : {p.id}</span>
-                        </div>
+                          {a.program && (
+                            <div className="p-3 bg-slate-900/60 rounded-xl border border-slate-800/80 text-slate-300 text-xs leading-relaxed whitespace-pre-line line-clamp-3">
+                              {a.program}
+                            </div>
+                          )}
 
-                        {/* Financial and Realization Details */}
-                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 bg-slate-900/80 p-3.5 rounded-xl border border-slate-800">
-                          <div>
-                            <span className="text-[10px] uppercase font-bold text-slate-400 block">💰 Budget Global</span>
-                            <span className="text-sm font-black text-amber-400">{p.estimatedCost.toLocaleString('fr-FR')} F CFA</span>
-                          </div>
-                          <div>
-                            <span className="text-[10px] uppercase font-bold text-slate-400 block">💳 Contribution / Membre</span>
-                            <span className="text-sm font-black text-emerald-400">
-                              {p.requiredAmountPerMember ? `${p.requiredAmountPerMember.toLocaleString('fr-FR')} F CFA` : 'Libre'}
-                            </span>
-                          </div>
-                          <div>
-                            <span className="text-[10px] uppercase font-bold text-slate-400 block">📅 Date de Réalisation</span>
-                            <span className="text-xs font-bold text-white">{p.dateRealisation || p.eventDate || 'Non fixée'}</span>
-                          </div>
-                          <div>
-                            <span className="text-[10px] uppercase font-bold text-slate-400 block">⏳ Date Limite Paiement</span>
-                            <span className="text-xs font-bold text-rose-300">{p.paymentDeadline || 'Non fixée'}</span>
-                          </div>
-                        </div>
+                          <div className="flex flex-wrap items-center justify-end gap-2.5 pt-2 border-t border-slate-800">
+                            <button
+                              type="button"
+                              onClick={() => setPayorViewingOfficialDoc({ type: 'ACTIVITY', data: a })}
+                              className="bg-slate-800 hover:bg-slate-700 text-amber-300 border border-slate-700 font-bold px-3.5 py-2 rounded-xl flex items-center gap-1.5 transition-all text-xs active:scale-95 cursor-pointer"
+                              title="Ouvrir et examiner l'aperçu officiel grand format"
+                            >
+                              <Eye className="w-3.5 h-3.5 text-amber-400" />
+                              <span>👁️ Aperçu Document Officiel</span>
+                            </button>
 
-                        {/* Pilot Team */}
-                        {p.pilotTeam && p.pilotTeam.length > 0 && (
-                          <div className="flex flex-wrap items-center gap-1.5">
-                            <span className="text-[11px] font-bold text-slate-400">👥 Équipe Pilote Chargée du Projet :</span>
-                            {p.pilotTeam.map((m, idx) => (
-                              <span key={idx} className="bg-slate-900 text-amber-300 px-2 py-0.5 rounded-lg border border-slate-800 text-[11px] font-bold">
-                                👤 {m}
-                              </span>
-                            ))}
-                          </div>
-                        )}
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setPayorReturnDocModal({ type: 'ACTIVITY', id: a.id, title: a.title });
+                                setPayorReturnDocFeedback('');
+                                setPayorReturnDocFeedbackError(null);
+                              }}
+                              className="bg-rose-950/80 hover:bg-rose-900 text-rose-200 border border-rose-700/60 font-bold px-3.5 py-2 rounded-xl flex items-center gap-1.5 transition-all text-xs active:scale-95 cursor-pointer"
+                              title="Renvoyer ce programme à l'Organisation avec un motif"
+                            >
+                              <XCircle className="w-3.5 h-3.5 text-rose-400" />
+                              <span>↩️ Retour pour correction</span>
+                            </button>
 
-                        {/* Description / Business Model Preview */}
-                        {p.description && (
-                          <div className="p-3 bg-slate-900/60 rounded-xl border border-slate-800/80 text-slate-300 text-xs leading-relaxed whitespace-pre-line">
-                            {p.description}
-                          </div>
-                        )}
-
-                        {/* Action Buttons for Payor */}
-                        <div className="flex flex-wrap items-center justify-end gap-2.5 pt-2 border-t border-slate-800">
-                          {/* 1. Ouvrir le document officiel */}
-                          <button
-                            type="button"
-                            onClick={() => {
-                              if (p.isConsolidated && p.batchId) {
-                                const batchProjs = projects.filter(item => item.batchId === p.batchId);
-                                setPayorViewingOfficialDoc({
-                                  type: 'CONSOLIDATED_PROJECTS',
-                                  data: {
-                                    id: p.batchId,
-                                    title: p.batchTitle || `Dossier Global de Projets AGR (${batchProjs.length} projets)`,
-                                    status: p.status,
-                                    items: batchProjs,
-                                    isConsolidated: true,
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setDeleteConfirmModal({
+                                  title: "Supprimer ce Programme d'Événement",
+                                  itemTitle: a.title,
+                                  itemId: a.id,
+                                  description: `Supprimer définitivement le programme "${a.title}" (${a.id}) ? Cette action sera synchronisée avec la Commission Organisation.`,
+                                  onConfirm: () => {
+                                    deleteActivity(a.id);
+                                    setToastMessage(`🗑️ Programme "${a.title}" supprimé.`);
                                   },
                                 });
-                              } else {
-                                setPayorViewingOfficialDoc({ type: 'PROJECT', data: p });
-                              }
-                            }}
-                            className="bg-slate-800 hover:bg-slate-700 text-amber-300 border border-slate-700 font-bold px-3.5 py-2 rounded-xl flex items-center gap-1.5 transition-all text-xs active:scale-95 cursor-pointer"
-                            title="Ouvrir et examiner l'aperçu officiel grand format du dossier de projet"
-                          >
-                            <Eye className="w-3.5 h-3.5 text-amber-400" />
-                            <span>👁️ Aperçu Document Officiel</span>
-                          </button>
+                              }}
+                              className="bg-rose-950/40 hover:bg-rose-900 text-rose-300 border border-rose-800/60 font-bold px-2.5 py-2 rounded-xl flex items-center gap-1 transition-all text-xs active:scale-95 cursor-pointer"
+                              title="Supprimer définitivement ce programme"
+                            >
+                              <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+                              <span>Supprimer</span>
+                            </button>
 
-                          {/* Print PDF directly */}
-                          <button
-                            type="button"
-                            onClick={() => handleGeneratePDFProject(p)}
-                            className="bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 font-bold px-3 py-2 rounded-xl flex items-center gap-1.5 transition-all text-xs active:scale-95 cursor-pointer"
-                            title="Imprimer ou enregistrer le PDF officiel"
-                          >
-                            <Printer className="w-3.5 h-3.5 text-slate-400" />
-                            <span>PDF</span>
-                          </button>
-
-                          {/* 2. Action Retour pour correction */}
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setPayorReturnDocModal({ type: 'PROJECT', id: p.id, title: p.title });
-                              setPayorReturnDocFeedback('');
-                              setPayorReturnDocFeedbackError(null);
-                            }}
-                            className="bg-rose-950/80 hover:bg-rose-900 text-rose-200 border border-rose-700/60 font-bold px-3.5 py-2 rounded-xl flex items-center gap-1.5 transition-all text-xs active:scale-95 cursor-pointer"
-                            title="Renvoyer ce projet à la Commission avec un motif"
-                          >
-                            <XCircle className="w-3.5 h-3.5 text-rose-400" />
-                            <span>↩️ Retour pour correction</span>
-                          </button>
-
-                          {/* 3. Action Supprimer le projet */}
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setDeleteConfirmModal({
-                                title: "Supprimer ce Projet AGR",
-                                itemTitle: p.title,
-                                itemId: p.id,
-                                description: `Supprimer définitivement le projet "${p.title}" (${p.id}) ? Cette suppression sera synchronisée avec la Commission Projets.`,
-                                onConfirm: () => {
-                                  deleteProject(p.id);
-                                  setToastMessage(`🗑️ Projet "${p.title}" supprimé.`);
-                                },
-                              });
-                            }}
-                            className="bg-rose-950/40 hover:bg-rose-900 text-rose-300 border border-rose-800/60 font-bold px-2.5 py-2 rounded-xl flex items-center gap-1 transition-all text-xs active:scale-95 cursor-pointer"
-                            title="Supprimer définitivement ce projet"
-                          >
-                            <Trash2 className="w-3.5 h-3.5 text-rose-400" />
-                            <span>Supprimer</span>
-                          </button>
-
-                          {/* 4. Action Approuver le Projet */}
-                          <button
-                            type="button"
-                            onClick={() => {
-                              approveProjectPayor(p.id);
-                              setToastMessage(`✅ Projet "${p.title}" approuvé par le Payor ! Visa & cachet apposés.`);
-                            }}
-                            className="bg-emerald-600 hover:bg-emerald-500 text-white font-black px-4 py-2 rounded-xl flex items-center gap-1.5 shadow-lg active:scale-95 transition-all text-xs cursor-pointer"
-                          >
-                            <CheckCircle2 className="w-4 h-4" />
-                            <span>✅ Approuver le Projet (Apposer Visa)</span>
-                          </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                approveActivityPayor(a.id);
+                                setToastMessage(`✅ Programme "${a.title}" approuvé et visé par le Payor (SS.png) !`);
+                              }}
+                              className="bg-emerald-600 hover:bg-emerald-500 text-white font-black px-4 py-2 rounded-xl flex items-center gap-1.5 shadow-lg active:scale-95 transition-all text-xs cursor-pointer"
+                            >
+                              <CheckCircle2 className="w-4 h-4" />
+                              <span>✅ Approuver & Signer (SS.png)</span>
+                            </button>
+                          </div>
                         </div>
-                      </div>
-                    ))}
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Historique des décisions Activités Organisation */}
+                  {activities.filter(a => a.status !== 'PENDING_PAYOR' && a.status !== 'DRAFT' && a.status !== 'SENT_TO_SECRETARIAT' && a.status !== 'SENT_TO_SUIVI').length > 0 && (
+                    <div className="pt-2">
+                      <details className="bg-slate-950/80 rounded-2xl border border-slate-800 p-3.5 group">
+                        <summary className="text-xs font-bold text-slate-400 cursor-pointer flex items-center justify-between">
+                          <span>Historique des programmes d'événements traités par le Payor ({activities.filter(a => a.status !== 'PENDING_PAYOR' && a.status !== 'DRAFT' && a.status !== 'SENT_TO_SECRETARIAT' && a.status !== 'SENT_TO_SUIVI').length})</span>
+                          <span className="text-[10px] text-slate-500 group-open:rotate-180 transition-transform">▼</span>
+                        </summary>
+                        <div className="space-y-2 mt-3 pt-3 border-t border-slate-800">
+                          {activities
+                            .filter(a => a.status !== 'PENDING_PAYOR' && a.status !== 'DRAFT' && a.status !== 'SENT_TO_SECRETARIAT' && a.status !== 'SENT_TO_SUIVI')
+                            .map(a => {
+                              const isApproved = a.status === 'APPROVED' || a.status === 'PUBLISHED';
+                              return (
+                                <div key={a.id} className="p-3 bg-slate-900/60 rounded-xl border border-slate-800 flex items-center justify-between gap-2 text-xs">
+                                  <div>
+                                    <span className="font-bold text-white">{a.title}</span>
+                                    <span className="text-slate-400 ml-2">({a.eventDate})</span>
+                                    {a.status === 'returned_for_correction' && (
+                                      <p className="text-[11px] text-rose-400 italic mt-0.5">Motif : {a.payorFeedback}</p>
+                                    )}
+                                  </div>
+                                  <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                                    a.status === 'returned_for_correction'
+                                      ? 'bg-rose-500/20 text-rose-300 border border-rose-500/30'
+                                      : isApproved
+                                      ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                                      : 'bg-slate-800 text-slate-400'
+                                  }`}>
+                                    {a.status === 'returned_for_correction' ? '⚠️ Retourné' : isApproved ? '🟢 Visé Payor' : a.status}
+                                  </span>
+                                </div>
+                              );
+                            })}
+                        </div>
+                      </details>
+                    </div>
+                  )}
                 </div>
-              )}
+              );
+            })()}
+
+            {/* Validation Projets AGR (Montage Bi-Niveau & Approval Payor) */}
+            {(() => {
+              const pendingProjs = projects.filter(p => p.status === 'pending_payor_approval' || p.status === 'PENDING_PAYOR');
+              const payorProjBatches = new Map<string, AgrProject[]>();
+              const payorSingleProjs: AgrProject[] = [];
+              pendingProjs.forEach(p => {
+                if (p.isConsolidated && p.batchId) {
+                  const list = payorProjBatches.get(p.batchId) || [];
+                  list.push(p);
+                  payorProjBatches.set(p.batchId, list);
+                } else {
+                  payorSingleProjs.push(p);
+                }
+              });
+              const totalDistinctPendingProjs = payorProjBatches.size + payorSingleProjs.length;
+
+              return (
+                <div className="space-y-4 pt-4 border-t border-slate-800">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <h3 className="text-xs font-black text-slate-400 uppercase tracking-wider flex items-center gap-2">
+                      <span>C. Dossiers Projets AGR à Approuver (Commission Projets)</span>
+                      {totalDistinctPendingProjs > 0 && (
+                        <span className="bg-amber-500/20 text-amber-300 border border-amber-500/40 px-2 py-0.5 rounded-full text-[10px] font-bold">
+                          {totalDistinctPendingProjs} en attente
+                        </span>
+                      )}
+                    </h3>
+                    <span className="text-[10px] text-slate-500 font-medium">
+                      Processus officiel : Examen ➜ Visa & Signature Payor OU Retour pour correction
+                    </span>
+                  </div>
+
+                  {totalDistinctPendingProjs === 0 ? (
+                    <div className="p-4 bg-slate-950/60 rounded-2xl border border-slate-800/80 text-center">
+                      <p className="text-xs text-slate-500 italic">Aucun dossier projet AGR en attente d'approbation pour le moment.</p>
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      {Array.from(payorProjBatches.entries()).map(([batchId, batchProjs]) => {
+                        const first = batchProjs[0];
+                        const batchIds = batchProjs.map(x => x.id);
+                        const batchDisplayTitle = first.batchTitle || `Dossier Global de Projets AGR (${batchProjs.length} projets)`;
+                        const totalCost = batchProjs.reduce((sum, p) => sum + (p.estimatedCost || 0), 0);
+
+                        return (
+                          <div
+                            key={batchId}
+                            className="bg-slate-950 p-5 rounded-2xl border-2 border-purple-500/50 shadow-lg flex flex-col space-y-4 text-xs"
+                          >
+                            <div className="flex flex-col md:flex-row md:items-center justify-between gap-2 border-b border-slate-800 pb-3">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className="text-base font-black text-white">{batchDisplayTitle}</span>
+                                <span className="bg-purple-500/20 text-purple-200 border border-purple-500/40 px-2.5 py-0.5 rounded-full text-[10px] font-black">
+                                  📦 Dossier Global Consolidé ({batchProjs.length} projets)
+                                </span>
+                                <span className="bg-amber-400 text-slate-950 font-black px-2.5 py-0.5 rounded-full text-[10px] flex items-center gap-1">
+                                  <span>⏳ En Attente Accord Payor</span>
+                                </span>
+                              </div>
+                              <span className="text-[11px] text-purple-300 font-mono">Réf : {batchId}</span>
+                            </div>
+
+                            <div className="space-y-2">
+                              {batchProjs.map(bp => (
+                                <div key={bp.id} className="grid grid-cols-1 sm:grid-cols-3 gap-2 bg-slate-900/80 p-3 rounded-xl border border-slate-800">
+                                  <div>
+                                    <span className="text-[10px] uppercase font-bold text-slate-400 block">🚀 Projet AGR</span>
+                                    <span className="text-xs font-black text-white">{bp.title}</span>
+                                  </div>
+                                  <div>
+                                    <span className="text-[10px] uppercase font-bold text-slate-400 block">💰 Budget</span>
+                                    <span className="text-xs font-bold text-amber-400">{(bp.estimatedCost ?? 0).toLocaleString('fr-FR')} F CFA</span>
+                                  </div>
+                                  <div>
+                                    <span className="text-[10px] uppercase font-bold text-slate-400 block">📅 Réalisation</span>
+                                    <span className="text-xs font-bold text-slate-200">{bp.dateRealisation || bp.eventDate || 'Non fixée'}</span>
+                                  </div>
+                                </div>
+                              ))}
+                              <p className="text-[11px] text-slate-400">
+                                Budget global cumulé du dossier : <strong className="text-amber-400">{totalCost.toLocaleString('fr-FR')} F CFA</strong>
+                              </p>
+                            </div>
+
+                            <div className="flex flex-wrap items-center justify-end gap-2.5 pt-2 border-t border-slate-800">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setPayorViewingOfficialDoc({
+                                    type: 'CONSOLIDATED_PROJECTS',
+                                    data: {
+                                      id: batchId,
+                                      title: batchDisplayTitle,
+                                      status: first.status,
+                                      items: batchProjs,
+                                      isConsolidated: true,
+                                    },
+                                  });
+                                }}
+                                className="bg-slate-800 hover:bg-slate-700 text-amber-300 border border-slate-700 font-bold px-3.5 py-2 rounded-xl flex items-center gap-1.5 transition-all text-xs active:scale-95 cursor-pointer"
+                              >
+                                <Eye className="w-3.5 h-3.5 text-amber-400" />
+                                <span>👁️ Aperçu Dossier Global</span>
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() => handleGeneratePDFConsolidatedProjects(batchProjs)}
+                                className="bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 font-bold px-3 py-2 rounded-xl flex items-center gap-1.5 transition-all text-xs active:scale-95 cursor-pointer"
+                              >
+                                <Printer className="w-3.5 h-3.5 text-slate-400" />
+                                <span>PDF</span>
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setPayorReturnDocModal({
+                                    type: 'CONSOLIDATED_PROJECTS',
+                                    id: batchId,
+                                    title: batchDisplayTitle,
+                                    itemIds: batchIds,
+                                  });
+                                  setPayorReturnDocFeedback('');
+                                  setPayorReturnDocFeedbackError(null);
+                                }}
+                                className="bg-rose-950/80 hover:bg-rose-900 text-rose-200 border border-rose-700/60 font-bold px-3.5 py-2 rounded-xl flex items-center gap-1.5 transition-all text-xs active:scale-95 cursor-pointer"
+                              >
+                                <XCircle className="w-3.5 h-3.5 text-rose-400" />
+                                <span>↩️ Retourner le Lot</span>
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  approveProjectsBatchPayor(batchIds);
+                                  setToastMessage(`✅ Dossier Global (${batchProjs.length} projets) validé et visé par le Payor (SS.png) !`);
+                                }}
+                                className="bg-emerald-600 hover:bg-emerald-500 text-white font-black px-4 py-2 rounded-xl flex items-center gap-1.5 shadow-lg active:scale-95 transition-all text-xs cursor-pointer"
+                              >
+                                <CheckCircle2 className="w-4 h-4" />
+                                <span>✅ Approuver & Viser le Lot (SS.png)</span>
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+
+                      {payorSingleProjs.map(p => (
+                        <div
+                          key={p.id}
+                          className="bg-slate-950 p-5 rounded-2xl border-2 border-amber-500/40 shadow-lg flex flex-col space-y-4 text-xs"
+                        >
+                          <div className="flex flex-col md:flex-row md:items-center justify-between gap-2 border-b border-slate-800 pb-3">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="text-base font-black text-white">{p.title}</span>
+                              <span className="bg-amber-500/10 text-amber-300 border border-amber-500/30 px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase">
+                                {p.category}
+                              </span>
+                              <span className="bg-amber-400 text-slate-950 font-black px-2.5 py-0.5 rounded-full text-[10px] flex items-center gap-1">
+                                <span>⏳ En Attente Accord Payor</span>
+                              </span>
+                            </div>
+                            <span className="text-[11px] text-slate-400 font-mono">Réf : {p.id}</span>
+                          </div>
+
+                          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 bg-slate-900/80 p-3.5 rounded-xl border border-slate-800">
+                            <div>
+                              <span className="text-[10px] uppercase font-bold text-slate-400 block">💰 Budget Global</span>
+                              <span className="text-sm font-black text-amber-400">{p.estimatedCost.toLocaleString('fr-FR')} F CFA</span>
+                            </div>
+                            <div>
+                              <span className="text-[10px] uppercase font-bold text-slate-400 block">💳 Contribution / Membre</span>
+                              <span className="text-sm font-black text-emerald-400">
+                                {p.requiredAmountPerMember ? `${p.requiredAmountPerMember.toLocaleString('fr-FR')} F CFA` : 'Libre'}
+                              </span>
+                            </div>
+                            <div>
+                              <span className="text-[10px] uppercase font-bold text-slate-400 block">📅 Date de Réalisation</span>
+                              <span className="text-xs font-bold text-white">{p.dateRealisation || p.eventDate || 'Non fixée'}</span>
+                            </div>
+                            <div>
+                              <span className="text-[10px] uppercase font-bold text-slate-400 block">⏳ Date Limite Paiement</span>
+                              <span className="text-xs font-bold text-rose-300">{p.paymentDeadline || 'Non fixée'}</span>
+                            </div>
+                          </div>
+
+                          {p.pilotTeam && p.pilotTeam.length > 0 && (
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              <span className="text-[11px] font-bold text-slate-400">👥 Équipe Pilote Chargée du Projet :</span>
+                              {p.pilotTeam.map((m, idx) => (
+                                <span key={idx} className="bg-slate-900 text-amber-300 px-2 py-0.5 rounded-lg border border-slate-800 text-[11px] font-bold">
+                                  👤 {m}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+
+                          {p.description && (
+                            <div className="p-3 bg-slate-900/60 rounded-xl border border-slate-800/80 text-slate-300 text-xs leading-relaxed whitespace-pre-line">
+                              {p.description}
+                            </div>
+                          )}
+
+                          <div className="flex flex-wrap items-center justify-end gap-2.5 pt-2 border-t border-slate-800">
+                            <button
+                              type="button"
+                              onClick={() => setPayorViewingOfficialDoc({ type: 'PROJECT', data: p })}
+                              className="bg-slate-800 hover:bg-slate-700 text-amber-300 border border-slate-700 font-bold px-3.5 py-2 rounded-xl flex items-center gap-1.5 transition-all text-xs active:scale-95 cursor-pointer"
+                              title="Ouvrir et examiner l'aperçu officiel grand format du dossier de projet"
+                            >
+                              <Eye className="w-3.5 h-3.5 text-amber-400" />
+                              <span>👁️ Aperçu Document Officiel</span>
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => handleGeneratePDFProject(p)}
+                              className="bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 font-bold px-3 py-2 rounded-xl flex items-center gap-1.5 transition-all text-xs active:scale-95 cursor-pointer"
+                              title="Imprimer ou enregistrer le PDF officiel"
+                            >
+                              <Printer className="w-3.5 h-3.5 text-slate-400" />
+                              <span>PDF</span>
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setPayorReturnDocModal({ type: 'PROJECT', id: p.id, title: p.title });
+                                setPayorReturnDocFeedback('');
+                                setPayorReturnDocFeedbackError(null);
+                              }}
+                              className="bg-rose-950/80 hover:bg-rose-900 text-rose-200 border border-rose-700/60 font-bold px-3.5 py-2 rounded-xl flex items-center gap-1.5 transition-all text-xs active:scale-95 cursor-pointer"
+                              title="Renvoyer ce projet à la Commission avec un motif"
+                            >
+                              <XCircle className="w-3.5 h-3.5 text-rose-400" />
+                              <span>↩️ Retour pour correction</span>
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setDeleteConfirmModal({
+                                  title: "Supprimer ce Projet AGR",
+                                  itemTitle: p.title,
+                                  itemId: p.id,
+                                  description: `Supprimer définitivement le projet "${p.title}" (${p.id}) ? Cette suppression sera synchronisée avec la Commission Projets.`,
+                                  onConfirm: () => {
+                                    deleteProject(p.id);
+                                    setToastMessage(`🗑️ Projet "${p.title}" supprimé.`);
+                                  },
+                                });
+                              }}
+                              className="bg-rose-950/40 hover:bg-rose-900 text-rose-300 border border-rose-800/60 font-bold px-2.5 py-2 rounded-xl flex items-center gap-1 transition-all text-xs active:scale-95 cursor-pointer"
+                              title="Supprimer définitivement ce projet"
+                            >
+                              <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+                              <span>Supprimer</span>
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => {
+                                approveProjectPayor(p.id);
+                                setToastMessage(`✅ Projet "${p.title}" approuvé par le Payor ! Visa & cachet apposés.`);
+                              }}
+                              className="bg-emerald-600 hover:bg-emerald-500 text-white font-black px-4 py-2 rounded-xl flex items-center gap-1.5 shadow-lg active:scale-95 transition-all text-xs cursor-pointer"
+                            >
+                              <CheckCircle2 className="w-4 h-4" />
+                              <span>✅ Approuver le Projet (Apposer Visa)</span>
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
 
               {/* Historique des décisions Projets Payor (Approuvés ou Retournés) */}
-              {projects.filter(p => p.status !== 'pending_payor_approval' && p.status !== 'PENDING_PAYOR').length > 0 && (
+              {projects.filter(p => p.status !== 'pending_payor_approval' && p.status !== 'PENDING_PAYOR' && p.status !== 'DRAFT' && p.status !== 'SENT_TO_SECRETARIAT' && p.status !== 'SENT_TO_SUIVI').length > 0 && (
                 <div className="pt-2">
                   <details className="bg-slate-950/80 rounded-2xl border border-slate-800 p-3.5 group">
                     <summary className="text-xs font-bold text-slate-400 cursor-pointer flex items-center justify-between">
-                      <span>Historique des dossiers de projets déjà traités par le Payor ({projects.filter(p => p.status !== 'pending_payor_approval' && p.status !== 'PENDING_PAYOR').length})</span>
+                      <span>Historique des dossiers de projets déjà traités par le Payor ({projects.filter(p => p.status !== 'pending_payor_approval' && p.status !== 'PENDING_PAYOR' && p.status !== 'DRAFT' && p.status !== 'SENT_TO_SECRETARIAT' && p.status !== 'SENT_TO_SUIVI').length})</span>
                       <span className="text-[10px] text-slate-500 group-open:rotate-180 transition-transform">▼</span>
                     </summary>
                     <div className="space-y-2 mt-3 pt-3 border-t border-slate-800">
                       {projects
-                        .filter(p => p.status !== 'pending_payor_approval' && p.status !== 'PENDING_PAYOR')
+                        .filter(p => p.status !== 'pending_payor_approval' && p.status !== 'PENDING_PAYOR' && p.status !== 'DRAFT' && p.status !== 'SENT_TO_SECRETARIAT' && p.status !== 'SENT_TO_SUIVI')
                         .map(p => {
                           const isApproved = p.status === 'approved_by_payor' || p.status === 'APPROVED_PAYOR' || p.status === 'active' || p.status === 'PUBLISHED' || p.status === 'archived';
                           return (
@@ -11484,7 +12221,9 @@ export const AdminPortal: React.FC = () => {
                   </details>
                 </div>
               )}
-            </div>
+                </div>
+              );
+            })()}
 
             {/* Validation Bilans Financiers (Double Signature Sequential) */}
             <div className="space-y-3 pt-4 border-t border-slate-800">
@@ -11654,187 +12393,288 @@ export const AdminPortal: React.FC = () => {
             </div>
 
             {/* E. Validation Événements Religieux (Commission Spiritualité) */}
-            <div className="space-y-4 pt-4 border-t border-slate-800">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                <h3 className="text-xs font-black text-slate-400 uppercase tracking-wider flex items-center gap-2">
-                  <span>E. Événements Religieux (Commission Spiritualité)</span>
-                  {religiousEvents.filter(e => e.status === 'PENDING_PAYOR').length > 0 && (
-                    <span className="bg-amber-500/20 text-amber-300 border border-amber-500/40 px-2 py-0.5 rounded-full text-[10px] font-bold">
-                      {religiousEvents.filter(e => e.status === 'PENDING_PAYOR').length} en attente
+            {(() => {
+              const pendingRels = religiousEvents.filter(e => e.status === 'PENDING_PAYOR');
+              const payorRelBatches = new Map<string, ReligiousEvent[]>();
+              const payorSingleRels: ReligiousEvent[] = [];
+              pendingRels.forEach(e => {
+                if (e.isConsolidated && e.batchId) {
+                  const list = payorRelBatches.get(e.batchId) || [];
+                  list.push(e);
+                  payorRelBatches.set(e.batchId, list);
+                } else {
+                  payorSingleRels.push(e);
+                }
+              });
+              const totalDistinctPendingRels = payorRelBatches.size + payorSingleRels.length;
+
+              return (
+                <div className="space-y-4 pt-4 border-t border-slate-800">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <h3 className="text-xs font-black text-slate-400 uppercase tracking-wider flex items-center gap-2">
+                      <span>E. Événements Religieux (Commission Spiritualité)</span>
+                      {totalDistinctPendingRels > 0 && (
+                        <span className="bg-amber-500/20 text-amber-300 border border-amber-500/40 px-2 py-0.5 rounded-full text-[10px] font-bold">
+                          {totalDistinctPendingRels} en attente
+                        </span>
+                      )}
+                    </h3>
+                    <span className="text-[10px] text-slate-500 font-medium">
+                      Processus officiel : Examen ➜ Visa & Signature Payor OU Retour pour correction
                     </span>
-                  )}
-                </h3>
-                <span className="text-[10px] text-slate-500 font-medium">
-                  Processus officiel : Examen ➜ Visa & Signature Payor OU Retour pour correction
-                </span>
-              </div>
+                  </div>
 
-              {religiousEvents.filter(e => e.status === 'PENDING_PAYOR').length === 0 ? (
-                <div className="p-4 bg-slate-950/60 rounded-2xl border border-slate-800/80 text-center">
-                  <p className="text-xs text-slate-500 italic">Aucun événement spirituel en attente de validation pour le moment.</p>
-                </div>
-              ) : (
-                <div className="space-y-3">
-                  {religiousEvents
-                    .filter(e => e.status === 'PENDING_PAYOR')
-                    .map(e => (
-                      <div
-                        key={e.id}
-                        className="bg-slate-950 p-5 rounded-2xl border-2 border-amber-500/40 shadow-lg flex flex-col space-y-4 text-xs"
-                      >
-                        <div className="flex flex-col md:flex-row md:items-center justify-between gap-2 border-b border-slate-800 pb-3">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <span className="text-base font-black text-white">{e.title}</span>
-                            {e.isConsolidated && (
-                              <span className="bg-purple-500/20 text-purple-300 border border-purple-500/30 px-2 py-0.5 rounded-full text-[10px] font-bold">
-                                📦 Programme Consolidé
-                              </span>
-                            )}
-                            <span className="bg-amber-400 text-slate-950 font-black px-2.5 py-0.5 rounded-full text-[10px] flex items-center gap-1">
-                              <span>⏳ En Attente Accord Payor</span>
-                            </span>
-                          </div>
-                          <span className="text-[11px] text-slate-400 font-mono">Réf : {e.id}</span>
-                        </div>
+                  {totalDistinctPendingRels === 0 ? (
+                    <div className="p-4 bg-slate-950/60 rounded-2xl border border-slate-800/80 text-center">
+                      <p className="text-xs text-slate-500 italic">Aucun événement spirituel en attente de validation pour le moment.</p>
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      {Array.from(payorRelBatches.entries()).map(([batchId, batchEvts]) => {
+                        const first = batchEvts[0];
+                        const batchIds = batchEvts.map(x => x.id);
+                        const batchDisplayTitle = first.batchTitle || `Programme Global des Événements Religieux (${batchEvts.length} événements)`;
 
-                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 bg-slate-900/80 p-3.5 rounded-xl border border-slate-800">
-                          <div>
-                            <span className="text-[10px] uppercase font-bold text-slate-400 block">📅 Date & Heure</span>
-                            <span className="text-xs font-bold text-white">{e.eventDate} {e.eventTime ? `à ${e.eventTime}` : ''}</span>
-                          </div>
-                          <div>
-                            <span className="text-[10px] uppercase font-bold text-slate-400 block">📍 Lieu</span>
-                            <span className="text-xs font-bold text-white">{e.location || 'Non spécifié'}</span>
-                          </div>
-                          <div>
-                            <span className="text-[10px] uppercase font-bold text-slate-400 block">📖 Thème</span>
-                            <span className="text-xs font-bold text-purple-300">{e.theme ? `"${e.theme}"` : 'Non renseigné'}</span>
-                          </div>
-                        </div>
-
-                        {/* Action Buttons for Payor */}
-                        <div className="flex flex-wrap items-center justify-end gap-2.5 pt-2 border-t border-slate-800">
-                          {/* 1. Ouvrir le document officiel */}
-                          <button
-                            type="button"
-                            onClick={() => {
-                              if (e.isConsolidated && e.batchId) {
-                                const batchEvts = religiousEvents.filter(item => item.batchId === e.batchId);
-                                setPayorViewingOfficialDoc({
-                                  type: 'CONSOLIDATED_RELIGIOUS_EVENTS',
-                                  data: {
-                                    id: e.batchId,
-                                    title: e.batchTitle || `Programme Global des Événements Religieux (${batchEvts.length} événements)`,
-                                    status: e.status,
-                                    items: batchEvts,
-                                    isConsolidated: true,
-                                  },
-                                });
-                              } else {
-                                setPayorViewingOfficialDoc({ type: 'RELIGIOUS_EVENT', data: e });
-                              }
-                            }}
-                            className="bg-slate-800 hover:bg-slate-700 text-amber-300 border border-slate-700 font-bold px-3.5 py-2 rounded-xl flex items-center gap-1.5 transition-all text-xs active:scale-95 cursor-pointer"
-                            title="Ouvrir et examiner l'aperçu officiel grand format"
+                        return (
+                          <div
+                            key={batchId}
+                            className="bg-slate-950 p-5 rounded-2xl border-2 border-purple-500/50 shadow-lg flex flex-col space-y-4 text-xs"
                           >
-                            <Eye className="w-3.5 h-3.5 text-amber-400" />
-                            <span>👁️ Aperçu Document Officiel</span>
-                          </button>
-
-                          {/* 2. Action Retour pour correction */}
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setPayorReturnDocModal({ type: 'RELIGIOUS_EVENT', id: e.id, title: e.title });
-                              setPayorReturnDocFeedback('');
-                              setPayorReturnDocFeedbackError(null);
-                            }}
-                            className="bg-rose-950/80 hover:bg-rose-900 text-rose-200 border border-rose-700/60 font-bold px-3.5 py-2 rounded-xl flex items-center gap-1.5 transition-all text-xs active:scale-95 cursor-pointer"
-                            title="Renvoyer cet événement à la Spiritualité avec un motif"
-                          >
-                            <XCircle className="w-3.5 h-3.5 text-rose-400" />
-                            <span>↩️ Retour pour correction</span>
-                          </button>
-
-                          {/* 3. Action Supprimer l'événement */}
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setDeleteConfirmModal({
-                                title: "Supprimer cet Événement Spirituel",
-                                itemTitle: e.title,
-                                itemId: e.id,
-                                description: `Supprimer définitivement l'événement "${e.title}" (${e.id}) ? Cette action sera synchronisée avec la Commission Spiritualité.`,
-                                onConfirm: () => {
-                                  deleteReligiousEvent(e.id);
-                                  setToastMessage(`🗑️ Événement spirituel "${e.title}" supprimé.`);
-                                },
-                              });
-                            }}
-                            className="bg-rose-950/40 hover:bg-rose-900 text-rose-300 border border-rose-800/60 font-bold px-2.5 py-2 rounded-xl flex items-center gap-1 transition-all text-xs active:scale-95 cursor-pointer"
-                            title="Supprimer définitivement cet événement"
-                          >
-                            <Trash2 className="w-3.5 h-3.5 text-rose-400" />
-                            <span>Supprimer</span>
-                          </button>
-
-                          {/* 4. Action Approuver l'événement */}
-                          <button
-                            type="button"
-                            onClick={() => {
-                              approveReligiousEventPayor(e.id);
-                              setToastMessage(`✅ Événement spirituel "${e.title}" approuvé et visé par le Payor (SS.png) !`);
-                            }}
-                            className="bg-emerald-600 hover:bg-emerald-500 text-white font-black px-4 py-2 rounded-xl flex items-center gap-1.5 shadow-lg active:scale-95 transition-all text-xs cursor-pointer"
-                          >
-                            <CheckCircle2 className="w-4 h-4" />
-                            <span>✅ Approuver & Signer (SS.png)</span>
-                          </button>
-                        </div>
-                      </div>
-                    ))}
-                </div>
-              )}
-
-              {/* Historique des décisions Événements Spiritualité */}
-              {religiousEvents.filter(e => e.status !== 'PENDING_PAYOR' && e.status !== 'DRAFT' && e.status !== 'SENT_TO_SECRETARIAT').length > 0 && (
-                <div className="pt-2">
-                  <details className="bg-slate-950/80 rounded-2xl border border-slate-800 p-3.5 group">
-                    <summary className="text-xs font-bold text-slate-400 cursor-pointer flex items-center justify-between">
-                      <span>Historique des événements spirituels traités par le Payor ({religiousEvents.filter(e => e.status !== 'PENDING_PAYOR' && e.status !== 'DRAFT' && e.status !== 'SENT_TO_SECRETARIAT').length})</span>
-                      <span className="text-[10px] text-slate-500 group-open:rotate-180 transition-transform">▼</span>
-                    </summary>
-                    <div className="space-y-2 mt-3 pt-3 border-t border-slate-800">
-                      {religiousEvents
-                        .filter(e => e.status !== 'PENDING_PAYOR' && e.status !== 'DRAFT' && e.status !== 'SENT_TO_SECRETARIAT')
-                        .map(e => {
-                          const isApproved = e.status === 'APPROVED' || e.status === 'APPROVED_PAYOR' || e.status === 'PUBLISHED';
-                          return (
-                            <div key={e.id} className="p-3 bg-slate-900/60 rounded-xl border border-slate-800 flex items-center justify-between gap-2 text-xs">
-                              <div>
-                                <span className="font-bold text-white">{e.title}</span>
-                                <span className="text-slate-400 ml-2">({e.eventDate})</span>
-                                {e.status === 'returned_for_correction' && (
-                                  <p className="text-[11px] text-rose-400 italic mt-0.5">Motif : {e.payorFeedback}</p>
-                                )}
+                            <div className="flex flex-col md:flex-row md:items-center justify-between gap-2 border-b border-slate-800 pb-3">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className="text-base font-black text-white">{batchDisplayTitle}</span>
+                                <span className="bg-purple-500/20 text-purple-200 border border-purple-500/40 px-2.5 py-0.5 rounded-full text-[10px] font-black">
+                                  📦 Programme Global Consolidé ({batchEvts.length} événements)
+                                </span>
+                                <span className="bg-amber-400 text-slate-950 font-black px-2.5 py-0.5 rounded-full text-[10px] flex items-center gap-1">
+                                  <span>⏳ En Attente Accord Payor</span>
+                                </span>
                               </div>
-                              <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                                e.status === 'returned_for_correction'
-                                  ? 'bg-rose-500/20 text-rose-300 border border-rose-500/30'
-                                  : isApproved
-                                  ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
-                                  : 'bg-slate-800 text-slate-400'
-                              }`}>
-                                {e.status === 'returned_for_correction' ? '⚠️ Retourné' : isApproved ? '🟢 Visé Payor' : e.status}
+                              <span className="text-[11px] text-purple-300 font-mono">Réf : {batchId}</span>
+                            </div>
+
+                            <div className="space-y-2">
+                              {batchEvts.map(be => (
+                                <div key={be.id} className="grid grid-cols-1 sm:grid-cols-3 gap-2 bg-slate-900/80 p-3 rounded-xl border border-slate-800">
+                                  <div>
+                                    <span className="text-[10px] uppercase font-bold text-slate-400 block">🕊️ Événement</span>
+                                    <span className="text-xs font-black text-white">{be.title}</span>
+                                  </div>
+                                  <div>
+                                    <span className="text-[10px] uppercase font-bold text-slate-400 block">📅 Date & Heure</span>
+                                    <span className="text-xs font-bold text-slate-200">{be.eventDate} {be.eventTime ? `à ${be.eventTime}` : ''}</span>
+                                  </div>
+                                  <div>
+                                    <span className="text-[10px] uppercase font-bold text-slate-400 block">📍 Lieu</span>
+                                    <span className="text-xs font-bold text-emerald-300">{be.location || 'Non spécifié'}</span>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+
+                            <div className="flex flex-wrap items-center justify-end gap-2.5 pt-2 border-t border-slate-800">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setPayorViewingOfficialDoc({
+                                    type: 'CONSOLIDATED_RELIGIOUS_EVENTS',
+                                    data: {
+                                      id: batchId,
+                                      title: batchDisplayTitle,
+                                      status: first.status,
+                                      items: batchEvts,
+                                      isConsolidated: true,
+                                    },
+                                  });
+                                }}
+                                className="bg-slate-800 hover:bg-slate-700 text-amber-300 border border-slate-700 font-bold px-3.5 py-2 rounded-xl flex items-center gap-1.5 transition-all text-xs active:scale-95 cursor-pointer"
+                              >
+                                <Eye className="w-3.5 h-3.5 text-amber-400" />
+                                <span>👁️ Aperçu Programme Global</span>
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() => handleGeneratePDFConsolidatedReligiousEvents(batchEvts)}
+                                className="bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 font-bold px-3 py-2 rounded-xl flex items-center gap-1.5 transition-all text-xs active:scale-95 cursor-pointer"
+                              >
+                                <Printer className="w-3.5 h-3.5 text-slate-400" />
+                                <span>PDF</span>
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setPayorReturnDocModal({
+                                    type: 'CONSOLIDATED_RELIGIOUS_EVENTS',
+                                    id: batchId,
+                                    title: batchDisplayTitle,
+                                    itemIds: batchIds,
+                                  });
+                                  setPayorReturnDocFeedback('');
+                                  setPayorReturnDocFeedbackError(null);
+                                }}
+                                className="bg-rose-950/80 hover:bg-rose-900 text-rose-200 border border-rose-700/60 font-bold px-3.5 py-2 rounded-xl flex items-center gap-1.5 transition-all text-xs active:scale-95 cursor-pointer"
+                              >
+                                <XCircle className="w-3.5 h-3.5 text-rose-400" />
+                                <span>↩️ Retourner le Lot</span>
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  approveReligiousEventsBatchPayor(batchIds);
+                                  setToastMessage(`✅ Programme Global Spiritualité (${batchEvts.length} événements) approuvé et visé par le Payor (SS.png) !`);
+                                }}
+                                className="bg-emerald-600 hover:bg-emerald-500 text-white font-black px-4 py-2 rounded-xl flex items-center gap-1.5 shadow-lg active:scale-95 transition-all text-xs cursor-pointer"
+                              >
+                                <CheckCircle2 className="w-4 h-4" />
+                                <span>✅ Approuver & Viser le Lot (SS.png)</span>
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+
+                      {payorSingleRels.map(e => (
+                        <div
+                          key={e.id}
+                          className="bg-slate-950 p-5 rounded-2xl border-2 border-amber-500/40 shadow-lg flex flex-col space-y-4 text-xs"
+                        >
+                          <div className="flex flex-col md:flex-row md:items-center justify-between gap-2 border-b border-slate-800 pb-3">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="text-base font-black text-white">{e.title}</span>
+                              <span className="bg-amber-400 text-slate-950 font-black px-2.5 py-0.5 rounded-full text-[10px] flex items-center gap-1">
+                                <span>⏳ En Attente Accord Payor</span>
                               </span>
                             </div>
-                          );
-                        })}
+                            <span className="text-[11px] text-slate-400 font-mono">Réf : {e.id}</span>
+                          </div>
+
+                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 bg-slate-900/80 p-3.5 rounded-xl border border-slate-800">
+                            <div>
+                              <span className="text-[10px] uppercase font-bold text-slate-400 block">📅 Date & Heure</span>
+                              <span className="text-xs font-bold text-white">{e.eventDate} {e.eventTime ? `à ${e.eventTime}` : ''}</span>
+                            </div>
+                            <div>
+                              <span className="text-[10px] uppercase font-bold text-slate-400 block">📍 Lieu</span>
+                              <span className="text-xs font-bold text-white">{e.location || 'Non spécifié'}</span>
+                            </div>
+                            <div>
+                              <span className="text-[10px] uppercase font-bold text-slate-400 block">📖 Thème</span>
+                              <span className="text-xs font-bold text-purple-300">{e.theme ? `"${e.theme}"` : 'Non renseigné'}</span>
+                            </div>
+                          </div>
+
+                          {/* Action Buttons for Payor */}
+                          <div className="flex flex-wrap items-center justify-end gap-2.5 pt-2 border-t border-slate-800">
+                            {/* 1. Ouvrir le document officiel */}
+                            <button
+                              type="button"
+                              onClick={() => setPayorViewingOfficialDoc({ type: 'RELIGIOUS_EVENT', data: e })}
+                              className="bg-slate-800 hover:bg-slate-700 text-amber-300 border border-slate-700 font-bold px-3.5 py-2 rounded-xl flex items-center gap-1.5 transition-all text-xs active:scale-95 cursor-pointer"
+                              title="Ouvrir et examiner l'aperçu officiel grand format"
+                            >
+                              <Eye className="w-3.5 h-3.5 text-amber-400" />
+                              <span>👁️ Aperçu Document Officiel</span>
+                            </button>
+
+                            {/* 2. Action Retour pour correction */}
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setPayorReturnDocModal({ type: 'RELIGIOUS_EVENT', id: e.id, title: e.title });
+                                setPayorReturnDocFeedback('');
+                                setPayorReturnDocFeedbackError(null);
+                              }}
+                              className="bg-rose-950/80 hover:bg-rose-900 text-rose-200 border border-rose-700/60 font-bold px-3.5 py-2 rounded-xl flex items-center gap-1.5 transition-all text-xs active:scale-95 cursor-pointer"
+                              title="Renvoyer cet événement à la Spiritualité avec un motif"
+                            >
+                              <XCircle className="w-3.5 h-3.5 text-rose-400" />
+                              <span>↩️ Retour pour correction</span>
+                            </button>
+
+                            {/* 3. Action Supprimer l'événement */}
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setDeleteConfirmModal({
+                                  title: "Supprimer cet Événement Spirituel",
+                                  itemTitle: e.title,
+                                  itemId: e.id,
+                                  description: `Supprimer définitivement l'événement "${e.title}" (${e.id}) ? Cette action sera synchronisée avec la Commission Spiritualité.`,
+                                  onConfirm: () => {
+                                    deleteReligiousEvent(e.id);
+                                    setToastMessage(`🗑️ Événement spirituel "${e.title}" supprimé.`);
+                                  },
+                                });
+                              }}
+                              className="bg-rose-950/40 hover:bg-rose-900 text-rose-300 border border-rose-800/60 font-bold px-2.5 py-2 rounded-xl flex items-center gap-1 transition-all text-xs active:scale-95 cursor-pointer"
+                              title="Supprimer définitivement cet événement"
+                            >
+                              <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+                              <span>Supprimer</span>
+                            </button>
+
+                            {/* 4. Action Approuver l'événement */}
+                            <button
+                              type="button"
+                              onClick={() => {
+                                approveReligiousEventPayor(e.id);
+                                setToastMessage(`✅ Événement spirituel "${e.title}" approuvé et visé par le Payor (SS.png) !`);
+                              }}
+                              className="bg-emerald-600 hover:bg-emerald-500 text-white font-black px-4 py-2 rounded-xl flex items-center gap-1.5 shadow-lg active:scale-95 transition-all text-xs cursor-pointer"
+                            >
+                              <CheckCircle2 className="w-4 h-4" />
+                              <span>✅ Approuver & Signer (SS.png)</span>
+                            </button>
+                          </div>
+                        </div>
+                      ))}
                     </div>
-                  </details>
+                  )}
+
+                  {/* Historique des décisions Événements Spiritualité */}
+                  {religiousEvents.filter(e => e.status !== 'PENDING_PAYOR' && e.status !== 'DRAFT' && e.status !== 'SENT_TO_SECRETARIAT' && e.status !== 'SENT_TO_SUIVI').length > 0 && (
+                    <div className="pt-2">
+                      <details className="bg-slate-950/80 rounded-2xl border border-slate-800 p-3.5 group">
+                        <summary className="text-xs font-bold text-slate-400 cursor-pointer flex items-center justify-between">
+                          <span>Historique des événements spirituels traités par le Payor ({religiousEvents.filter(e => e.status !== 'PENDING_PAYOR' && e.status !== 'DRAFT' && e.status !== 'SENT_TO_SECRETARIAT' && e.status !== 'SENT_TO_SUIVI').length})</span>
+                          <span className="text-[10px] text-slate-500 group-open:rotate-180 transition-transform">▼</span>
+                        </summary>
+                        <div className="space-y-2 mt-3 pt-3 border-t border-slate-800">
+                          {religiousEvents
+                            .filter(e => e.status !== 'PENDING_PAYOR' && e.status !== 'DRAFT' && e.status !== 'SENT_TO_SECRETARIAT' && e.status !== 'SENT_TO_SUIVI')
+                            .map(e => {
+                              const isApproved = e.status === 'APPROVED' || e.status === 'APPROVED_PAYOR' || e.status === 'PUBLISHED';
+                              return (
+                                <div key={e.id} className="p-3 bg-slate-900/60 rounded-xl border border-slate-800 flex items-center justify-between gap-2 text-xs">
+                                  <div>
+                                    <span className="font-bold text-white">{e.title}</span>
+                                    <span className="text-slate-400 ml-2">({e.eventDate})</span>
+                                    {e.status === 'returned_for_correction' && (
+                                      <p className="text-[11px] text-rose-400 italic mt-0.5">Motif : {e.payorFeedback}</p>
+                                    )}
+                                  </div>
+                                  <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                                    e.status === 'returned_for_correction'
+                                      ? 'bg-rose-500/20 text-rose-300 border border-rose-500/30'
+                                      : isApproved
+                                      ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                                      : 'bg-slate-800 text-slate-400'
+                                  }`}>
+                                    {e.status === 'returned_for_correction' ? '⚠️ Retourné' : isApproved ? '🟢 Visé Payor' : e.status}
+                                  </span>
+                                </div>
+                              );
+                            })}
+                        </div>
+                      </details>
+                    </div>
+                  )}
                 </div>
-              )}
-            </div>
+              );
+            })()}
           </div>
 
           {/* Exportation of Reports */}
@@ -11900,6 +12740,8 @@ export const AdminPortal: React.FC = () => {
               <span>Imprimer / Exporter Rapport PDF</span>
             </button>
           </div>
+
+          {renderInternalNavetteBlock('PAYOR')}
         </div>
       )}
 
@@ -11908,11 +12750,6 @@ export const AdminPortal: React.FC = () => {
       {/* ========================================================= */}
       {activeRole === 'CERVEAU' && (
         <div className="space-y-8">
-          {/* RBAC Lock Badge */}
-          <RbacWarningBanner
-            roleName="LE CERVEAU (PRÉSIDENCE)"
-            allowedActionsText="Gestion stratégique, validation suprême et gouvernance globale."
-          />
 
           {/* Withdrawal Lock Queue */}
           <div className="bg-slate-900 rounded-[2.5rem] p-6 sm:p-8 border border-slate-800 shadow-xl space-y-6">
@@ -12263,10 +13100,6 @@ export const AdminPortal: React.FC = () => {
       {/* ========================================================= */}
       {activeRole === 'ORGANISATION' && (
         <div className="space-y-8">
-          <RbacWarningBanner
-            roleName="COMMISSION ORGANISATION"
-            allowedActionsText="Planification des événements, désignation du Comité Ad-hoc par poste, détails logistiques et suivi d'activités."
-          />
 
           {/* Formulaire de création / modification */}
           <div
@@ -12548,33 +13381,50 @@ export const AdminPortal: React.FC = () => {
               </div>
             </div>
 
-            {/* 3. Contribution Requise par Membre (Activation Trésorerie & Suivi Acomptes) */}
+            {/* 3. Contribution Requise par Membre & Échéance (Activation Trésorerie DJAI) */}
             <div className="bg-slate-950/80 rounded-2xl p-5 border border-amber-500/30 space-y-3">
               <div className="flex items-center justify-between flex-wrap gap-2">
                 <label className="block text-xs font-black text-amber-300 uppercase flex items-center gap-2">
                   <Coins className="w-4 h-4 text-amber-400" />
-                  <span>Contribution Requise par Membre (F CFA)</span>
+                  <span>Cotisation Requise par Membre & Échéance (F CFA)</span>
                 </label>
                 <span className="text-[10px] text-amber-400/80 font-semibold">
-                  Active automatiquement la rubrique dans le Suivi des Acomptes
+                  S'activera dans le canal DJAI uniquement après validation Payor et publication dans SHOW
                 </span>
               </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 items-center">
-                <input
-                  type="number"
-                  placeholder={actCategoryType === 'FIXE' ? 'Ex: 10000' : 'Ex: 5000'}
-                  value={actRequiredAmount}
-                  onChange={e => setActRequiredAmount(e.target.value)}
-                  className="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 text-sm font-bold text-amber-300 font-mono focus:outline-none focus:border-amber-400"
-                />
-                <p className="text-xs text-slate-400 leading-relaxed">
-                  {actCategoryType === 'FIXE' ? (
-                    <>Cotisation pour la <strong>Soirée Rouama</strong> (budget global estimé : <span className="text-amber-300 font-mono font-bold">{((Number(actRequiredAmount) || 10000) * (members.length || 12)).toLocaleString('fr-FR')} F CFA</span> pour {members.length || 12} membres).</>
-                  ) : (
-                    <>Cotisation pour <strong>Sorties & Loisirs</strong>. Dès publication, la rubrique s'activera dynamiquement dans le Suivi des Acomptes pour les 12 membres.</>
-                  )}
-                </p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 items-start">
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">
+                    Montant par membre (F CFA)
+                  </label>
+                  <input
+                    type="number"
+                    placeholder={actCategoryType === 'FIXE' ? 'Ex: 10000' : 'Ex: 5000'}
+                    value={actRequiredAmount}
+                    onChange={e => setActRequiredAmount(e.target.value)}
+                    className="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 text-sm font-bold text-amber-300 font-mono focus:outline-none focus:border-amber-400"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">
+                    Date limite de cotisation (Optionnel)
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="Ex: 15 Mars 2027"
+                    value={actPaymentDeadline}
+                    onChange={e => setActPaymentDeadline(e.target.value)}
+                    className="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 text-sm font-bold text-white focus:outline-none focus:border-amber-400"
+                  />
+                </div>
               </div>
+              <p className="text-xs text-slate-400 leading-relaxed">
+                {actCategoryType === 'FIXE' ? (
+                  <>Cotisation pour l'événement fixe (budget global estimé : <span className="text-amber-300 font-mono font-bold">{((Number(actRequiredAmount) || 10000) * (members.length || 12)).toLocaleString('fr-FR')} F CFA</span> pour {members.length || 12} membres).</>
+                ) : (
+                  <>Cotisation pour <strong>Sorties & Loisirs</strong>. Dès publication finale dans SHOW, la rubrique s'ouvrira dynamiquement dans le canal DJAI pour les {members.length || 12} membres.</>
+                )}
+              </p>
             </div>
 
             {/* 4. Description & Objectifs */}
@@ -12693,7 +13543,7 @@ export const AdminPortal: React.FC = () => {
                 type="button"
                 onClick={async () => {
                   if (!actTitle.trim()) {
-                    alert("Veuillez renseigner le titre de l'événement.");
+                    setToastMessage("⚠️ Veuillez renseigner le titre de l'événement.");
                     return;
                   }
 
@@ -12758,8 +13608,18 @@ export const AdminPortal: React.FC = () => {
                   try {
                     const reqAmtNum = Number(actRequiredAmount) || (actCategoryType === 'FIXE' ? 10000 : 5000);
                     const totalBudgetCalc = reqAmtNum * (members.length || 12);
+                    const resolvedDeadline = actPaymentDeadline.trim() || formattedDate;
 
                     if (editingActivityId) {
+                      const existingAct = activities.find(a => a.id === editingActivityId);
+                      const hadPassedSuiviOrPayor = Boolean(
+                        existingAct &&
+                        (existingAct.suiviReviewed ||
+                          existingAct.sentToPayor ||
+                          existingAct.isPostMeetingRevision ||
+                          ['returned_for_correction', 'PENDING_PAYOR', 'APPROVED', 'PUBLISHED'].includes(existingAct.status || ''))
+                      );
+
                       await updateActivity(editingActivityId, {
                         title: actTitle.trim(),
                         eventDate: formattedDate,
@@ -12773,14 +13633,23 @@ export const AdminPortal: React.FC = () => {
                         description: actDesc.trim(),
                         program: actProgram.trim(),
                         budget: totalBudgetCalc,
+                        requiredAmountPerMember: reqAmtNum,
+                        paymentDeadline: resolvedDeadline,
                         adHocRoles,
                         committees: structuredCommittees,
                         status: 'DRAFT',
                         sentToSecretariat: false,
+                        sentToSuivi: false,
+                        sentToPayor: false,
                         payorFeedback: '',
+                        ...(hadPassedSuiviOrPayor ? { suiviReviewed: true, isPostMeetingRevision: true } : {}),
                       });
 
-                      setToastMessage("💾 Activité mise à jour avec succès dans votre espace !");
+                      setToastMessage(
+                        hadPassedSuiviOrPayor
+                          ? "💾 Révision post-réunion enregistrée ! Lors de l'envoi au Secrétariat, elle passera directement au Payor."
+                          : "💾 Activité mise à jour en brouillon ! Transmettez-la au Secrétariat Général pour validation."
+                      );
                     } else {
                       createActivity({
                         title: actTitle.trim(),
@@ -12795,6 +13664,8 @@ export const AdminPortal: React.FC = () => {
                         description: actDesc.trim(),
                         program: actProgram.trim(),
                         budget: totalBudgetCalc,
+                        requiredAmountPerMember: reqAmtNum,
+                        paymentDeadline: resolvedDeadline,
                         adHocRoles,
                         committees: structuredCommittees,
                         createdBy: 'COMMISSION ORGANISATION',
@@ -12813,6 +13684,7 @@ export const AdminPortal: React.FC = () => {
                     setActDesc('');
                     setActProgram('');
                     setActRequiredAmount('10000');
+                    setActPaymentDeadline('');
                     setPcoRoles([]);
                     setPcoAdjRoles([]);
                     setRestaurationRoles([]);
@@ -12822,7 +13694,7 @@ export const AdminPortal: React.FC = () => {
                     setEditingActivityId(null);
                   } catch (err) {
                     console.error(err);
-                    alert("Une erreur est survenue lors de l'enregistrement de l'événement.");
+                    setToastMessage("❌ Une erreur est survenue lors de l'enregistrement de l'événement.");
                   }
                 }}
                 className="bg-emerald-600 hover:bg-emerald-500 text-white font-black py-3.5 px-6 rounded-2xl shadow-lg text-sm flex items-center gap-2 active:scale-95 transition-all cursor-pointer"
@@ -12851,6 +13723,8 @@ export const AdminPortal: React.FC = () => {
                     setActLocation('');
                     setActDesc('');
                     setActProgram('');
+                    setActRequiredAmount('10000');
+                    setActPaymentDeadline('');
                     setPcoRoles([]);
                     setPcoAdjRoles([]);
                     setRestaurationRoles([]);
@@ -12961,9 +13835,188 @@ export const AdminPortal: React.FC = () => {
               <div className="text-center py-12 bg-slate-950/60 rounded-3xl border border-dashed border-slate-800 text-slate-500 text-sm">
                 Aucun événement planifié pour le moment. Remplissez le formulaire ci-dessus pour soumettre une activité.
               </div>
-            ) : (
+            ) : (() => {
+              const deptActBatches = new Map<string, EventActivity[]>();
+              const deptSingleActs: EventActivity[] = [];
+              activities.forEach(a => {
+                if (a.isConsolidated && a.batchId) {
+                  const list = deptActBatches.get(a.batchId) || [];
+                  list.push(a);
+                  deptActBatches.set(a.batchId, list);
+                } else {
+                  deptSingleActs.push(a);
+                }
+              });
+
+              return (
               <div className="space-y-6">
-                {activities.map(act => {
+                {Array.from(deptActBatches.entries()).map(([batchId, batchActs]) => {
+                  const first = batchActs[0];
+                  const batchDisplayTitle = first.batchTitle || `Programme Global d'Activités (${batchActs.length} activités)`;
+                  const approvedActs = batchActs.filter(a => a.status === 'APPROVED');
+                  const allPublished = batchActs.every(a => a.status === 'PUBLISHED');
+                  const anyPendingPayor = batchActs.some(a => a.status === 'PENDING_PAYOR');
+                  const anySentToSuivi = batchActs.some(a => a.status === 'SENT_TO_SUIVI');
+                  const anySentToSec = batchActs.some(a => a.status === 'SENT_TO_SECRETARIAT');
+                  const anyReturned = batchActs.some(a => a.status === 'returned_for_correction');
+
+                  return (
+                    <div
+                      key={batchId}
+                      className="bg-slate-950 rounded-3xl p-5 sm:p-6 border-2 border-purple-500/40 shadow-xl space-y-4"
+                    >
+                      <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 pb-3 border-b border-slate-800">
+                        <div className="space-y-1">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="bg-purple-500/20 text-purple-200 border border-purple-500/40 px-2.5 py-0.5 rounded-full text-[10px] font-black">
+                              📦 Programme Global Consolidé ({batchActs.length} activités)
+                            </span>
+                            <span className="font-mono text-purple-300 text-[11px] bg-purple-500/10 px-2 py-0.5 rounded-md border border-purple-500/20">
+                              {batchId}
+                            </span>
+                            {allPublished ? (
+                              <span className="bg-emerald-600 text-slate-950 text-[11px] font-black px-2.5 py-0.5 rounded-full">
+                                🚀 Lot entier publié dans SHOW
+                              </span>
+                            ) : approvedActs.length > 0 ? (
+                              <span className="bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-[11px] font-black px-2.5 py-0.5 rounded-full">
+                                🟢 Visé Payor ({approvedActs.length}/{batchActs.length} prêt{approvedActs.length > 1 ? 's' : ''} à publier)
+                              </span>
+                            ) : anyReturned ? (
+                              <span className="bg-rose-500/20 text-rose-300 border border-rose-500/30 text-[11px] font-bold px-2.5 py-0.5 rounded-full">
+                                ⚠️ Retourné pour correction
+                              </span>
+                            ) : anyPendingPayor ? (
+                              <span className="bg-amber-500/20 text-amber-300 border border-amber-500/30 text-[11px] font-bold px-2.5 py-0.5 rounded-full">
+                                ⏳ En attente validation Payor
+                              </span>
+                            ) : anySentToSuivi ? (
+                              <span className="bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 text-[11px] font-bold px-2.5 py-0.5 rounded-full">
+                                🕵️ En instruction chez le Chargé de Suivi
+                              </span>
+                            ) : anySentToSec ? (
+                              <span className="bg-blue-500/20 text-blue-300 border border-blue-500/30 text-[11px] font-bold px-2.5 py-0.5 rounded-full">
+                                📤 Transmis au Secrétariat
+                              </span>
+                            ) : null}
+                          </div>
+                          <h4 className="text-lg font-black text-white">{batchDisplayTitle}</h4>
+                        </div>
+                      </div>
+
+                      <div className="space-y-2.5">
+                        {batchActs.map(act => (
+                          <div
+                            key={act.id}
+                            className="bg-slate-900/80 border border-slate-800 rounded-2xl p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs"
+                          >
+                            <div className="space-y-1">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className="font-black text-white text-sm">{act.title}</span>
+                                <span className="text-slate-400">📅 {act.eventDate}</span>
+                                {act.location && <span className="text-emerald-300">📍 {act.location}</span>}
+                              </div>
+                              {act.description && (
+                                <p className="text-slate-400 line-clamp-1">{act.description}</p>
+                              )}
+                            </div>
+                            <div className="flex flex-wrap items-center gap-2 shrink-0">
+                              <button
+                                type="button"
+                                onClick={() => setPayorViewingOfficialDoc({ type: 'ACTIVITY', data: act })}
+                                className="bg-slate-800 hover:bg-slate-700 text-amber-300 font-bold px-3 py-1.5 rounded-xl border border-slate-700 flex items-center gap-1 cursor-pointer"
+                              >
+                                <Eye className="w-3.5 h-3.5 text-amber-400" />
+                                <span>Visualiser</span>
+                              </button>
+                              {act.status === 'APPROVED' && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    publishActivity(act.id);
+                                    setToastMessage(`🚀 Programme « ${act.title} » publié dans SHOW ! Rubrique DJAI ouverte et alerte envoyée à la COM.`);
+                                  }}
+                                  className="bg-emerald-600 hover:bg-emerald-500 text-white font-black px-3 py-1.5 rounded-xl flex items-center gap-1 shadow active:scale-95 transition-all cursor-pointer"
+                                >
+                                  <Sparkles className="w-3.5 h-3.5" />
+                                  <span>🚀 Publier dans SHOW</span>
+                                </button>
+                              )}
+                              {act.status === 'PUBLISHED' && (
+                                <span className="bg-emerald-500/10 text-emerald-400 font-bold px-2.5 py-1 rounded-xl border border-emerald-500/20">
+                                  ✅ Publié
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+
+                      <div className="pt-3 border-t border-slate-800 flex flex-wrap items-center justify-between gap-3 text-xs">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setPayorViewingOfficialDoc({
+                                type: 'CONSOLIDATED_ACTIVITIES',
+                                data: {
+                                  id: batchId,
+                                  title: batchDisplayTitle,
+                                  status: allPublished ? 'PUBLISHED' : approvedActs.length === batchActs.length ? 'APPROVED' : first.status,
+                                  items: batchActs,
+                                  isConsolidated: true,
+                                },
+                              });
+                            }}
+                            className="bg-slate-800 hover:bg-slate-700 text-amber-300 font-bold px-3.5 py-2.5 rounded-xl flex items-center gap-1.5 border border-slate-700 transition-all cursor-pointer active:scale-95"
+                          >
+                            <Eye className="w-3.5 h-3.5 text-amber-400" />
+                            <span>👁️ Visualiser le Programme Global</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleGeneratePDFConsolidatedActivities(batchActs)}
+                            className="bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold px-3 py-2.5 rounded-xl flex items-center gap-1.5 border border-slate-700 transition-all cursor-pointer active:scale-95"
+                          >
+                            <Printer className="w-3.5 h-3.5" />
+                            <span>📑 PDF Global</span>
+                          </button>
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-2">
+                          {batchActs.some(a => a.status === 'DRAFT' || a.status === 'returned_for_correction' || !a.status) && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                batchActs.forEach(a => sendActivityToSecretariat(a.id));
+                                setToastMessage(`📤 Programme Global (${batchActs.length} activités) transmis au Secrétariat Général !`);
+                              }}
+                              className="bg-amber-600 hover:bg-amber-500 text-white font-black px-4 py-2.5 rounded-xl flex items-center gap-1.5 shadow active:scale-95 transition-all cursor-pointer"
+                            >
+                              <Send className="w-3.5 h-3.5" />
+                              <span>📤 Transmettre le Lot au Secrétariat</span>
+                            </button>
+                          )}
+                          {approvedActs.length > 0 && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                approvedActs.forEach(item => publishActivity(item.id));
+                                setToastMessage(`🚀 Programme Global (${approvedActs.length} activités) publié dans SHOW ! Rubriques DJAI ouvertes et alerte envoyée à la COM.`);
+                              }}
+                              className="bg-purple-600 hover:bg-purple-500 text-white font-black px-4 py-2.5 rounded-xl flex items-center gap-1.5 shadow-lg active:scale-95 transition-all cursor-pointer"
+                            >
+                              <Sparkles className="w-3.5 h-3.5" />
+                              <span>🚀 Publier tout le Lot Global ({approvedActs.length})</span>
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+
+                {deptSingleActs.map(act => {
                   const pcoList = normalizeRoleArray(act.adHocRoles?.pco);
                   const pcoAdjList = normalizeRoleArray(act.adHocRoles?.pcoAdjoint);
                   const restList = normalizeRoleArray(act.adHocRoles?.restauration);
@@ -13045,6 +14098,12 @@ export const AdminPortal: React.FC = () => {
                                 <span>{act.location}</span>
                               </span>
                             )}
+                            {typeof act.requiredAmountPerMember === 'number' && act.requiredAmountPerMember > 0 && (
+                              <span className="bg-amber-500/15 text-amber-300 text-xs font-black px-3 py-1 rounded-full border border-amber-500/30 flex items-center gap-1.5 font-mono">
+                                <Coins className="w-3.5 h-3.5" />
+                                <span>DJAI : {act.requiredAmountPerMember.toLocaleString('fr-FR')} F / membre</span>
+                              </span>
+                            )}
                             {act.status === 'PUBLISHED' ? (
                               <span className="bg-emerald-600 text-slate-950 text-xs font-black px-3 py-1 rounded-full flex items-center gap-1">
                                 <CheckCircle2 className="w-3.5 h-3.5" />
@@ -13053,7 +14112,7 @@ export const AdminPortal: React.FC = () => {
                             ) : act.status === 'APPROVED' ? (
                               <span className="bg-emerald-500/20 text-emerald-300 text-xs font-black px-3 py-1 rounded-full border border-emerald-500/30 flex items-center gap-1">
                                 <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                                <span>🟢 Visé Payor (Prêt à diffuser)</span>
+                                <span>🟢 Visé Payor (Prêt à publier)</span>
                               </span>
                             ) : act.status === 'PENDING_PAYOR' ? (
                               <span className="bg-amber-600/20 text-amber-400 text-xs font-bold px-3 py-1 rounded-full border border-amber-500/30 flex items-center gap-1">
@@ -13065,6 +14124,11 @@ export const AdminPortal: React.FC = () => {
                                 <AlertTriangle className="w-3.5 h-3.5" />
                                 <span>⚠️ Retourné pour correction</span>
                               </span>
+                            ) : act.status === 'SENT_TO_SUIVI' ? (
+                              <span className="bg-indigo-500/20 text-indigo-300 text-xs font-bold px-3 py-1 rounded-full border border-indigo-500/30 flex items-center gap-1">
+                                <Clock className="w-3.5 h-3.5" />
+                                <span>🕵️ En instruction chez le Chargé de Suivi</span>
+                              </span>
                             ) : act.status === 'SENT_TO_SECRETARIAT' ? (
                               <span className="bg-blue-500/20 text-blue-300 text-xs font-bold px-3 py-1 rounded-full border border-blue-500/30 flex items-center gap-1">
                                 <Send className="w-3.5 h-3.5" />
@@ -13073,6 +14137,11 @@ export const AdminPortal: React.FC = () => {
                             ) : (
                               <span className="bg-slate-800 text-slate-400 text-xs font-bold px-3 py-1 rounded-full border border-slate-700 flex items-center gap-1">
                                 <span>⚪ Brouillon (Non transmis)</span>
+                              </span>
+                            )}
+                            {(act.suiviReviewed || act.isPostMeetingRevision) && (act.status === 'DRAFT' || act.status === 'SENT_TO_SECRETARIAT' || act.status === 'returned_for_correction') && (
+                              <span className="bg-amber-500/15 text-amber-300 text-[10px] font-bold px-2.5 py-1 rounded-full border border-amber-500/30">
+                                🔄 Révision post-réunion (Direct Payor)
                               </span>
                             )}
                           </div>
@@ -13096,9 +14165,12 @@ export const AdminPortal: React.FC = () => {
                               setActLocation(act.location || '');
                               setActDesc(act.description || '');
                               setActProgram(act.program || '');
+                              setActPaymentDeadline(act.paymentDeadline || '');
 
                               const matchingFin = financialEvents.find(e => e.fund === 'LOISIRS' && e.title.toLowerCase().trim() === (act.title || '').toLowerCase().trim());
-                              if (matchingFin) {
+                              if (typeof act.requiredAmountPerMember === 'number' && act.requiredAmountPerMember > 0) {
+                                setActRequiredAmount(String(act.requiredAmountPerMember));
+                              } else if (matchingFin) {
                                 setActRequiredAmount(String(matchingFin.requiredAmountPerMember));
                               } else if (act.budget && act.budget > 0) {
                                 setActRequiredAmount(String(Math.round(act.budget / (members.length || 12))));
@@ -13151,6 +14223,7 @@ export const AdminPortal: React.FC = () => {
                                       setActDesc('');
                                       setActProgram('');
                                       setActRequiredAmount('10000');
+                                      setActPaymentDeadline('');
                                       setPcoRoles([]);
                                       setPcoAdjRoles([]);
                                       setRestaurationRoles([]);
@@ -13290,30 +14363,36 @@ export const AdminPortal: React.FC = () => {
                             </span>
                           )}
 
+                          {act.status === 'SENT_TO_SUIVI' && (
+                            <span className="bg-indigo-500/20 text-indigo-300 font-bold px-3 py-2 rounded-xl border border-indigo-500/30">
+                              🕵️ En instruction chez le Chargé de Suivi (Pré-réunion)
+                            </span>
+                          )}
+
                           {act.status === 'PENDING_PAYOR' && (
                             <span className="bg-amber-500/20 text-amber-300 font-bold px-3 py-2 rounded-xl border border-amber-500/30">
                               ⏳ En attente du visa d'audit du Payor
                             </span>
                           )}
 
-                          {/* Diffuser dans SHOW (débloqué uniquement si APPROVED) */}
+                          {/* Publier dans SHOW (débloqué uniquement si APPROVED / Visé Payor) */}
                           {act.status === 'APPROVED' && (
                             <button
                               type="button"
                               onClick={() => {
                                 publishActivity(act.id);
-                                setToastMessage(`🚀 Activité "${act.title}" officiellement diffusée dans SHOW !`);
+                                setToastMessage(`🚀 Programme « ${act.title} » publié dans SHOW ! Rubrique DJAI ouverte et alerte envoyée à la COM.`);
                               }}
                               className="bg-emerald-600 hover:bg-emerald-500 text-white font-black px-4 py-2.5 rounded-xl flex items-center gap-1.5 shadow-lg active:scale-95 transition-all cursor-pointer"
                             >
                               <Sparkles className="w-3.5 h-3.5" />
-                              <span>🚀 Diffuser dans SHOW</span>
+                              <span>🚀 Publier dans SHOW (+ DJAI & Alerte COM)</span>
                             </button>
                           )}
 
                           {act.status === 'PUBLISHED' && (
                             <span className="bg-emerald-500/10 text-emerald-400 font-bold px-3 py-2 rounded-xl border border-emerald-500/20">
-                              ✅ Actif & Visible dans SHOW
+                              ✅ Publié dans SHOW & Actif dans DJAI
                             </span>
                           )}
                         </div>
@@ -13322,8 +14401,11 @@ export const AdminPortal: React.FC = () => {
                   );
                 })}
               </div>
-            )}
+              );
+            })()}
           </div>
+
+          {renderInternalNavetteBlock('ORGANISATION')}
         </div>
       )}
 
@@ -13332,10 +14414,6 @@ export const AdminPortal: React.FC = () => {
       {/* ========================================================= */}
       {activeRole === 'PROJET' && (
         <div className="space-y-8">
-          <RbacWarningBanner
-            roleName="COMMISSION PROJETS (AGR)"
-            allowedActionsText="Montage des dossiers AGR, soumission des projets générateurs de revenus et suivi de rentabilité."
-          />
           <div className="bg-slate-900 rounded-[2.5rem] p-6 sm:p-8 border border-slate-800 shadow-xl space-y-6">
           {editingProjectId && (
             <div className="p-4 sm:p-5 bg-rose-500/10 border-2 border-rose-500/40 rounded-2xl space-y-2">
@@ -13584,6 +14662,15 @@ export const AdminPortal: React.FC = () => {
                 const totalCost = Number(projCostInput) || 0;
 
                 if (editingProjectId) {
+                  const existingProj = projects.find(p => p.id === editingProjectId);
+                  const hadPassedSuiviOrPayor = Boolean(
+                    existingProj &&
+                    (existingProj.suiviReviewed ||
+                      existingProj.sentToPayor ||
+                      existingProj.isPostMeetingRevision ||
+                      ['returned_for_correction', 'PENDING_PAYOR', 'pending_payor_approval', 'APPROVED_PAYOR', 'approved_by_payor', 'PUBLISHED', 'active'].includes(existingProj.status || ''))
+                  );
+
                   updateProject(editingProjectId, {
                     title: projTitle.trim(),
                     category: projCategory,
@@ -13596,10 +14683,17 @@ export const AdminPortal: React.FC = () => {
                     pilotTeam: projPilotTeam,
                     status: 'DRAFT',
                     sentToSecretariat: false,
+                    sentToSuivi: false,
+                    sentToPayor: false,
                     officialDocGenerated: true,
                     payorFeedback: '',
+                    ...(hadPassedSuiviOrPayor ? { suiviReviewed: true, isPostMeetingRevision: true } : {}),
                   });
-                  setToastMessage(`💾 Projet "${projTitle.trim()}" mis à jour dans votre espace !`);
+                  setToastMessage(
+                    hadPassedSuiviOrPayor
+                      ? `💾 Révision post-réunion du projet "${projTitle.trim()}" enregistrée ! Lors de l'envoi au Secrétariat, elle ira directement au Payor.`
+                      : `💾 Projet "${projTitle.trim()}" mis à jour dans votre espace !`
+                  );
                   setEditingProjectId(null);
                 } else {
                   createProject({
@@ -13668,7 +14762,7 @@ export const AdminPortal: React.FC = () => {
               <span>Dossiers de Projets AGR Montés & Suivis ({projects.length})</span>
             </h2>
             <span className="text-xs text-slate-400">
-              Statuts : En attente Payor ➜ Approuvé Payor ➜ Publié (Cotisations) ➜ Archivé (Grenier)
+              Statuts : Brouillon ➜ Secrétariat ➜ En attente Payor ➜ Visé Payor ➜ Publié par Projets (Gagne-Pain + DJAI + Alerte COM)
             </span>
           </div>
 
@@ -13744,9 +14838,229 @@ export const AdminPortal: React.FC = () => {
 
           {projects.length === 0 ? (
             <p className="text-slate-500 text-xs italic py-4">Aucun projet AGR enregistré dans le système.</p>
-          ) : (
+          ) : (() => {
+            const deptProjBatches = new Map<string, AgrProject[]>();
+            const deptSingleProjs: AgrProject[] = [];
+            projects.forEach(p => {
+              if (p.isConsolidated && p.batchId) {
+                const list = deptProjBatches.get(p.batchId) || [];
+                list.push(p);
+                deptProjBatches.set(p.batchId, list);
+              } else {
+                deptSingleProjs.push(p);
+              }
+            });
+
+            return (
             <div className="space-y-4">
-              {projects.map(p => {
+              {Array.from(deptProjBatches.entries()).map(([batchId, batchProjs]) => {
+                const first = batchProjs[0];
+                const batchDisplayTitle = first.batchTitle || `Dossier Global de Projets AGR (${batchProjs.length} projets)`;
+                const totalCost = batchProjs.reduce((sum, item) => sum + (item.estimatedCost || 0), 0);
+                const approvedBatchProjs = batchProjs.filter(x => x.status === 'approved_by_payor' || x.status === 'APPROVED_PAYOR');
+                const allPublished = batchProjs.every(x => x.status === 'active' || x.status === 'PUBLISHED');
+                const anyPendingPayor = batchProjs.some(x => x.status === 'pending_payor_approval' || x.status === 'PENDING_PAYOR');
+                const anySentToSuivi = batchProjs.some(x => x.status === 'SENT_TO_SUIVI');
+                const anySentToSec = batchProjs.some(x => x.status === 'SENT_TO_SECRETARIAT');
+                const anyReturned = batchProjs.some(x => x.status === 'returned_for_correction');
+
+                return (
+                  <div
+                    key={batchId}
+                    className="p-5 rounded-2xl border-2 border-purple-500/40 bg-slate-950 flex flex-col space-y-4 text-xs shadow-xl"
+                  >
+                    <div className="flex flex-col md:flex-row md:items-center justify-between gap-2 border-b border-slate-800 pb-3">
+                      <div className="space-y-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="bg-purple-500/20 text-purple-200 border border-purple-500/40 px-2.5 py-0.5 rounded-full text-[10px] font-black">
+                            📦 Dossier Global Consolidé ({batchProjs.length} projets)
+                          </span>
+                          <span className="font-mono text-purple-300 text-[11px] bg-purple-500/10 px-2 py-0.5 rounded-md border border-purple-500/20">
+                            {batchId}
+                          </span>
+                          {allPublished ? (
+                            <span className="bg-emerald-600 text-slate-950 text-[10px] font-black px-2.5 py-0.5 rounded-full">
+                              🚀 Lot entier publié dans Gagne-Pain
+                            </span>
+                          ) : approvedBatchProjs.length > 0 ? (
+                            <span className="bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-[10px] font-black px-2.5 py-0.5 rounded-full">
+                              🟢 Visé Payor ({approvedBatchProjs.length}/{batchProjs.length} prêt{approvedBatchProjs.length > 1 ? 's' : ''} à publier)
+                            </span>
+                          ) : anyReturned ? (
+                            <span className="bg-rose-500/20 text-rose-300 border border-rose-500/30 text-[10px] font-bold px-2.5 py-0.5 rounded-full">
+                              ⚠️ Retourné par Payor
+                            </span>
+                          ) : anyPendingPayor ? (
+                            <span className="bg-amber-500/20 text-amber-300 border border-amber-500/30 text-[10px] font-bold px-2.5 py-0.5 rounded-full">
+                              ⏳ En attente validation Payor
+                            </span>
+                          ) : anySentToSuivi ? (
+                            <span className="bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 text-[10px] font-bold px-2.5 py-0.5 rounded-full">
+                              🕵️ En instruction chez le Chargé de Suivi
+                            </span>
+                          ) : anySentToSec ? (
+                            <span className="bg-blue-500/20 text-blue-300 border border-blue-500/30 text-[10px] font-bold px-2.5 py-0.5 rounded-full">
+                              📤 Transmis au Secrétariat
+                            </span>
+                          ) : null}
+                        </div>
+                        <h4 className="text-base font-black text-white">{batchDisplayTitle}</h4>
+                        <p className="text-slate-400">
+                          Budget global cumulé : <strong className="text-amber-400">{totalCost.toLocaleString('fr-FR')} F CFA</strong>
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="space-y-2.5">
+                      {batchProjs.map(bp => {
+                        const bpApproved = bp.status === 'approved_by_payor' || bp.status === 'APPROVED_PAYOR';
+                        const bpPublished = bp.status === 'active' || bp.status === 'PUBLISHED';
+                        const bpReturned = bp.status === 'returned_for_correction';
+                        const bpPending = bp.status === 'pending_payor_approval' || bp.status === 'PENDING_PAYOR';
+
+                        return (
+                          <div
+                            key={bp.id}
+                            className="p-3.5 bg-slate-900/80 border border-slate-800 rounded-xl flex flex-col lg:flex-row lg:items-center justify-between gap-3"
+                          >
+                            <div className="space-y-1">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className="font-black text-white text-sm">{bp.title}</span>
+                                <span className="text-slate-400 font-mono text-[10px]">{bp.id}</span>
+                                <span className="text-amber-400 font-bold">{(bp.estimatedCost ?? 0).toLocaleString('fr-FR')} F CFA</span>
+                                {bpPublished && (
+                                  <span className="bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 px-2 py-0.5 rounded-full text-[10px] font-bold">
+                                    ✅ Publié
+                                  </span>
+                                )}
+                              </div>
+                              <p className="text-slate-400 text-[11px]">
+                                Contribution : {bp.requiredAmountPerMember ? `${bp.requiredAmountPerMember.toLocaleString('fr-FR')} F / membre` : 'Libre'} • Réalisation : {bp.dateRealisation || bp.eventDate || 'Non spécifiée'}
+                              </p>
+                            </div>
+
+                            <div className="flex flex-wrap items-center gap-2 shrink-0">
+                              {(bpReturned || bp.status === 'DRAFT' || !bp.status || bpPending || bpApproved) && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setEditingProjectId(bp.id);
+                                    setProjTitle(bp.title);
+                                    setProjCategory(bp.category || '');
+                                    setProjCostInput(bp.estimatedCost ? String(bp.estimatedCost) : '');
+                                    setProjRequiredPerMember(bp.requiredAmountPerMember ? String(bp.requiredAmountPerMember) : '');
+                                    setProjEventDate(bp.dateRealisation || bp.eventDate || '');
+                                    setProjPaymentDeadline(bp.paymentDeadline || '');
+                                    setProjDesc(bp.description || '');
+                                    setProjPilotTeam(bp.pilotTeam || []);
+                                    window.scrollTo({ top: 0, behavior: 'smooth' });
+                                  }}
+                                  className="bg-amber-600 hover:bg-amber-500 text-white font-bold px-3 py-1.5 rounded-xl flex items-center gap-1 cursor-pointer"
+                                >
+                                  <Edit className="w-3.5 h-3.5" />
+                                  <span>Modifier</span>
+                                </button>
+                              )}
+                              {bpApproved && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    publishProject(bp.id);
+                                    setToastMessage(`🚀 Projet « ${bp.title} » publié dans Gagne-Pain ! Rubrique DJAI ouverte et alerte envoyée à la COM.`);
+                                  }}
+                                  className="bg-emerald-600 hover:bg-emerald-500 text-white font-black px-3 py-1.5 rounded-xl flex items-center gap-1 shadow active:scale-95 transition-all cursor-pointer"
+                                >
+                                  <Send className="w-3.5 h-3.5" />
+                                  <span>🚀 Publier dans Gagne-Pain</span>
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                onClick={() => setPayorViewingOfficialDoc({ type: 'PROJECT', data: bp })}
+                                className="bg-slate-800 hover:bg-slate-700 text-amber-300 font-bold px-3 py-1.5 rounded-xl border border-slate-700 flex items-center gap-1 cursor-pointer"
+                              >
+                                <Eye className="w-3.5 h-3.5 text-amber-400" />
+                                <span>Visualiser</span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleGeneratePDFProject(bp)}
+                                className="bg-slate-800 hover:bg-slate-700 text-amber-400 font-bold px-2.5 py-1.5 rounded-xl border border-slate-700 flex items-center gap-1 cursor-pointer"
+                              >
+                                <Printer className="w-3.5 h-3.5" />
+                                <span>PDF</span>
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    <div className="flex flex-wrap items-center justify-between gap-2.5 pt-2 border-t border-slate-800">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setPayorViewingOfficialDoc({
+                              type: 'CONSOLIDATED_PROJECTS',
+                              data: {
+                                id: batchId,
+                                title: batchDisplayTitle,
+                                status: allPublished ? 'PUBLISHED' : approvedBatchProjs.length === batchProjs.length ? 'APPROVED' : first.status,
+                                items: batchProjs,
+                                isConsolidated: true,
+                              },
+                            });
+                          }}
+                          className="bg-slate-800 hover:bg-slate-700 text-amber-300 font-bold px-3.5 py-2 rounded-xl border border-slate-700 flex items-center gap-1.5 transition-all active:scale-95 text-xs cursor-pointer"
+                        >
+                          <Eye className="w-3.5 h-3.5 text-amber-400" />
+                          <span>👁️ Visualiser le Dossier Global</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleGeneratePDFConsolidatedProjects(batchProjs)}
+                          className="bg-slate-800 hover:bg-slate-700 text-amber-400 font-extrabold px-3.5 py-2 rounded-xl border border-slate-700 flex items-center gap-1.5 transition-all active:scale-95 text-xs cursor-pointer"
+                        >
+                          <Printer className="w-3.5 h-3.5" />
+                          <span>📑 PDF Global</span>
+                        </button>
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-2">
+                        {batchProjs.some(bp => bp.status === 'DRAFT' || bp.status === 'returned_for_correction' || !bp.status) && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              batchProjs.forEach(bp => sendProjectToSecretariat(bp.id));
+                              setToastMessage(`📤 Dossier Global (${batchProjs.length} projets) transmis au Secrétariat Général !`);
+                            }}
+                            className="bg-amber-600 hover:bg-amber-500 text-white font-black px-4 py-2 rounded-xl flex items-center gap-1.5 shadow active:scale-95 transition-all text-xs cursor-pointer"
+                          >
+                            <Send className="w-3.5 h-3.5" />
+                            <span>📤 Transmettre le Lot au Secrétariat</span>
+                          </button>
+                        )}
+                        {approvedBatchProjs.length > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              approvedBatchProjs.forEach(item => publishProject(item.id));
+                              setToastMessage(`🚀 Dossier Global (${approvedBatchProjs.length} projets) publié dans Gagne-Pain ! Rubriques DJAI ouvertes et alerte envoyée à la COM.`);
+                            }}
+                            className="bg-purple-600 hover:bg-purple-500 text-white font-black px-4 py-2 rounded-xl flex items-center gap-1.5 shadow-lg active:scale-95 transition-all text-xs cursor-pointer"
+                          >
+                            <Send className="w-3.5 h-3.5" />
+                            <span>🚀 Publier tout le Dossier Global ({approvedBatchProjs.length})</span>
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+
+              {deptSingleProjs.map(p => {
                 const isApprovedByPayor = p.status === 'approved_by_payor' || p.status === 'APPROVED_PAYOR';
                 const isPublished = p.status === 'active' || p.status === 'PUBLISHED';
                 const isReturned = p.status === 'returned_for_correction';
@@ -13797,9 +15111,21 @@ export const AdminPortal: React.FC = () => {
                           </span>
                         )}
 
-                        {(p.status === 'SENT_TO_SECRETARIAT' || (p.sentToSecretariat && !isPendingPayor && !isApprovedByPayor && !isReturned && !isPublished)) && (
+                        {p.status === 'SENT_TO_SUIVI' && (
+                          <span className="bg-indigo-500/20 text-indigo-300 border border-indigo-500/40 px-3 py-0.5 rounded-full text-[10px] font-black flex items-center gap-1">
+                            <span>🕵️ En instruction chez le Chargé de Suivi</span>
+                          </span>
+                        )}
+
+                        {p.status !== 'SENT_TO_SUIVI' && (p.status === 'SENT_TO_SECRETARIAT' || (p.sentToSecretariat && !isPendingPayor && !isApprovedByPayor && !isReturned && !isPublished)) && (
                           <span className="bg-blue-500/20 text-blue-300 border border-blue-500/40 px-3 py-0.5 rounded-full text-[10px] font-black flex items-center gap-1">
                             <span>📤 Transmis au Secrétariat Général</span>
+                          </span>
+                        )}
+
+                        {(p.suiviReviewed || p.isPostMeetingRevision) && (p.status === 'DRAFT' || p.status === 'SENT_TO_SECRETARIAT' || isReturned) && (
+                          <span className="bg-amber-500/15 text-amber-300 border border-amber-500/30 px-2.5 py-0.5 rounded-full text-[10px] font-bold">
+                            🔄 Révision post-réunion (Direct Payor)
                           </span>
                         )}
 
@@ -13907,8 +15233,8 @@ export const AdminPortal: React.FC = () => {
 
                     {/* Actions Bar */}
                     <div className="flex flex-wrap items-center justify-end gap-2.5 pt-2 border-t border-slate-800/80">
-                      {/* Action 1 : Si retourné pour correction -> Bouton Modifier & Corriger */}
-                      {isReturned && (
+                      {/* Action 1 : Modifier / Corriger le dossier */}
+                      {(isReturned || p.status === 'DRAFT' || !p.status || isPendingPayor || isApprovedByPayor) && (
                         <button
                           type="button"
                           onClick={() => {
@@ -13930,18 +15256,18 @@ export const AdminPortal: React.FC = () => {
                         </button>
                       )}
 
-                      {/* Action 2 : Si approuvé par le Payor -> Bouton Publier pour cotisations */}
+                      {/* Action 2 : Si Visé Payor -> Bouton Publier dans Gagne-Pain (+ DJAI + Alerte COM) */}
                       {isApprovedByPayor && (
                         <button
                           type="button"
                           onClick={() => {
                             publishProject(p.id);
-                            alert(`🚀 Projet "${p.title}" officiellement publié ! La rubrique "PROJETS AGR / INVESTISSEMENTS" est désormais active dans le Suivi des Acomptes et visible dans Gagne-Pain.`);
+                            setToastMessage(`🚀 Projet « ${p.title} » publié dans Gagne-Pain ! Rubrique DJAI ouverte et alerte envoyée à la COM.`);
                           }}
                           className="bg-emerald-600 hover:bg-emerald-500 text-white font-black px-4 py-2 rounded-xl flex items-center gap-1.5 shadow-lg active:scale-95 transition-all text-xs cursor-pointer"
                         >
                           <Send className="w-3.5 h-3.5" />
-                          <span>🚀 Publier le Projet AGR (Activer Cotisations)</span>
+                          <span>🚀 Publier dans Gagne-Pain (+ DJAI & Alerte COM)</span>
                         </button>
                       )}
 
@@ -14032,8 +15358,11 @@ export const AdminPortal: React.FC = () => {
                 );
               })}
             </div>
-          )}
+            );
+          })()}
         </div>
+
+          {renderInternalNavetteBlock('PROJET')}
         </div>
       )}
 
@@ -14042,10 +15371,6 @@ export const AdminPortal: React.FC = () => {
       {/* ========================================================= */}
       {activeRole === 'SPIRITUALITE' && (
         <div className="space-y-8">
-          <RbacWarningBanner
-            roleName="DÉPARTEMENT SPIRITUALITÉ"
-            allowedActionsText="Prière ROUAMA, liturgie AELF, événements religieux et verset du jour."
-          />
 
           {/* Contrôle de ciblage des destinataires pour diffusion par courriel */}
           <EmailRecipientSelector
@@ -14537,12 +15862,27 @@ export const AdminPortal: React.FC = () => {
                     setIsSavingRelEvt(true);
                     try {
                       if (editingReligiousEventId) {
+                        const existingEvt = religiousEvents.find(e => e.id === editingReligiousEventId);
+                        const hadPassedSuiviOrPayor = Boolean(
+                          existingEvt &&
+                          (existingEvt.suiviReviewed ||
+                            existingEvt.sentToPayor ||
+                            existingEvt.isPostMeetingRevision ||
+                            ['returned_for_correction', 'PENDING_PAYOR', 'APPROVED', 'APPROVED_PAYOR', 'PUBLISHED'].includes(existingEvt.status || ''))
+                        );
+
                         await updateReligiousEvent(editingReligiousEventId, {
                           title: relEvtTitle.trim(),
                           eventDate: relEvtDate,
                           eventTime: relEvtTime,
                           location: relEvtLocation.trim(),
                           theme: relEvtTheme.trim() || undefined,
+                          status: 'DRAFT',
+                          sentToSecretariat: false,
+                          sentToSuivi: false,
+                          sentToPayor: false,
+                          payorFeedback: '',
+                          ...(hadPassedSuiviOrPayor ? { suiviReviewed: true, isPostMeetingRevision: true } : {}),
                         });
                         setEditingReligiousEventId(null);
                         setRelEvtTitle('');
@@ -14550,7 +15890,11 @@ export const AdminPortal: React.FC = () => {
                         setRelEvtTime('');
                         setRelEvtLocation('');
                         setRelEvtTheme('');
-                        setToastMessage('✅ Activité religieuse mise à jour avec succès dans Firestore !');
+                        setToastMessage(
+                          hadPassedSuiviOrPayor
+                            ? '✅ Révision post-réunion enregistrée ! Lors du renvoi au Secrétariat, elle passera directement au Payor.'
+                            : '✅ Activité religieuse mise à jour avec succès dans Firestore !'
+                        );
                       } else {
                         await saveReligiousEventDraft({
                           title: relEvtTitle.trim(),
@@ -14691,9 +16035,204 @@ export const AdminPortal: React.FC = () => {
                     Remplissez le formulaire ci-dessus puis cliquez sur « Enregistrer l'activité » pour préparer votre événement.
                   </p>
                 </div>
-              ) : (
+              ) : (() => {
+                const deptRelBatches = new Map<string, ReligiousEvent[]>();
+                const deptSingleRels: ReligiousEvent[] = [];
+                religiousEvents.forEach(evt => {
+                  if (evt.isConsolidated && evt.batchId) {
+                    const list = deptRelBatches.get(evt.batchId) || [];
+                    list.push(evt);
+                    deptRelBatches.set(evt.batchId, list);
+                  } else {
+                    deptSingleRels.push(evt);
+                  }
+                });
+
+                return (
                 <div className="space-y-3.5">
-                  {religiousEvents.map(evt => {
+                  {Array.from(deptRelBatches.entries()).map(([batchId, batchEvts]) => {
+                    const first = batchEvts[0];
+                    const batchDisplayTitle = first.batchTitle || `Programme Global des Événements Religieux (${batchEvts.length} événements)`;
+                    const approvedEvts = batchEvts.filter(x => x.status === 'APPROVED');
+                    const allPublished = batchEvts.every(x => x.status === 'PUBLISHED');
+                    const anyPendingPayor = batchEvts.some(x => x.status === 'PENDING_PAYOR');
+                    const anySentToSuivi = batchEvts.some(x => x.status === 'SENT_TO_SUIVI');
+                    const anySentToSec = batchEvts.some(x => x.status === 'SENT_TO_SECRETARIAT');
+                    const anyReturned = batchEvts.some(x => x.status === 'returned_for_correction');
+
+                    return (
+                      <div
+                        key={batchId}
+                        className="bg-slate-950/90 border-2 border-purple-500/40 rounded-2xl p-4 sm:p-5 space-y-3.5 shadow-lg text-xs"
+                      >
+                        <div className="flex flex-col md:flex-row md:items-center justify-between gap-2 pb-3 border-b border-slate-800">
+                          <div className="space-y-1">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="bg-purple-500/20 text-purple-200 border border-purple-500/40 px-2.5 py-0.5 rounded-full text-[10px] font-black">
+                                📦 Programme Spirituel Global ({batchEvts.length} événements)
+                              </span>
+                              <span className="font-mono text-purple-300 text-[11px] bg-purple-500/10 px-2 py-0.5 rounded-md border border-purple-500/20">
+                                {batchId}
+                              </span>
+                              {allPublished ? (
+                                <span className="bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 px-2.5 py-0.5 rounded-full text-[10px] font-black">
+                                  🚀 Lot entier publié sur Gbairai
+                                </span>
+                              ) : approvedEvts.length > 0 ? (
+                                <span className="bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 px-2.5 py-0.5 rounded-full text-[10px] font-black">
+                                  🟢 Visé Payor ({approvedEvts.length}/{batchEvts.length} prêt{approvedEvts.length > 1 ? 's' : ''} pour Gbairai)
+                                </span>
+                              ) : anyReturned ? (
+                                <span className="bg-rose-500/20 text-rose-300 border border-rose-500/40 px-2.5 py-0.5 rounded-full text-[10px] font-bold">
+                                  ⚠️ Rejeté par le Payor
+                                </span>
+                              ) : anyPendingPayor ? (
+                                <span className="bg-amber-500/20 text-amber-300 border border-amber-500/40 px-2.5 py-0.5 rounded-full text-[10px] font-bold">
+                                  ⏳ En attente validation Payor
+                                </span>
+                              ) : anySentToSuivi ? (
+                                <span className="bg-indigo-500/20 text-indigo-300 border border-indigo-500/40 px-2.5 py-0.5 rounded-full text-[10px] font-bold">
+                                  🕵️ En instruction chez le Chargé de Suivi
+                                </span>
+                              ) : anySentToSec ? (
+                                <span className="bg-blue-500/20 text-blue-300 border border-blue-500/40 px-2.5 py-0.5 rounded-full text-[10px] font-bold">
+                                  📤 Transmis au Secrétariat
+                                </span>
+                              ) : null}
+                            </div>
+                            <h5 className="text-base font-black text-white">{batchDisplayTitle}</h5>
+                          </div>
+                        </div>
+
+                        <div className="space-y-2">
+                          {batchEvts.map(be => (
+                            <div
+                              key={be.id}
+                              className="p-3 bg-slate-900/80 border border-slate-800 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-2"
+                            >
+                              <div className="space-y-0.5">
+                                <span className="font-black text-white text-sm block">{be.title}</span>
+                                <span className="text-slate-400 text-[11px]">
+                                  📅 {be.eventDate} {be.eventTime ? `à ${be.eventTime}` : ''} {be.location ? `• 📍 ${be.location}` : ''}
+                                </span>
+                              </div>
+                              <div className="flex flex-wrap items-center gap-1.5 shrink-0">
+                                <button
+                                  type="button"
+                                  onClick={() => setPayorViewingOfficialDoc({ type: 'RELIGIOUS_EVENT', data: be })}
+                                  className="bg-slate-800 hover:bg-slate-700 text-amber-300 font-bold px-2.5 py-1.5 rounded-xl border border-slate-700 flex items-center gap-1 cursor-pointer"
+                                >
+                                  <Eye className="w-3.5 h-3.5 text-amber-400" />
+                                  <span>Visualiser</span>
+                                </button>
+                                {be.status === 'APPROVED' && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setDeleteConfirmModal({
+                                        title: "Publier dans Prière Rouama",
+                                        itemTitle: be.title,
+                                        itemId: be.id,
+                                        description: `Publier officiellement « ${be.title} » dans le canal Prière Rouama et envoyer une alerte à la COM pour diffusion sur le Gbairai ?`,
+                                        confirmLabel: "Publier maintenant",
+                                        onConfirm: async () => {
+                                          await publishReligiousEventToGbairai(be.id, 'GENERAL');
+                                          setToastMessage('🚀 Événement spirituel publié dans Prière Rouama et signalé à la COM !');
+                                        },
+                                      });
+                                    }}
+                                    className="bg-emerald-600 hover:bg-emerald-500 text-white font-black px-3 py-1.5 rounded-xl flex items-center gap-1 shadow active:scale-95 cursor-pointer"
+                                  >
+                                    <Megaphone className="w-3.5 h-3.5" />
+                                    <span>🚀 Publier</span>
+                                  </button>
+                                )}
+                                {be.status === 'PUBLISHED' && (
+                                  <span className="bg-emerald-500/10 text-emerald-300 font-bold px-2.5 py-1 rounded-xl border border-emerald-500/20">
+                                    ✅ Publié
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+
+                        <div className="pt-2 border-t border-slate-800 flex flex-wrap items-center justify-between gap-2">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setPayorViewingOfficialDoc({
+                                  type: 'CONSOLIDATED_RELIGIOUS_EVENTS',
+                                  data: {
+                                    id: batchId,
+                                    title: batchDisplayTitle,
+                                    status: allPublished ? 'PUBLISHED' : approvedEvts.length === batchEvts.length ? 'APPROVED' : first.status,
+                                    items: batchEvts,
+                                    isConsolidated: true,
+                                  },
+                                });
+                              }}
+                              className="bg-slate-800 hover:bg-slate-700 text-amber-300 font-bold px-3 py-2 rounded-xl border border-slate-700 flex items-center gap-1.5 cursor-pointer active:scale-95"
+                            >
+                              <Eye className="w-3.5 h-3.5 text-amber-400" />
+                              <span>👁️ Visualiser le Programme Global</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleGeneratePDFConsolidatedReligiousEvents(batchEvts)}
+                              className="bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold px-3 py-2 rounded-xl border border-slate-700 flex items-center gap-1.5 cursor-pointer active:scale-95"
+                            >
+                              <Printer className="w-3.5 h-3.5" />
+                              <span>📑 PDF Global</span>
+                            </button>
+                          </div>
+
+                          <div className="flex flex-wrap items-center gap-2">
+                            {batchEvts.some(be => be.status === 'DRAFT' || be.status === 'returned_for_correction' || !be.status) && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  batchEvts.forEach(be => sendReligiousEventToSecretariat(be.id));
+                                  setToastMessage(`📤 Programme Spirituel Global (${batchEvts.length} événements) transmis au Secrétariat Général !`);
+                                }}
+                                className="bg-amber-600 hover:bg-amber-500 text-white font-black px-4 py-2 rounded-xl flex items-center gap-1.5 shadow active:scale-95 transition-all cursor-pointer"
+                              >
+                                <Send className="w-3.5 h-3.5" />
+                                <span>📤 Transmettre le Lot au Secrétariat</span>
+                              </button>
+                            )}
+                            {approvedEvts.length > 0 && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setDeleteConfirmModal({
+                                    title: `Publier tout le Lot Global (${approvedEvts.length})`,
+                                    itemTitle: batchDisplayTitle,
+                                    itemId: batchId,
+                                    description: `Publier officiellement l'ensemble des ${approvedEvts.length} événements du lot global dans Prière Rouama et envoyer une alerte à la COM pour diffusion sur le Gbairai ?`,
+                                    confirmLabel: "Publier tout le Lot",
+                                    onConfirm: async () => {
+                                      for (const item of approvedEvts) {
+                                        await publishReligiousEventToGbairai(item.id, 'GENERAL');
+                                      }
+                                      setToastMessage(`🚀 Lot Global (${approvedEvts.length} événements spirituels) publié dans Prière Rouama et signalé à la COM !`);
+                                    },
+                                  });
+                                }}
+                                className="bg-purple-600 hover:bg-purple-500 text-white font-black px-4 py-2 rounded-xl flex items-center gap-1.5 shadow-md transition-all active:scale-95 cursor-pointer"
+                              >
+                                <Megaphone className="w-3.5 h-3.5" />
+                                <span>🚀 Publier tout le Lot Global ({approvedEvts.length})</span>
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+
+                  {deptSingleRels.map(evt => {
                     const isDraft = evt.status !== 'PUBLISHED';
                     const isCurrentEditing = editingReligiousEventId === evt.id;
 
@@ -14744,6 +16283,11 @@ export const AdminPortal: React.FC = () => {
                                   <AlertTriangle className="w-3 h-3 text-rose-400" />
                                   <span>⚠️ Rejeté par le Payor</span>
                                 </span>
+                              ) : evt.status === 'SENT_TO_SUIVI' ? (
+                                <span className="inline-flex items-center gap-1.5 bg-indigo-500/20 text-indigo-300 border border-indigo-500/40 text-[11px] font-black px-2.5 py-1 rounded-full">
+                                  <Clock className="w-3 h-3 text-indigo-400" />
+                                  <span>🕵️ En instruction chez le Chargé de Suivi</span>
+                                </span>
                               ) : evt.status === 'SENT_TO_SECRETARIAT' ? (
                                 <span className="inline-flex items-center gap-1.5 bg-blue-500/20 text-blue-300 border border-blue-500/40 text-[11px] font-black px-2.5 py-1 rounded-full">
                                   <Send className="w-3 h-3 text-blue-400" />
@@ -14752,6 +16296,11 @@ export const AdminPortal: React.FC = () => {
                               ) : (
                                 <span className="inline-flex items-center gap-1.5 bg-slate-800 text-slate-400 border border-slate-700 text-[11px] font-bold px-2.5 py-1 rounded-full">
                                   <span>⚪ Brouillon (Non transmis)</span>
+                                </span>
+                              )}
+                              {(evt.suiviReviewed || evt.isPostMeetingRevision) && (evt.status === 'DRAFT' || evt.status === 'SENT_TO_SECRETARIAT' || evt.status === 'returned_for_correction') && (
+                                <span className="inline-flex items-center gap-1 bg-amber-500/15 text-amber-300 border border-amber-500/30 text-[10px] font-bold px-2 py-0.5 rounded-full">
+                                  🔄 Révision post-réunion (Direct Payor)
                                 </span>
                               )}
 
@@ -14844,28 +16393,28 @@ export const AdminPortal: React.FC = () => {
                               </button>
                             )}
 
-                            {/* Bouton Publier sur Gbairai (débloqué uniquement si APPROVED) */}
+                            {/* Bouton Publier dans Prière Rouama (débloqué uniquement si APPROVED / Visé Payor) */}
                             {evt.status === 'APPROVED' && (
                               <button
                                 type="button"
                                 onClick={() => {
                                   setDeleteConfirmModal({
-                                    title: "Diffuser sur le Gbairai",
+                                    title: "Publier dans Prière Rouama",
                                     itemTitle: evt.title,
                                     itemId: evt.id,
-                                    description: `Diffuser immédiatement « ${evt.title} » sur le Gbairai de tous les membres (Général App + Courriel) ?`,
-                                    confirmLabel: "Diffuser maintenant",
+                                    description: `Publier officiellement « ${evt.title} » dans le canal Prière Rouama et envoyer une alerte à la COM pour diffusion sur le Gbairai ?`,
+                                    confirmLabel: "Publier maintenant",
                                     onConfirm: async () => {
                                       await publishReligiousEventToGbairai(evt.id, 'GENERAL');
-                                      setToastMessage('🚀 Événement religieux publié sur le Gbairai !');
+                                      setToastMessage('🚀 Événement spirituel publié dans Prière Rouama et signalé à la COM !');
                                     },
                                   });
                                 }}
                                 className="bg-gradient-to-r from-amber-600 to-emerald-600 hover:from-amber-500 hover:to-emerald-500 text-white font-black px-4 py-2 rounded-xl text-xs flex items-center justify-center gap-1.5 shadow-md transition-all active:scale-95 cursor-pointer"
-                                title="Diffuser cet événement sur le Gbairai"
+                                title="Publier cet événement dans Prière Rouama et alerter la COM"
                               >
                                 <Megaphone className="w-3.5 h-3.5" />
-                                <span>🚀 Publier sur Gbairai</span>
+                                <span>🚀 Publier dans Prière Rouama (+ Alerte COM)</span>
                               </button>
                             )}
 
@@ -14932,9 +16481,12 @@ export const AdminPortal: React.FC = () => {
                     );
                   })}
                 </div>
-              )}
+                );
+              })()}
             </div>
           </div>
+
+          {renderInternalNavetteBlock('SPIRITUALITE')}
         </div>
       )}
 
@@ -14943,14 +16495,67 @@ export const AdminPortal: React.FC = () => {
       {/* ========================================================= */}
       {activeRole === 'SDP' && (
         <div className="space-y-8">
-          <RbacWarningBanner
-            roleName="CHARGÉ DU SUIVI DU PROGRAMME (SDP)"
-            allowedActionsText="Supervision des tâches des départements, respect des résolutions des PVs et du calendrier annuel, rappels WhatsApp et audit lecture seule."
+          <SuiviProgrammeConsole
+            activeRole={activeRole}
+            onPreviewOfficialDoc={(kind, id, batchId) => {
+              if (kind === 'PROJET') {
+                const p = projects.find(item => item.id === id);
+                if (!p) return;
+                if (batchId && p.isConsolidated && p.batchId === batchId) {
+                  const batchProjs = projects.filter(item => item.batchId === batchId);
+                  setPayorViewingOfficialDoc({
+                    type: 'CONSOLIDATED_PROJECTS',
+                    data: {
+                      id: batchId,
+                      title: p.batchTitle || `Dossier Global de Projets AGR (${batchProjs.length} projets)`,
+                      status: p.status || 'SENT_TO_SUIVI',
+                      items: batchProjs,
+                      isConsolidated: true,
+                    },
+                  });
+                } else {
+                  setPayorViewingOfficialDoc({ type: 'PROJECT', data: p });
+                }
+              } else if (kind === 'ORGANISATION') {
+                const a = activities.find(item => item.id === id);
+                if (!a) return;
+                if (batchId && a.isConsolidated && a.batchId === batchId) {
+                  const batchActs = activities.filter(item => item.batchId === batchId);
+                  setPayorViewingOfficialDoc({
+                    type: 'CONSOLIDATED_ACTIVITIES',
+                    data: {
+                      id: batchId,
+                      title: a.batchTitle || `Programme Global d'Activités (${batchActs.length} activités)`,
+                      status: a.status || 'SENT_TO_SUIVI',
+                      items: batchActs,
+                      isConsolidated: true,
+                    },
+                  });
+                } else {
+                  setPayorViewingOfficialDoc({ type: 'ACTIVITY', data: a });
+                }
+              } else if (kind === 'SPIRITUALITE') {
+                const e = religiousEvents.find(item => item.id === id);
+                if (!e) return;
+                if (batchId && e.isConsolidated && e.batchId === batchId) {
+                  const batchEvts = religiousEvents.filter(item => item.batchId === batchId);
+                  setPayorViewingOfficialDoc({
+                    type: 'CONSOLIDATED_RELIGIOUS_EVENTS',
+                    data: {
+                      id: batchId,
+                      title: e.batchTitle || `Programme Global des Événements Religieux (${batchEvts.length} événements)`,
+                      status: e.status || 'SENT_TO_SUIVI',
+                      items: batchEvts,
+                      isConsolidated: true,
+                    },
+                  });
+                } else {
+                  setPayorViewingOfficialDoc({ type: 'RELIGIOUS_EVENT', data: e });
+                }
+              }
+            }}
           />
-          <SuiviProgrammeConsole activeRole={activeRole} />
         </div>
-      )}
-        </>
       )}
 
       {/* ========================================================= */}
@@ -17648,7 +19253,7 @@ export const AdminPortal: React.FC = () => {
                   {isConsolidated ? (
                     <>
                       {/* Transmettre au Secrétariat si non transmis (Départements émetteurs uniquement) */}
-                      {activeRole !== 'PAYOR' && activeRole !== 'SECRETARIAT' && !isApproved && (
+                      {activeRole !== 'PAYOR' && activeRole !== 'SECRETARIAT' && activeRole !== 'SDP' && !isApproved && (
                         <button
                           type="button"
                           onClick={() => {
@@ -17674,61 +19279,208 @@ export const AdminPortal: React.FC = () => {
                         </button>
                       )}
 
-                      {/* Transmettre au Payor (depuis le Secrétariat uniquement) */}
-                      {activeRole === 'SECRETARIAT' && !isApproved && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            if (docType === 'CONSOLIDATED_PROJECTS') {
-                              sendProjectsBatchFromSecretariatToPayor(rawData.items.map((p: any) => p.id));
-                              setToastMessage(`📤 Dossier Global (${rawData.items.length} projets) acheminé au Payor !`);
-                            } else if (docType === 'CONSOLIDATED_ACTIVITIES') {
-                              sendActivitiesBatchFromSecretariatToPayor(rawData.items.map((a: any) => a.id));
-                              setToastMessage(`📤 Programme Global (${rawData.items.length} activités) acheminé au Payor !`);
-                            } else if (docType === 'CONSOLIDATED_RELIGIOUS_EVENTS') {
-                              sendReligiousEventsBatchFromSecretariatToPayor(rawData.items.map((e: any) => e.id));
-                              setToastMessage(`📤 Programme Spirituel Global (${rawData.items.length} événements) acheminé au Payor !`);
-                            }
-                            setPayorViewingOfficialDoc(null);
-                          }}
-                          className="bg-blue-600 hover:bg-blue-500 text-white font-black px-4 py-2.5 rounded-xl text-xs flex items-center gap-1.5 shadow active:scale-95 transition-all cursor-pointer"
-                        >
-                          <Send className="w-3.5 h-3.5" />
-                          <span>📤 Acheminer le Document Global au Payor</span>
-                        </button>
-                      )}
+                      {/* Routage hiérarchique depuis le Secrétariat pour documents consolidés */}
+                      {activeRole === 'SECRETARIAT' && !isApproved && (() => {
+                        const batchItems = Array.isArray(rawData.items) ? rawData.items : [];
+                        const batchIsSentToSuivi = batchItems.some((x: any) => x.status === 'SENT_TO_SUIVI');
+                        const batchIsPendingPayor = batchItems.length > 0 && batchItems.every((x: any) => x.status === 'PENDING_PAYOR' || x.status === 'pending_payor_approval');
+                        const batchIsPostRevision = batchItems.some((x: any) => x.isPostMeetingRevision || x.suiviReviewed);
 
-                      {/* Approuver le lot (EXCLUSIVEMENT depuis le Payor) */}
+                        if (batchIsSentToSuivi) {
+                          return (
+                            <span className="bg-indigo-500/15 text-indigo-300 border border-indigo-500/30 px-3 py-2 rounded-xl text-xs font-bold flex items-center gap-1">
+                              🕵️ En instruction chez le Chargé de Suivi (Pré-réunion)
+                            </span>
+                          );
+                        }
+                        if (batchIsPendingPayor) {
+                          return (
+                            <span className="bg-amber-500/10 text-amber-300 border border-amber-500/30 px-3 py-2 rounded-xl text-xs font-bold flex items-center gap-1">
+                              ⏳ Transmis au Payor (En attente du visa)
+                            </span>
+                          );
+                        }
+
+                        const splitBtn = (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const ids = batchItems.map((x: any) => x.id);
+                              if (docType === 'CONSOLIDATED_PROJECTS') {
+                                splitProjectsBatchToIndividual(ids);
+                                setToastMessage(`✂️ Lot global éclaté en ${batchItems.length} projets individuels.`);
+                              } else if (docType === 'CONSOLIDATED_ACTIVITIES') {
+                                splitActivitiesBatchToIndividual(ids);
+                                setToastMessage(`✂️ Programme global éclaté en ${batchItems.length} activités individuelles.`);
+                              } else if (docType === 'CONSOLIDATED_RELIGIOUS_EVENTS') {
+                                splitReligiousEventsBatchToIndividual(ids);
+                                setToastMessage(`✂️ Programme global éclaté en ${batchItems.length} événements individuels.`);
+                              }
+                              setPayorViewingOfficialDoc(null);
+                            }}
+                            className="bg-purple-950/90 hover:bg-purple-900 text-purple-200 border border-purple-500/50 font-bold px-3.5 py-2.5 rounded-xl text-xs flex items-center gap-1.5 shadow active:scale-95 transition-all cursor-pointer"
+                          >
+                            <span>✂️ Éclater le lot en dossiers individuels</span>
+                          </button>
+                        );
+
+                        if (batchIsPostRevision) {
+                          return (
+                            <div className="flex flex-wrap items-center gap-2">
+                              {splitBtn}
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  if (docType === 'CONSOLIDATED_PROJECTS') {
+                                    sendProjectsBatchFromSecretariatToPayor(batchItems.map((p: any) => p.id));
+                                    setToastMessage(`📤 Révision post-réunion (${batchItems.length} projets) transmise directement au Payor !`);
+                                  } else if (docType === 'CONSOLIDATED_ACTIVITIES') {
+                                    sendActivitiesBatchFromSecretariatToPayor(batchItems.map((a: any) => a.id));
+                                    setToastMessage(`📤 Révision post-réunion (${batchItems.length} activités) transmise directement au Payor !`);
+                                  } else if (docType === 'CONSOLIDATED_RELIGIOUS_EVENTS') {
+                                    sendReligiousEventsBatchFromSecretariatToPayor(batchItems.map((e: any) => e.id));
+                                    setToastMessage(`📤 Révision post-réunion (${batchItems.length} événements) transmise directement au Payor !`);
+                                  }
+                                  setPayorViewingOfficialDoc(null);
+                                }}
+                                className="bg-blue-600 hover:bg-blue-500 text-white font-black px-4 py-2.5 rounded-xl text-xs flex items-center gap-1.5 shadow active:scale-95 transition-all cursor-pointer"
+                              >
+                                <Send className="w-3.5 h-3.5" />
+                                <span>📤 Acheminer directement au Payor (Post-réunion)</span>
+                              </button>
+                            </div>
+                          );
+                        }
+                        return (
+                          <div className="flex flex-wrap items-center gap-2">
+                            {splitBtn}
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (docType === 'CONSOLIDATED_PROJECTS') {
+                                  sendProjectsBatchFromSecretariatToSuivi(batchItems.map((p: any) => p.id));
+                                  setToastMessage(`🕵️ Dossier Global (${batchItems.length} projets) transmis au Chargé de Suivi pour instruction !`);
+                                } else if (docType === 'CONSOLIDATED_ACTIVITIES') {
+                                  sendActivitiesBatchFromSecretariatToSuivi(batchItems.map((a: any) => a.id));
+                                  setToastMessage(`🕵️ Programme Global (${batchItems.length} activités) transmis au Chargé de Suivi pour instruction !`);
+                                } else if (docType === 'CONSOLIDATED_RELIGIOUS_EVENTS') {
+                                  sendReligiousEventsBatchFromSecretariatToSuivi(batchItems.map((e: any) => e.id));
+                                  setToastMessage(`🕵️ Programme Spirituel Global (${batchItems.length} événements) transmis au Chargé de Suivi pour instruction !`);
+                                }
+                                setPayorViewingOfficialDoc(null);
+                              }}
+                              className="bg-indigo-600 hover:bg-indigo-500 text-white font-black px-4 py-2.5 rounded-xl text-xs flex items-center gap-1.5 shadow active:scale-95 transition-all cursor-pointer"
+                            >
+                              <Send className="w-3.5 h-3.5" />
+                              <span>🕵️ Transmettre au Chargé de Suivi (Instruction)</span>
+                            </button>
+                          </div>
+                        );
+                      })()}
+
+                      {/* Instruction Chargé de Suivi (SDP) pour documents consolidés */}
+                      {activeRole === 'SDP' && !isApproved && (() => {
+                        const batchItems = Array.isArray(rawData.items) ? rawData.items : [];
+                        const batchHasSentToSuivi = batchItems.some((x: any) => x.status === 'SENT_TO_SUIVI');
+                        const batchIsPendingPayor = batchItems.length > 0 && batchItems.every((x: any) => x.status === 'PENDING_PAYOR' || x.status === 'pending_payor_approval');
+
+                        if (batchHasSentToSuivi) {
+                          return (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (docType === 'CONSOLIDATED_PROJECTS') {
+                                  sendProjectsBatchFromSecretariatToPayor(batchItems.map((p: any) => p.id));
+                                  setToastMessage(`✅ Instruction validée : Dossier Global (${batchItems.length} projets) transmis au Payor !`);
+                                } else if (docType === 'CONSOLIDATED_ACTIVITIES') {
+                                  sendActivitiesBatchFromSecretariatToPayor(batchItems.map((a: any) => a.id));
+                                  setToastMessage(`✅ Instruction validée : Programme Global (${batchItems.length} activités) transmis au Payor !`);
+                                } else if (docType === 'CONSOLIDATED_RELIGIOUS_EVENTS') {
+                                  sendReligiousEventsBatchFromSecretariatToPayor(batchItems.map((e: any) => e.id));
+                                  setToastMessage(`✅ Instruction validée : Programme Spirituel Global (${batchItems.length} événements) transmis au Payor !`);
+                                }
+                                setPayorViewingOfficialDoc(null);
+                              }}
+                              className="bg-indigo-600 hover:bg-indigo-500 text-white font-black px-4 py-2.5 rounded-xl text-xs flex items-center gap-1.5 shadow active:scale-95 transition-all cursor-pointer"
+                            >
+                              <Send className="w-3.5 h-3.5" />
+                              <span>📤 Valider l'instruction &amp; Soumettre au Payor</span>
+                            </button>
+                          );
+                        }
+                        if (batchIsPendingPayor) {
+                          return (
+                            <span className="bg-amber-500/10 text-amber-300 border border-amber-500/30 px-3 py-2 rounded-xl text-xs font-bold flex items-center gap-1">
+                              ⏳ En attente du visa Payor
+                            </span>
+                          );
+                        }
+                        return (
+                          <span className="bg-sky-500/10 text-sky-300 border border-sky-500/30 px-3 py-2 rounded-xl text-xs font-bold flex items-center gap-1">
+                            🕵️ Mode lecture seule (Suivi Programme)
+                          </span>
+                        );
+                      })()}
+
+                      {/* Approuver ou retourner le lot (EXCLUSIVEMENT depuis le Payor) */}
                       {activeRole === 'PAYOR' && !isApproved && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            if (docType === 'CONSOLIDATED_PROJECTS') {
-                              approveProjectsBatchPayor(rawData.items.map((p: any) => p.id));
-                              setToastMessage(`✅ Dossier Global (${rawData.items.length} projets) validé et visé par le Payor (SS.png) !`);
-                            } else if (docType === 'CONSOLIDATED_ACTIVITIES') {
-                              approveActivitiesBatchPayor(rawData.items.map((a: any) => a.id));
-                              setToastMessage(`✅ Programme Global (${rawData.items.length} activités) validé et visé par le Payor (SS.png) !`);
-                            } else if (docType === 'CONSOLIDATED_RELIGIOUS_EVENTS') {
-                              approveReligiousEventsBatchPayor(rawData.items.map((e: any) => e.id));
-                              setToastMessage(`✅ Programme Spirituel Global (${rawData.items.length} événements) validé et visé par le Payor (SS.png) !`);
-                            }
-                            setPayorViewingOfficialDoc(null);
-                          }}
-                          className="bg-emerald-600 hover:bg-emerald-500 text-white font-black px-5 py-2.5 rounded-xl text-xs flex items-center gap-1.5 shadow-lg active:scale-95 transition-all cursor-pointer"
-                        >
-                          <CheckCircle2 className="w-4 h-4" />
-                          <span>✅ Approuver & Viser l'ensemble (SS.png)</span>
-                        </button>
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setPayorReturnDocModal({
+                                type: docType as any,
+                                id: rawData.id,
+                                title: rawData.title || rawData.id,
+                                itemIds: (rawData.items || []).map((x: any) => x.id),
+                              });
+                              setPayorReturnDocFeedback('');
+                              setPayorReturnDocFeedbackError(null);
+                              setPayorViewingOfficialDoc(null);
+                            }}
+                            className="bg-rose-950/80 hover:bg-rose-900 text-rose-200 border border-rose-700/60 font-bold px-4 py-2.5 rounded-xl text-xs flex items-center gap-1.5 transition-all active:scale-95 cursor-pointer"
+                          >
+                            <XCircle className="w-4 h-4 text-rose-400" />
+                            <span>↩️ Retourner le Lot</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (docType === 'CONSOLIDATED_PROJECTS') {
+                                approveProjectsBatchPayor(rawData.items.map((p: any) => p.id));
+                                setToastMessage(`✅ Dossier Global (${rawData.items.length} projets) validé et visé par le Payor (SS.png) !`);
+                              } else if (docType === 'CONSOLIDATED_ACTIVITIES') {
+                                approveActivitiesBatchPayor(rawData.items.map((a: any) => a.id));
+                                setToastMessage(`✅ Programme Global (${rawData.items.length} activités) validé et visé par le Payor (SS.png) !`);
+                              } else if (docType === 'CONSOLIDATED_RELIGIOUS_EVENTS') {
+                                approveReligiousEventsBatchPayor(rawData.items.map((e: any) => e.id));
+                                setToastMessage(`✅ Programme Spirituel Global (${rawData.items.length} événements) validé et visé par le Payor (SS.png) !`);
+                              }
+                              setPayorViewingOfficialDoc(null);
+                            }}
+                            className="bg-emerald-600 hover:bg-emerald-500 text-white font-black px-5 py-2.5 rounded-xl text-xs flex items-center gap-1.5 shadow-lg active:scale-95 transition-all cursor-pointer"
+                          >
+                            <CheckCircle2 className="w-4 h-4" />
+                            <span>✅ Approuver & Viser l'ensemble (SS.png)</span>
+                          </button>
+                        </>
                       )}
                     </>
                   ) : (
                     /* Actions pour documents unitaires */
                     <>
-                      {/* CAS 1 : SECRÉTARIAT - Bouton unique « 📤 Transmettre au Payor » (jamais d'approbation) */}
+                      {/* CAS 1 : SECRÉTARIAT - Routage Suivi (1er envoi) ou direct Payor (post-réunion / Bilan / PV) */}
                       {activeRole === 'SECRETARIAT' && !isApproved && (
                         <>
-                          {(!rawData.sentToPayor && rawData.status !== 'PENDING_PAYOR' && rawData.status !== 'SENT_TO_PAYOR') ? (
+                          {rawData.status === 'SENT_TO_SUIVI' ? (
+                            <span className="bg-indigo-500/15 text-indigo-300 border border-indigo-500/30 px-3 py-2 rounded-xl text-xs font-bold flex items-center gap-1">
+                              🕵️ En instruction chez le Chargé de Suivi (Pré-réunion)
+                            </span>
+                          ) : (rawData.sentToPayor || rawData.status === 'PENDING_PAYOR' || rawData.status === 'SENT_TO_PAYOR') ? (
+                            <span className="bg-amber-500/10 text-amber-300 border border-amber-500/30 px-3 py-2 rounded-xl text-xs font-bold flex items-center gap-1">
+                              ⏳ Transmis au Payor (En attente du visa)
+                            </span>
+                          ) : (docType === 'BILAN' || docType === 'PV' || rawData.isPostMeetingRevision || rawData.suiviReviewed) ? (
                             <button
                               type="button"
                               onClick={() => {
@@ -17744,26 +19496,77 @@ export const AdminPortal: React.FC = () => {
                                 } else if (doc.type === 'PV') {
                                   sendPVFromSecretariatToPayor(doc.data.id);
                                 }
-                                setToastMessage(`📤 Document "${doc.data.title || doc.data.id}" transmis au Payor pour accord & visa officiel !`);
+                                setToastMessage(`📤 Document "${doc.data.title || doc.data.id}" transmis directement au Payor pour accord & visa officiel !`);
                                 setPayorViewingOfficialDoc(null);
                               }}
                               className="bg-blue-600 hover:bg-blue-500 text-white font-black px-4 py-2.5 rounded-xl text-xs flex items-center gap-1.5 shadow active:scale-95 transition-all cursor-pointer"
                             >
                               <Send className="w-3.5 h-3.5" />
-                              <span>📤 Transmettre au Payor</span>
+                              <span>{docType === 'BILAN' || docType === 'PV' ? '📤 Transmettre au Payor' : '📤 Transmettre directement au Payor (Post-réunion)'}</span>
                             </button>
                           ) : (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const doc = payorViewingOfficialDoc;
+                                if (doc.type === 'PROJECT') {
+                                  sendProjectFromSecretariatToSuivi(doc.data.id);
+                                } else if (doc.type === 'ACTIVITY') {
+                                  sendActivityFromSecretariatToSuivi(doc.data.id);
+                                } else if (doc.type === 'RELIGIOUS_EVENT') {
+                                  sendReligiousEventFromSecretariatToSuivi(doc.data.id);
+                                }
+                                setToastMessage(`🕵️ Document "${doc.data.title || doc.data.id}" transmis au Chargé de Suivi pour instruction avant la réunion de cadrage !`);
+                                setPayorViewingOfficialDoc(null);
+                              }}
+                              className="bg-indigo-600 hover:bg-indigo-500 text-white font-black px-4 py-2.5 rounded-xl text-xs flex items-center gap-1.5 shadow active:scale-95 transition-all cursor-pointer"
+                            >
+                              <Send className="w-3.5 h-3.5" />
+                              <span>🕵️ Transmettre au Chargé de Suivi</span>
+                            </button>
+                          )}
+                        </>
+                      )}
+
+                      {/* CAS 1B : CHARGÉ DE SUIVI (SDP) - Instruction pré-réunion & soumission au Payor */}
+                      {activeRole === 'SDP' && !isApproved && docType !== 'PV' && docType !== 'BILAN' && (
+                        <>
+                          {rawData.status === 'SENT_TO_SUIVI' ? (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const doc = payorViewingOfficialDoc;
+                                if (doc.type === 'PROJECT') {
+                                  sendProjectFromSecretariatToPayor(doc.data.id);
+                                } else if (doc.type === 'ACTIVITY') {
+                                  sendActivityFromSecretariatToPayor(doc.data.id);
+                                } else if (doc.type === 'RELIGIOUS_EVENT') {
+                                  sendReligiousEventFromSecretariatToPayor(doc.data.id);
+                                }
+                                setToastMessage(`✅ Instruction validée : « ${doc.data.title || doc.data.id} » a été transmis au Payor pour la réunion de cadrage.`);
+                                setPayorViewingOfficialDoc(null);
+                              }}
+                              className="bg-indigo-600 hover:bg-indigo-500 text-white font-black px-4 py-2.5 rounded-xl text-xs flex items-center gap-1.5 shadow active:scale-95 transition-all cursor-pointer"
+                            >
+                              <Send className="w-3.5 h-3.5" />
+                              <span>📤 Valider l'instruction &amp; Soumettre au Payor</span>
+                            </button>
+                          ) : (rawData.sentToPayor || rawData.status === 'PENDING_PAYOR' || rawData.status === 'pending_payor_approval' || rawData.status === 'SENT_TO_PAYOR') ? (
                             <span className="bg-amber-500/10 text-amber-300 border border-amber-500/30 px-3 py-2 rounded-xl text-xs font-bold flex items-center gap-1">
-                              ⏳ Transmis au Payor (En attente du visa)
+                              ⏳ En attente du visa Payor
+                            </span>
+                          ) : (
+                            <span className="bg-sky-500/10 text-sky-300 border border-sky-500/30 px-3 py-2 rounded-xl text-xs font-bold flex items-center gap-1">
+                              🕵️ Mode lecture seule (Suivi Programme)
                             </span>
                           )}
                         </>
                       )}
 
                       {/* CAS 2 : DÉPARTEMENTS ÉMETTEURS (PROJET, ORG, SPIRITUALITE, TRESORIER) - Transmettre au Secrétariat uniquement, JAMAIS d'approbation */}
-                      {activeRole !== 'PAYOR' && activeRole !== 'SECRETARIAT' && !isApproved && docType !== 'PV' && (
+                      {activeRole !== 'PAYOR' && activeRole !== 'SECRETARIAT' && activeRole !== 'SDP' && !isApproved && docType !== 'PV' && (
                         <>
-                          {(!rawData.sentToSecretariat && rawData.status !== 'SENT_TO_SECRETARIAT' && rawData.status !== 'PENDING_PAYOR') ? (
+                          {(!rawData.sentToSecretariat && rawData.status !== 'SENT_TO_SECRETARIAT' && rawData.status !== 'SENT_TO_SUIVI' && rawData.status !== 'PENDING_PAYOR') ? (
                             <button
                               type="button"
                               onClick={() => {
@@ -17787,7 +19590,7 @@ export const AdminPortal: React.FC = () => {
                             </button>
                           ) : (
                             <span className="bg-blue-500/10 text-blue-300 border border-blue-500/30 px-3 py-2 rounded-xl text-xs font-bold flex items-center gap-1">
-                              🏛️ Transmis au Secrétariat Général
+                              {rawData.status === 'SENT_TO_SUIVI' ? '🕵️ En instruction chez le Chargé de Suivi' : '🏛️ Transmis au Secrétariat Général'}
                             </span>
                           )}
                         </>
@@ -18034,15 +19837,24 @@ export const AdminPortal: React.FC = () => {
                   } else if (payorReturnDocModal.type === 'PROJECT') {
                     returnProjectForCorrectionPayor(payorReturnDocModal.id, feedback);
                     setToastMessage(`⚠️ Projet "${payorReturnDocModal.title}" retourné pour correction à la Commission.`);
+                  } else if (payorReturnDocModal.type === 'CONSOLIDATED_PROJECTS') {
+                    returnProjectsBatchForCorrectionPayor(payorReturnDocModal.itemIds || [], feedback);
+                    setToastMessage(`⚠️ Dossier Global "${payorReturnDocModal.title}" retourné pour correction à la Commission.`);
                   } else if (payorReturnDocModal.type === 'BILAN') {
                     returnBilanForCorrectionPayor(payorReturnDocModal.id, feedback);
                     setToastMessage(`⚠️ Bilan "${payorReturnDocModal.title}" retourné pour correction au Trésorier.`);
                   } else if (payorReturnDocModal.type === 'ACTIVITY') {
                     returnActivityForCorrectionPayor(payorReturnDocModal.id, feedback);
                     setToastMessage(`⚠️ Programme "${payorReturnDocModal.title}" retourné pour correction à l'Organisation.`);
+                  } else if (payorReturnDocModal.type === 'CONSOLIDATED_ACTIVITIES') {
+                    returnActivitiesBatchForCorrectionPayor(payorReturnDocModal.itemIds || [], feedback);
+                    setToastMessage(`⚠️ Programme Global "${payorReturnDocModal.title}" retourné pour correction à l'Organisation.`);
                   } else if (payorReturnDocModal.type === 'RELIGIOUS_EVENT') {
                     returnReligiousEventForCorrectionPayor(payorReturnDocModal.id, feedback);
                     setToastMessage(`⚠️ Événement "${payorReturnDocModal.title}" retourné pour correction à la Spiritualité.`);
+                  } else if (payorReturnDocModal.type === 'CONSOLIDATED_RELIGIOUS_EVENTS') {
+                    returnReligiousEventsBatchForCorrectionPayor(payorReturnDocModal.itemIds || [], feedback);
+                    setToastMessage(`⚠️ Programme Spirituel Global "${payorReturnDocModal.title}" retourné pour correction à la Spiritualité.`);
                   }
                   setPayorReturnDocModal(null);
                   setPayorReturnDocFeedback('');

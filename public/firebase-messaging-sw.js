@@ -215,8 +215,8 @@ self.addEventListener('message', async (event) => {
   }
 });
 
-// Versioning et stratégie de cache PWA (2026.11.16.2)
-const APP_VERSION = '2026.11.16.2';
+// Versioning et stratégie de cache PWA (2026.11.18.10)
+const APP_VERSION = '2026.11.18.10';
 const CACHE_NAME = 'erouama-cache-v-' + APP_VERSION;
 
 // Installation : forcer le nouveau Service Worker à devenir actif immédiatement
@@ -250,7 +250,7 @@ self.addEventListener('fetch', (event) => {
   const req = event.request;
   const url = new URL(req.url);
 
-  // Ignorer les requêtes non-GET et les requêtes internes/externes Firebase
+  // Ignorer les requêtes non-GET, APIs Firebase et tous les modules du serveur de dev Vite (/src/, /node_modules/, /@vite)
   if (req.method !== 'GET') return;
   if (
     url.hostname.includes('firestore.googleapis.com') ||
@@ -259,9 +259,14 @@ self.addEventListener('fetch', (event) => {
     url.hostname.includes('identitytoolkit.googleapis.com') ||
     url.hostname.includes('firebase.googleapis.com') ||
     url.pathname.includes('/api/') ||
-    url.pathname.includes('version.json')
+    url.pathname.includes('version.json') ||
+    url.pathname.startsWith('/src/') ||
+    url.pathname.startsWith('/node_modules/') ||
+    url.pathname.startsWith('/@') ||
+    url.searchParams.has('v') ||
+    url.searchParams.has('t')
   ) {
-    return; // Laisser passer directement au réseau
+    return; // Laisser passer directement au réseau (évite tout conflit de chunks React)
   }
 
   // 1. Pour les requêtes de navigation (HTML index) : NETWORK FIRST STRICT
