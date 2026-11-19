@@ -2399,6 +2399,12 @@ export const AdminPortal: React.FC = () => {
   } | null>(null);
   const [isConfirmingAction, setIsConfirmingAction] = useState<boolean>(false);
 
+  useEffect(() => {
+    if (!deleteConfirmModal) {
+      setIsConfirmingAction(false);
+    }
+  }, [deleteConfirmModal]);
+
   // 7. Spiritualité Forms
   const [aelfData, setAelfData] = useState<AELFDayData | null>(null);
   const [isLoadingAelf, setIsLoadingAelf] = useState<boolean>(false);
@@ -11803,9 +11809,9 @@ export const AdminPortal: React.FC = () => {
                                   itemTitle: a.title,
                                   itemId: a.id,
                                   description: `Supprimer définitivement le programme "${a.title}" (${a.id}) ? Cette action sera synchronisée avec la Commission Organisation.`,
-                                  onConfirm: () => {
-                                    deleteActivity(a.id);
-                                    setToastMessage(`🗑️ Programme "${a.title}" supprimé.`);
+                                  onConfirm: async () => {
+                                    await deleteActivity(a.id);
+                                    setToastMessage(`🗑️ Programme "${a.title}" supprimé définitivement.`);
                                   },
                                 });
                               }}
@@ -12122,9 +12128,9 @@ export const AdminPortal: React.FC = () => {
                                   itemTitle: p.title,
                                   itemId: p.id,
                                   description: `Supprimer définitivement le projet "${p.title}" (${p.id}) ? Cette suppression sera synchronisée avec la Commission Projets.`,
-                                  onConfirm: () => {
-                                    deleteProject(p.id);
-                                    setToastMessage(`🗑️ Projet "${p.title}" supprimé.`);
+                                  onConfirm: async () => {
+                                    await deleteProject(p.id);
+                                    setToastMessage(`🗑️ Projet "${p.title}" supprimé définitivement.`);
                                   },
                                 });
                               }}
@@ -12591,9 +12597,9 @@ export const AdminPortal: React.FC = () => {
                                   itemTitle: e.title,
                                   itemId: e.id,
                                   description: `Supprimer définitivement l'événement "${e.title}" (${e.id}) ? Cette action sera synchronisée avec la Commission Spiritualité.`,
-                                  onConfirm: () => {
-                                    deleteReligiousEvent(e.id);
-                                    setToastMessage(`🗑️ Événement spirituel "${e.title}" supprimé.`);
+                                  onConfirm: async () => {
+                                    await deleteReligiousEvent(e.id);
+                                    setToastMessage(`🗑️ Événement spirituel "${e.title}" supprimé définitivement.`);
                                   },
                                 });
                               }}
@@ -16331,10 +16337,10 @@ export const AdminPortal: React.FC = () => {
                                           setRelEvtLocation('');
                                           setRelEvtTheme('');
                                         }
-                                        setToastMessage(`🗑️ Activité « ${evt.title} » supprimée.`);
-                                      } catch (e) {
+                                        setToastMessage(`🗑️ Activité « ${evt.title} » supprimée définitivement.`);
+                                      } catch (e: any) {
                                         console.error(e);
-                                        setToastMessage("❌ Erreur lors de la suppression.");
+                                        setToastMessage(`❌ Erreur lors de la suppression : ${e?.message || 'Opération interrompue'}`);
                                       }
                                     },
                                   });
@@ -19536,19 +19542,19 @@ export const AdminPortal: React.FC = () => {
                               itemTitle: doc.data.title,
                               itemId: doc.data.id,
                               description: `Supprimer définitivement ce document "${doc.data.title}" (${doc.data.id}) ? Cette action sera synchronisée avec le pôle émetteur.`,
-                              onConfirm: () => {
+                              onConfirm: async () => {
                                 if (doc.type === 'PV') {
-                                  deleteSecretaryPV(doc.data.id);
+                                  await deleteSecretaryPV(doc.data.id);
                                 } else if (doc.type === 'PROJECT') {
-                                  deleteProject(doc.data.id);
+                                  await deleteProject(doc.data.id);
                                 } else if (doc.type === 'BILAN') {
-                                  deleteFinancialBilan(doc.data.id);
+                                  await deleteFinancialBilan(doc.data.id);
                                 } else if (doc.type === 'ACTIVITY') {
-                                  deleteActivity(doc.data.id);
+                                  await deleteActivity(doc.data.id);
                                 } else if (doc.type === 'RELIGIOUS_EVENT') {
-                                  deleteReligiousEvent(doc.data.id);
+                                  await deleteReligiousEvent(doc.data.id);
                                 }
-                                setToastMessage(`🗑️ Document "${doc.data.title}" supprimé.`);
+                                setToastMessage(`🗑️ Document "${doc.data.title}" supprimé définitivement.`);
                                 setPayorViewingOfficialDoc(null);
                               },
                             });
@@ -19788,7 +19794,11 @@ export const AdminPortal: React.FC = () => {
               <button
                 type="button"
                 disabled={isConfirmingAction}
-                onClick={() => setDeleteConfirmModal(null)}
+                onClick={() => {
+                  if (!isConfirmingAction) {
+                    setDeleteConfirmModal(null);
+                  }
+                }}
                 className="bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold px-4 py-2.5 rounded-xl text-xs transition-colors cursor-pointer disabled:opacity-50"
               >
                 Annuler
@@ -19797,10 +19807,24 @@ export const AdminPortal: React.FC = () => {
                 type="button"
                 disabled={isConfirmingAction}
                 onClick={async () => {
+                  if (isConfirmingAction) return;
+                  setIsConfirmingAction(true);
+                  let timeoutId: ReturnType<typeof setTimeout> | null = null;
                   try {
-                    setIsConfirmingAction(true);
-                    await deleteConfirmModal.onConfirm();
+                    const timeoutPromise = new Promise<never>((_, reject) => {
+                      timeoutId = setTimeout(() => {
+                        reject(new Error("Délai d'attente réseau dépassé. Vérifiez l'état ou réessayez."));
+                      }, 8000);
+                    });
+                    await Promise.race([
+                      Promise.resolve(deleteConfirmModal.onConfirm()),
+                      timeoutPromise,
+                    ]);
+                  } catch (err: any) {
+                    console.error('Erreur action modale confirmation:', err);
+                    setToastMessage(`❌ ${err?.message || "Une erreur est survenue lors de l'opération."}`);
                   } finally {
+                    if (timeoutId) clearTimeout(timeoutId);
                     setIsConfirmingAction(false);
                     setDeleteConfirmModal(null);
                   }
@@ -19866,11 +19890,27 @@ export const AdminPortal: React.FC = () => {
         </div>
       )}
 
-      {/* FLOATING SUCCESS TOAST NOTIFICATION */}
+      {/* FLOATING SUCCESS / ERROR TOAST NOTIFICATION */}
       {toastMessage && (
-        <div className="fixed top-6 right-6 z-50 bg-emerald-950/95 border border-emerald-500 text-white px-5 py-4 rounded-2xl shadow-2xl flex items-center gap-3 animate-fadeIn">
-          <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />
-          <span className="text-xs font-bold text-emerald-100">{toastMessage}</span>
+        <div
+          className={`fixed top-6 right-6 z-50 text-white px-5 py-4 rounded-2xl shadow-2xl flex items-center gap-3 animate-fadeIn border ${
+            toastMessage.startsWith('❌')
+              ? 'bg-rose-950/95 border-rose-500'
+              : 'bg-emerald-950/95 border-emerald-500'
+          }`}
+        >
+          {toastMessage.startsWith('❌') ? (
+            <AlertTriangle className="w-5 h-5 text-rose-400 shrink-0" />
+          ) : (
+            <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />
+          )}
+          <span
+            className={`text-xs font-bold ${
+              toastMessage.startsWith('❌') ? 'text-rose-100' : 'text-emerald-100'
+            }`}
+          >
+            {toastMessage}
+          </span>
           <button
             onClick={() => setToastMessage(null)}
             className="ml-2 text-slate-400 hover:text-white"

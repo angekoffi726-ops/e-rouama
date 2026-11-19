@@ -711,6 +711,28 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const newsDocsMapRef = useRef<Map<string, NewsItem>>(new Map());
   const announcementsDocsMapRef = useRef<Map<string, NewsItem>>(new Map());
 
+  const runWithTimeout = async <T,>(
+    promise: Promise<T>,
+    ms = 4500,
+    label = 'firestore'
+  ): Promise<T | null> => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    try {
+      const timeoutPromise = new Promise<null>((resolve) => {
+        timer = setTimeout(() => {
+          console.warn(`[Timeout] ${label} dépassé (${ms}ms) — finalisation locale sécurisée.`);
+          resolve(null);
+        }, ms);
+      });
+      return await Promise.race([promise, timeoutPromise]);
+    } catch (err) {
+      console.warn(`[Erreur] ${label}:`, err);
+      return null;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  };
+
   const persistDeletedRecordIds = async (ids: string[], options?: { defaultsNewsCleared?: boolean }) => {
     const cleanIds = ids.filter(Boolean);
     cleanIds.forEach(id => deletedRecordIdsRef.current.add(id));
@@ -726,19 +748,60 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         })
       );
     } catch {}
-    try {
-      const payload: Record<string, any> = {
-        updatedAt: new Date().toISOString(),
-      };
-      if (cleanIds.length > 0) {
-        payload.ids = arrayUnion(...cleanIds);
-      }
-      if (defaultsNewsClearedRef.current) {
-        payload.defaultsNewsCleared = true;
-      }
-      await setDoc(doc(db, 'admin', 'deleted_records_v1'), payload, { merge: true });
-    } catch (err) {
-      console.warn('Erreur persistance deleted_records_v1:', err);
+    const payload: Record<string, any> = {
+      updatedAt: new Date().toISOString(),
+    };
+    if (cleanIds.length > 0) {
+      payload.ids = arrayUnion(...cleanIds);
+    }
+    if (defaultsNewsClearedRef.current) {
+      payload.defaultsNewsCleared = true;
+    }
+    await runWithTimeout(
+      setDoc(doc(db, 'admin', 'deleted_records_v1'), payload, { merge: true }),
+      4000,
+      'persistDeletedRecordIds'
+    );
+  };
+
+  const cleanupLinkedActivityReferences = async (recordId: string) => {
+    if (!recordId) return;
+    const linkedNewsIds = (newsItemsRef.current || [])
+      .filter(n => n.targetDocId === recordId)
+      .map(n => n.id);
+    const linkedTaskIds = programmeTasks
+      .filter(t => t.sourceId === recordId)
+      .map(t => t.id);
+    const linkedAlertIds = programmeAlerts
+      .filter(a => (a.taskId && linkedTaskIds.includes(a.taskId)) || a.taskId === recordId)
+      .map(a => a.id);
+
+    const extraIds = [...linkedNewsIds, ...linkedTaskIds, ...linkedAlertIds].filter(Boolean);
+    if (linkedNewsIds.length > 0) {
+      linkedNewsIds.forEach(nId => {
+        newsDocsMapRef.current.delete(nId);
+        announcementsDocsMapRef.current.delete(nId);
+      });
+      setNewsItems(prev => prev.filter(n => n.targetDocId !== recordId));
+    }
+    if (linkedTaskIds.length > 0) {
+      setProgrammeTasks(prev => prev.filter(t => t.sourceId !== recordId));
+    }
+    if (linkedAlertIds.length > 0) {
+      setProgrammeAlerts(prev => prev.filter(a => !linkedAlertIds.includes(a.id)));
+    }
+    if (extraIds.length > 0) {
+      await persistDeletedRecordIds(extraIds);
+      await runWithTimeout(
+        Promise.allSettled([
+          ...linkedNewsIds.map(nId => deleteDoc(doc(db, 'news', nId))),
+          ...linkedNewsIds.map(nId => deleteDoc(doc(db, 'announcements', nId))),
+          ...linkedTaskIds.map(tId => deleteDoc(doc(db, 'programme_tasks', tId))),
+          ...linkedAlertIds.map(aId => deleteDoc(doc(db, 'programme_alerts', aId))),
+        ]),
+        4000,
+        `cleanupLinkedActivityReferences:${recordId}`
+      );
     }
   };
 
@@ -5642,14 +5705,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const deleteActivity = async (activityId: string) => {
+    if (!activityId) return;
     setActivities(prev => prev.filter(a => a.id !== activityId));
-    try {
-      await persistDeletedRecordIds([activityId]);
-      await deleteDoc(doc(db, 'activities', activityId));
-    } catch (err) {
-      console.warn('Erreur lors de la suppression de l\'activité :', err);
-      throw err;
-    }
+    await Promise.allSettled([
+      persistDeletedRecordIds([activityId]),
+      cleanupLinkedActivityReferences(activityId),
+      runWithTimeout(deleteDoc(doc(db, 'activities', activityId)), 4500, `deleteActivity:${activityId}`),
+    ]);
   };
 
   const approveActivityBudgetTresorier = (activityId: string) => {
@@ -5724,9 +5786,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const deleteFinancialEvent = async (eventId: string) => {
+    if (!eventId) return;
     setFinancialEvents(prev => prev.filter(e => e.id !== eventId));
-    await persistDeletedRecordIds([eventId]);
-    await deleteDoc(doc(db, 'financial_events', eventId)).catch(console.warn);
+    await Promise.allSettled([
+      persistDeletedRecordIds([eventId]),
+      cleanupLinkedActivityReferences(eventId),
+      runWithTimeout(deleteDoc(doc(db, 'financial_events', eventId)), 4500, `deleteFinancialEvent:${eventId}`),
+    ]);
   };
 
   // Projets AGR
@@ -6219,9 +6285,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const deleteProject = async (projectId: string) => {
+    if (!projectId) return;
     setProjects(prev => prev.filter(p => p.id !== projectId));
-    await persistDeletedRecordIds([projectId]);
-    await deleteDoc(doc(db, 'projects', projectId)).catch(console.warn);
+    await Promise.allSettled([
+      persistDeletedRecordIds([projectId]),
+      cleanupLinkedActivityReferences(projectId),
+      runWithTimeout(deleteDoc(doc(db, 'projects', projectId)), 4500, `deleteProject:${projectId}`),
+    ]);
   };
 
   // Secrétariat, PVs et Bilans
@@ -6469,9 +6539,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const deleteSecretaryPV = async (pvId: string) => {
+    if (!pvId) return;
     setPvs(prev => prev.filter(p => p.id !== pvId));
-    await persistDeletedRecordIds([pvId]);
-    await deleteDoc(doc(db, 'secretary_pvs', pvId)).catch(console.warn);
+    await Promise.allSettled([
+      persistDeletedRecordIds([pvId]),
+      runWithTimeout(deleteDoc(doc(db, 'secretary_pvs', pvId)), 4500, `deleteSecretaryPV:${pvId}`),
+    ]);
   };
 
   const createFinancialBilan = (
@@ -6608,9 +6681,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const deleteFinancialBilan = async (bilanId: string) => {
+    if (!bilanId) return;
     setBilans(prev => prev.filter(b => b.id !== bilanId));
-    await persistDeletedRecordIds([bilanId]);
-    await deleteDoc(doc(db, 'secretary_bilans', bilanId)).catch(console.warn);
+    await Promise.allSettled([
+      persistDeletedRecordIds([bilanId]),
+      runWithTimeout(deleteDoc(doc(db, 'secretary_bilans', bilanId)), 4500, `deleteFinancialBilan:${bilanId}`),
+    ]);
   };
 
   const sendBilanToSecretariat = (bilanId: string) => {
@@ -7480,13 +7556,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const deleteReligiousEvent = async (eventId: string) => {
+    if (!eventId) return;
     setReligiousEvents(prev => prev.filter(e => e.id !== eventId));
-    await persistDeletedRecordIds([eventId]);
-    try {
-      await deleteDoc(doc(db, 'religious_events', eventId));
-    } catch (err) {
-      console.warn('Erreur Firestore deleteDoc religious_events:', err);
-    }
+    await Promise.allSettled([
+      persistDeletedRecordIds([eventId]),
+      cleanupLinkedActivityReferences(eventId),
+      runWithTimeout(deleteDoc(doc(db, 'religious_events', eventId)), 4500, `deleteReligiousEvent:${eventId}`),
+    ]);
   };
 
   const createReligiousEvent = (
