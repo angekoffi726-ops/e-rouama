@@ -119,6 +119,8 @@ export interface RouamaMember {
   duesStatus?: DuesStatus;
   statutCotisation?: DuesStatus;
   statutDemande?: string;
+  montantPaye?: number;
+  resetAt?: string | null;
   updatedAt?: string;
   lastLogin?: string;
 }

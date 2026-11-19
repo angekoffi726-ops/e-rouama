@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { collection, getDocs, doc, updateDoc, setDoc } from 'firebase/firestore';
+import { collection, onSnapshot, doc, updateDoc, setDoc } from 'firebase/firestore';
 import { db } from '../../firebase';
 import { useApp } from '../../context/AppContext';
 import { INITIAL_ROUAMA_MEMBERS, getRegisteredMembersCount, isMemberActive } from '../../data/membersData';
@@ -44,44 +44,51 @@ export const CerveauMembersCredentialsViewer: React.FC<CerveauMembersCredentials
     return null;
   }
 
-  const { members } = useApp();
+  const { members, activateMemberAccount, resetMemberPin } = useApp();
 
-  // Écoute directe en temps réel de tous les documents de la collection 'users' dans Firestore
+  // Écoute directe en temps réel des collections 'users' et 'members' dans Firestore
   const [firestoreUsers, setFirestoreUsers] = useState<any[]>([]);
 
   useEffect(() => {
     let isMounted = true;
-    const usersMap = new Map<string, any>();
+    const usersDocs = new Map<string, any>();
+    const membersDocs = new Map<string, any>();
 
     const updateCombined = () => {
-      if (isMounted) {
-        setFirestoreUsers(Array.from(usersMap.values()));
-      }
+      if (!isMounted) return;
+      const mergedMap = new Map<string, any>();
+      usersDocs.forEach((v, k) => mergedMap.set(k, v));
+      membersDocs.forEach((v, k) => {
+        const prev = mergedMap.get(k) || {};
+        mergedMap.set(k, { ...prev, ...v });
+      });
+      setFirestoreUsers(Array.from(mergedMap.values()));
     };
 
-    Promise.allSettled([
-      getDocs(collection(db, 'users')),
-      getDocs(collection(db, 'members')),
-    ]).then(([usersSnap, membersSnap]) => {
-      if (!isMounted) return;
-      if (usersSnap.status === 'fulfilled') {
-        usersSnap.value.docs.forEach((d) => {
-          usersMap.set(d.id, { _docId: d.id, id: d.id, ...d.data() });
-        });
-      }
-      if (membersSnap.status === 'fulfilled') {
-        membersSnap.value.docs.forEach((d) => {
-          const prev = usersMap.get(d.id) || {};
-          usersMap.set(d.id, { ...prev, _docId: d.id, id: d.id, ...d.data() });
-        });
-      }
+    const unsubUsers = onSnapshot(collection(db, 'users'), (snap) => {
+      usersDocs.clear();
+      snap.docs.forEach((d) => {
+        usersDocs.set(d.id, { _docId: d.id, id: d.id, ...d.data() });
+      });
       updateCombined();
-    }).catch((err) => {
-      console.warn('Lecture unique users/members dans CERVEAU (cache actif):', err);
+    }, (err) => {
+      console.warn('Écouteur temps réel users (CERVEAU):', err);
+    });
+
+    const unsubMembers = onSnapshot(collection(db, 'members'), (snap) => {
+      membersDocs.clear();
+      snap.docs.forEach((d) => {
+        membersDocs.set(d.id, { _docId: d.id, id: d.id, ...d.data() });
+      });
+      updateCombined();
+    }, (err) => {
+      console.warn('Écouteur temps réel members (CERVEAU):', err);
     });
 
     return () => {
       isMounted = false;
+      unsubUsers();
+      unsubMembers();
     };
   }, []);
 
@@ -103,13 +110,11 @@ export const CerveauMembersCredentialsViewer: React.FC<CerveauMembersCredentials
   const [pinActionSuccess, setPinActionSuccess] = useState<string | null>(null);
   const [pinActionError, setPinActionError] = useState<string | null>(null);
 
-  // 2. SYNCHRONISATION EN TEMPS RÉEL DEPUIS FIRESTORE ('users' et 'members')
-  // RÈGLE : Un membre est considéré comme ACTIF si et seulement si :
-  // m.isRegistered === true OU m.statut === 'Activé' OU (m.pinCode !== null && m.pinCode !== '')
+  // 2. SYNCHRONISATION EN TEMPS RÉEL UNIFIÉE AVEC AppContext & FIRESTORE ('users' et 'members')
   const registeredMembers = useMemo(() => {
     return INITIAL_ROUAMA_MEMBERS.map((official) => {
-      // Priorité au document en temps réel dans firestoreUsers
-      const uDoc = (firestoreUsers || []).find((u) => {
+      const ctxMember = (members || []).find((m) => m.id === official.id);
+      const fsDoc = (firestoreUsers || []).find((u) => {
         if (u.id === official.id || u._docId === official.id) return true;
         const uFirst = normalizeRoster(u.firstName);
         const oFirst = normalizeRoster(official.firstName);
@@ -118,18 +123,21 @@ export const CerveauMembersCredentialsViewer: React.FC<CerveauMembersCredentials
         const oNick = normalizeRoster(official.nickname);
         if (uNick && oNick && uNick === oNick) return true;
         return false;
-      }) || (members || []).find((m) => m.id === official.id) || {};
+      }) || {};
 
+      const uDoc = { ...fsDoc, ...(ctxMember || {}) };
       const rawPin = uDoc.pinCode !== undefined ? uDoc.pinCode : (uDoc.pin !== undefined ? uDoc.pin : (official.pinCode || official.pin || ''));
       const cleanPin = rawPin && String(rawPin).trim() !== '' && String(rawPin).trim() !== 'Non défini' ? String(rawPin).trim() : '';
 
-      const isActif = Boolean(
-        (cleanPin !== '') ||
-        uDoc.isRegistered === true ||
-        uDoc.statut === 'Activé' ||
-        official.isRegistered === true ||
-        official.statut === 'Activé'
-      );
+      const isExplicitlyReset = Boolean(uDoc.resetAt && uDoc.isRegistered === false && !cleanPin);
+      const isActif = isExplicitlyReset
+        ? false
+        : isMemberActive({
+            ...official,
+            ...uDoc,
+            pin: cleanPin,
+            pinCode: cleanPin,
+          });
       const realPin = isActif && cleanPin ? cleanPin : '';
 
       const userAvatar =
@@ -154,6 +162,9 @@ export const CerveauMembersCredentialsViewer: React.FC<CerveauMembersCredentials
         avatar: userAvatar,
         photoUrl: userAvatar,
         assignedRole: uDoc.assignedRole || official.assignedRole,
+        totalPaid: typeof uDoc.totalPaid === 'number' ? uDoc.totalPaid : official.totalPaid,
+        solde: typeof uDoc.solde === 'number' ? uDoc.solde : official.solde,
+        resetAt: uDoc.resetAt,
         isRegistered: isActif,
         statut: isActif ? 'Activé' : "En attente d'activation",
       };
@@ -237,13 +248,19 @@ export const CerveauMembersCredentialsViewer: React.FC<CerveauMembersCredentials
     setPinActionError(null);
 
     try {
-      // 1. Exécute immédiatement la requête d'écriture Firestore sur la collection 'users'
+      // 1. Exécute immédiatement la mise à jour Firestore + AppContext
+      await activateMemberAccount(memberId, {
+        pinCode: pinStr,
+        pin: pinStr,
+      });
+
       try {
         await updateDoc(doc(db, "users", memberId), {
           pinCode: pinStr,
           pin: pinStr,
           isRegistered: true,
           statut: "Activé",
+          resetAt: null,
           updatedAt: new Date().toISOString()
         });
       } catch {
@@ -253,6 +270,7 @@ export const CerveauMembersCredentialsViewer: React.FC<CerveauMembersCredentials
           pin: pinStr,
           isRegistered: true,
           statut: "Activé",
+          resetAt: null,
           updatedAt: new Date().toISOString()
         }, { merge: true });
       }
@@ -264,6 +282,7 @@ export const CerveauMembersCredentialsViewer: React.FC<CerveauMembersCredentials
           pin: pinStr,
           isRegistered: true,
           statut: "Activé",
+          resetAt: null,
           updatedAt: new Date().toISOString()
         }, { merge: true });
       } catch (e) {
@@ -305,13 +324,17 @@ export const CerveauMembersCredentialsViewer: React.FC<CerveauMembersCredentials
     if (!confirmReset) return;
 
     try {
+      const nowIso = new Date().toISOString();
       const resetPayload = {
         pinCode: "",
         pin: "",
         isRegistered: false,
         statut: "En attente d'activation",
-        updatedAt: new Date().toISOString()
+        resetAt: nowIso,
+        updatedAt: nowIso
       };
+
+      resetMemberPin(member.id);
 
       try {
         await updateDoc(doc(db, "users", member.id), resetPayload);
@@ -442,7 +465,8 @@ export const CerveauMembersCredentialsViewer: React.FC<CerveauMembersCredentials
                 {filteredMembers.map((member, idx) => {
                   const isVisible = showAllPins || Boolean(revealedPins[member.id]);
                   const isCopied = copiedMemberId === member.loginId;
-                  const isActivated = member.isRegistered && Boolean(member.pin);
+                  const isActivated = isMemberActive(member);
+                  const hasPin = Boolean(member.pin && String(member.pin).trim() !== '' && member.pin !== 'Non défini');
 
                   return (
                     <tr
@@ -490,19 +514,26 @@ export const CerveauMembersCredentialsViewer: React.FC<CerveauMembersCredentials
                       {/* Code d'accès (PIN) Réel sans fallback ni PIN fictif */}
                       <td className="py-3.5 px-4">
                         {isActivated ? (
-                          <div className="flex items-center gap-2">
-                            <span className="font-mono text-xs font-black px-3 py-1.5 rounded-xl border tracking-widest min-w-[85px] text-center shadow-inner select-all bg-slate-950 border-slate-800 text-amber-300">
-                              {isVisible ? member.pin : '••••'}
+                          hasPin ? (
+                            <div className="flex items-center gap-2">
+                              <span className="font-mono text-xs font-black px-3 py-1.5 rounded-xl border tracking-widest min-w-[85px] text-center shadow-inner select-all bg-slate-950 border-slate-800 text-amber-300">
+                                {isVisible ? member.pin : '••••'}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => togglePin(member.id)}
+                                title={isVisible ? "Masquer le code PIN" : "Afficher le code PIN"}
+                                className="p-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded-lg transition-colors cursor-pointer"
+                              >
+                                {isVisible ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5 text-amber-400" />}
+                              </button>
+                            </div>
+                          ) : (
+                            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-[11px] font-bold bg-emerald-500/10 text-emerald-300 border border-emerald-500/20 shadow-inner">
+                              <ShieldCheck className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                              <span>Activé (PIN à définir)</span>
                             </span>
-                            <button
-                              type="button"
-                              onClick={() => togglePin(member.id)}
-                              title={isVisible ? "Masquer le code PIN" : "Afficher le code PIN"}
-                              className="p-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded-lg transition-colors cursor-pointer"
-                            >
-                              {isVisible ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5 text-amber-400" />}
-                            </button>
-                          </div>
+                          )
                         ) : (
                           <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-[11px] font-semibold bg-amber-500/10 text-amber-300 border border-amber-500/20 shadow-inner">
                             <Clock className="w-3.5 h-3.5 text-amber-400 shrink-0" />
@@ -606,7 +637,8 @@ export const CerveauMembersCredentialsViewer: React.FC<CerveauMembersCredentials
             {filteredMembers.map((member) => {
               const isVisible = showAllPins || Boolean(revealedPins[member.id]);
               const isCopied = copiedMemberId === member.loginId;
-              const isActivated = member.isRegistered && Boolean(member.pin);
+              const isActivated = isMemberActive(member);
+              const hasPin = Boolean(member.pin && String(member.pin).trim() !== '' && member.pin !== 'Non défini');
 
               return (
                 <div
@@ -700,9 +732,16 @@ export const CerveauMembersCredentialsViewer: React.FC<CerveauMembersCredentials
                       <div>
                         <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Code PIN (MDP)</div>
                         {isActivated ? (
-                          <div className="text-xs font-mono font-black mt-0.5 text-amber-300 tracking-widest">
-                            {isVisible ? member.pin : '••••'}
-                          </div>
+                          hasPin ? (
+                            <div className="text-xs font-mono font-black mt-0.5 text-amber-300 tracking-widest">
+                              {isVisible ? member.pin : '••••'}
+                            </div>
+                          ) : (
+                            <div className="text-[11px] font-bold mt-0.5 text-emerald-300 flex items-center gap-1">
+                              <ShieldCheck className="w-3 h-3 text-emerald-400" />
+                              <span>Activé (PIN à définir)</span>
+                            </div>
+                          )
                         ) : (
                           <div className="text-[11px] font-semibold mt-0.5 text-amber-300 flex items-center gap-1">
                             <Clock className="w-3 h-3 text-amber-400" />
@@ -710,7 +749,7 @@ export const CerveauMembersCredentialsViewer: React.FC<CerveauMembersCredentials
                           </div>
                         )}
                       </div>
-                      {isActivated && (
+                      {isActivated && hasPin && (
                         <button
                           type="button"
                           onClick={() => togglePin(member.id)}

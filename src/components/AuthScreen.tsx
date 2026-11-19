@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { collection, getDocs, doc, updateDoc, setDoc, addDoc } from 'firebase/firestore';
+import { collection, onSnapshot, doc, updateDoc, setDoc, addDoc } from 'firebase/firestore';
 import { db } from '../firebase';
 import { useApp } from '../context/AppContext';
 import { ADMIN_USERS, INITIAL_ROUAMA_MEMBERS, getRegisteredMembersCount, isMemberActive } from '../data/membersData';
@@ -17,9 +17,9 @@ const normalizeName = (str: string): string => {
 };
 
 export const AuthScreen: React.FC = () => {
-  const { registerMember, loginMember, loginAdmin, members, adminUsers, setCurrentUser } = useApp();
+  const { registerMember, loginMember, loginAdmin, members, adminUsers, setCurrentUser, activateMemberAccount } = useApp();
 
-  // Chargement direct ponctuel des utilisateurs et membres depuis Firestore/cache
+  // Synchronisation temps réel directe des collections 'users' et 'members' depuis Firestore
   const [firestoreUsers, setFirestoreUsers] = useState<any[]>([]);
 
   useEffect(() => {
@@ -27,45 +27,53 @@ export const AuthScreen: React.FC = () => {
     refreshFcmTokenOnStartup();
 
     let isMounted = true;
-    const usersMap = new Map<string, any>();
+    const usersDocs = new Map<string, any>();
+    const membersDocs = new Map<string, any>();
 
     const updateCombined = () => {
-      if (isMounted) {
-        setFirestoreUsers(Array.from(usersMap.values()));
-      }
+      if (!isMounted) return;
+      const mergedMap = new Map<string, any>();
+      usersDocs.forEach((v, k) => mergedMap.set(k, v));
+      membersDocs.forEach((v, k) => {
+        const prev = mergedMap.get(k) || {};
+        mergedMap.set(k, { ...prev, ...v });
+      });
+      setFirestoreUsers(Array.from(mergedMap.values()));
     };
 
-    Promise.allSettled([
-      getDocs(collection(db, 'users')),
-      getDocs(collection(db, 'members')),
-    ]).then(([usersSnap, membersSnap]) => {
-      if (!isMounted) return;
-      if (usersSnap.status === 'fulfilled') {
-        usersSnap.value.docs.forEach((d) => {
-          usersMap.set(d.id, { _docId: d.id, id: d.id, ...d.data() });
-        });
-      }
-      if (membersSnap.status === 'fulfilled') {
-        membersSnap.value.docs.forEach((d) => {
-          const prev = usersMap.get(d.id) || {};
-          usersMap.set(d.id, { ...prev, _docId: d.id, id: d.id, ...d.data() });
-        });
-      }
+    const unsubUsers = onSnapshot(collection(db, 'users'), (snap) => {
+      usersDocs.clear();
+      snap.docs.forEach((d) => {
+        usersDocs.set(d.id, { _docId: d.id, id: d.id, ...d.data() });
+      });
       updateCombined();
-    }).catch((err) => {
-      console.warn('Lecture unique users/members (cache actif):', err);
+    }, (err) => {
+      console.warn('Écouteur temps réel users (AuthScreen):', err);
+    });
+
+    const unsubMembers = onSnapshot(collection(db, 'members'), (snap) => {
+      membersDocs.clear();
+      snap.docs.forEach((d) => {
+        membersDocs.set(d.id, { _docId: d.id, id: d.id, ...d.data() });
+      });
+      updateCombined();
+    }, (err) => {
+      console.warn('Écouteur temps réel members (AuthScreen):', err);
     });
 
     return () => {
       isMounted = false;
+      unsubUsers();
+      unsubMembers();
     };
   }, []);
 
   // 1. DÉFINITION UNIQUE ET SYNCHRONISATION EN TEMPS RÉEL DU COMPTEUR DE MEMBRES
-  // Réconciliation directe avec les 12 membres officiels pour un affichage instantané et 100% fiable
+  // Réconciliation directe avec les 12 membres officiels + état global AppContext pour un affichage 100% unifié
   const liveMembersList = useMemo(() => {
     return INITIAL_ROUAMA_MEMBERS.map((official) => {
-      const uDoc = (firestoreUsers || []).find((u) => {
+      const ctxMember = (members || []).find((m) => m.id === official.id);
+      const fsDoc = (firestoreUsers || []).find((u) => {
         if (u.id === official.id || u._docId === official.id) return true;
         const uFirst = normalizeName(u.firstName);
         const oFirst = normalizeName(official.firstName);
@@ -74,18 +82,21 @@ export const AuthScreen: React.FC = () => {
         const oNick = normalizeName(official.nickname);
         if (uNick && oNick && uNick === oNick) return true;
         return false;
-      }) || (members || []).find((m) => m.id === official.id) || {};
+      }) || {};
 
+      const uDoc = { ...fsDoc, ...(ctxMember || {}) };
       const rawPin = uDoc.pinCode !== undefined ? uDoc.pinCode : (uDoc.pin !== undefined ? uDoc.pin : (official.pinCode || official.pin || ''));
       const cleanPin = rawPin && String(rawPin).trim() !== '' && String(rawPin).trim() !== 'Non défini' ? String(rawPin).trim() : '';
 
-      const isActif = Boolean(
-        (cleanPin !== '') ||
-        uDoc.isRegistered === true ||
-        uDoc.statut === 'Activé' ||
-        official.isRegistered === true ||
-        official.statut === 'Activé'
-      );
+      const isExplicitlyReset = Boolean(uDoc.resetAt && uDoc.isRegistered === false && !cleanPin);
+      const isActif = isExplicitlyReset
+        ? false
+        : isMemberActive({
+            ...official,
+            ...uDoc,
+            pin: cleanPin,
+            pinCode: cleanPin,
+          });
 
       return {
         ...official,
@@ -219,7 +230,12 @@ export const AuthScreen: React.FC = () => {
         adminRole: userAdminRole,
       };
 
-      // 1. Redirection et connexion instantanée sans attente de Firebase
+      // 1. Mise à jour unifiée du registre global et redirection instantanée
+      activateMemberAccount(memberId, {
+        pin: inputPin,
+        pinCode: inputPin,
+        lastLogin: nowIso,
+      }).catch(() => {});
       setCurrentUser(sessionData);
       localStorage.setItem('rouama_user', JSON.stringify(updatedMember));
       localStorage.setItem('erouama_active_session', JSON.stringify(sessionData));
@@ -234,6 +250,7 @@ export const AuthScreen: React.FC = () => {
             pin: inputPin,
             isRegistered: true,
             statut: "Activé",
+            resetAt: null,
             lastLogin: nowIso,
             updatedAt: nowIso
           }).catch(async () => {
@@ -246,6 +263,7 @@ export const AuthScreen: React.FC = () => {
               pin: inputPin,
               isRegistered: true,
               statut: "Activé",
+              resetAt: null,
               lastLogin: nowIso,
               updatedAt: nowIso
             }, { merge: true }).catch(() => {});
@@ -383,7 +401,12 @@ export const AuthScreen: React.FC = () => {
           adminRole: userAdminRole,
         };
 
-        // Redirection immédiate
+        // Redirection immédiate + synchronisation du registre global des inscrits
+        activateMemberAccount(memberId, {
+          pin: inputPin,
+          pinCode: inputPin,
+          lastLogin: nowIso,
+        }).catch(() => {});
         setCurrentUser(sessionData);
         localStorage.setItem('rouama_user', JSON.stringify(updatedMember));
         localStorage.setItem('erouama_active_session', JSON.stringify(sessionData));
@@ -398,6 +421,7 @@ export const AuthScreen: React.FC = () => {
               pin: inputPin,
               isRegistered: true,
               statut: "Activé",
+              resetAt: null,
               lastLogin: nowIso,
               updatedAt: nowIso
             }).catch(async () => {
@@ -410,6 +434,7 @@ export const AuthScreen: React.FC = () => {
                 pin: inputPin,
                 isRegistered: true,
                 statut: "Activé",
+                resetAt: null,
                 lastLogin: nowIso,
                 updatedAt: nowIso
               }, { merge: true }).catch(() => {});
@@ -483,7 +508,12 @@ export const AuthScreen: React.FC = () => {
         adminRole: userAdminRole,
       };
 
-      // Redirection instantanée sans attente réseau
+      // Redirection instantanée + synchronisation unifiée du statut Activé
+      activateMemberAccount(memberId, {
+        pin: expectedPin,
+        pinCode: expectedPin,
+        lastLogin: nowIso,
+      }).catch(() => {});
       setCurrentUser(sessionData);
       localStorage.setItem('rouama_user', JSON.stringify(updatedMember));
       localStorage.setItem('erouama_active_session', JSON.stringify(sessionData));
@@ -498,6 +528,7 @@ export const AuthScreen: React.FC = () => {
             pin: inputPin,
             isRegistered: true,
             statut: "Activé",
+            resetAt: null,
             lastLogin: nowIso
           }).catch(async () => {
             await setDoc(doc(db, "users", memberId), {
@@ -506,6 +537,7 @@ export const AuthScreen: React.FC = () => {
               pin: inputPin,
               isRegistered: true,
               statut: "Activé",
+              resetAt: null,
               lastLogin: nowIso
             }, { merge: true }).catch(() => {});
           });
@@ -515,6 +547,7 @@ export const AuthScreen: React.FC = () => {
             pin: inputPin,
             isRegistered: true,
             statut: "Activé",
+            resetAt: null,
             lastLogin: nowIso
           }, { merge: true }).catch(() => {});
 

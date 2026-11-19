@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { collection, getDocs, addDoc, onSnapshot, doc, setDoc } from 'firebase/firestore';
+import { collection, onSnapshot } from 'firebase/firestore';
 import { db } from '../../firebase';
 import { useApp } from '../../context/AppContext';
 import {
@@ -7,7 +7,6 @@ import {
   EventActivity,
   ReligiousEvent,
   AgrProject,
-  AdminLoginLog,
   InfoRequest,
   RouamaMember,
   NewsItem,
@@ -21,7 +20,6 @@ import {
   RefreshCw,
   BarChart3,
   MessageSquare,
-  LogIn,
   CheckCircle,
   XCircle,
   MessageCircle,
@@ -49,131 +47,6 @@ import {
 import { InfoRequestsModule } from './InfoRequestsModule';
 import { OFFICIAL_DEPARTMENTS } from '../../data/departmentMapping';
 
-interface AdminDepartmentConfig {
-  key: string;
-  name: string;
-  shortName: string;
-  icon: string;
-  badgeBg: string;
-  badgeText: string;
-  borderColor: string;
-  description: string;
-  aliases: string[];
-  managerMemberIds?: string[];
-}
-
-export const ADMIN_DEPARTMENTS_CONFIG: AdminDepartmentConfig[] = [
-  {
-    key: 'TRESORIER',
-    name: 'Trésorerie Générale',
-    shortName: 'Trésorier',
-    icon: '💰',
-    badgeBg: 'bg-emerald-500/10',
-    badgeText: 'text-emerald-400',
-    borderColor: 'border-emerald-500/30',
-    description: 'Gestion des caisses, validation des dépôts et bilans financiers',
-    aliases: ['TRESOR', 'TRESORIER', 'TRESORERIE'],
-  },
-  {
-    key: 'CERVEAU',
-    name: 'Le Cerveau (Président)',
-    shortName: 'Présidence (Cerveau)',
-    icon: '🧠',
-    badgeBg: 'bg-amber-500/10',
-    badgeText: 'text-amber-400',
-    borderColor: 'border-amber-500/30',
-    description: 'Verrouillage des décaissements et alertes financières',
-    aliases: ['CERVEAU', 'PRESID', 'PRESIDENT', 'PRESIDENCE'],
-  },
-  {
-    key: 'PAYOR',
-    name: 'Espace Payor',
-    shortName: 'Payor',
-    icon: '⚖️',
-    badgeBg: 'bg-purple-500/10',
-    badgeText: 'text-purple-400',
-    borderColor: 'border-purple-500/30',
-    description: 'Validation administrative des PV, règlements et bilans',
-    aliases: ['PAYOR', 'RESP_PAYOR'],
-  },
-  {
-    key: 'SECRETARIAT',
-    name: 'Secrétariat Général',
-    shortName: 'Secrétariat',
-    icon: '📝',
-    badgeBg: 'bg-blue-500/10',
-    badgeText: 'text-blue-400',
-    borderColor: 'border-blue-500/30',
-    description: 'Rédaction des PVs, présences et registre officiel',
-    aliases: ['SECRETAR', 'SECRETAIRE', 'SECRETARIAT', 'SG'],
-  },
-  {
-    key: 'COM',
-    name: "Base d'Information et de Communication (BIC)",
-    shortName: 'BIC (Com)',
-    icon: '📢',
-    badgeBg: 'bg-cyan-500/10',
-    badgeText: 'text-cyan-400',
-    borderColor: 'border-cyan-500/30',
-    description: 'Diffusion officielle, alertes publiques et accusés ACK',
-    aliases: ['COM', 'BIC', 'COMMUNICATION'],
-  },
-  {
-    key: 'ORGANISATION',
-    name: 'Commission Organisation',
-    shortName: 'Organisation',
-    icon: '🎪',
-    badgeBg: 'bg-rose-500/10',
-    badgeText: 'text-rose-400',
-    borderColor: 'border-rose-500/30',
-    description: 'Événements, comités ad-hoc et budget prévisionnel',
-    aliases: ['ORGANIS', 'ORGANISATEUR', 'ORGANISATION', 'PCO'],
-  },
-  {
-    key: 'PROJET',
-    name: 'Commission Projets (AGR)',
-    shortName: 'Respo Projet',
-    icon: '🚀',
-    badgeBg: 'bg-indigo-500/10',
-    badgeText: 'text-indigo-400',
-    borderColor: 'border-indigo-500/30',
-    description: 'Études de rentabilité et montage des projets d’investissement',
-    aliases: ['PROJET', 'AGR', 'RESPO_PROJET', 'RESP_PROJET'],
-  },
-  {
-    key: 'SPIRITUALITE',
-    name: 'Commission Spiritualité',
-    shortName: 'Spiritualité',
-    icon: '🕊️',
-    badgeBg: 'bg-violet-500/10',
-    badgeText: 'text-violet-400',
-    borderColor: 'border-violet-500/30',
-    description: 'Prière ROUAMA, liturgie AELF et méditations',
-    aliases: ['SPIRIT', 'SPIRITUALITE'],
-  },
-  {
-    key: 'SDP',
-    name: 'Chargé du Suivi du Programme (SDP)',
-    shortName: 'Chargé du Suivi',
-    icon: '🕵️',
-    badgeBg: 'bg-yellow-500/10',
-    badgeText: 'text-yellow-400',
-    borderColor: 'border-yellow-500/30',
-    description: 'Supervision interne et contrôle du respect du calendrier',
-    aliases: ['SDP', 'PROGRAMME', 'SUIVI', 'RESP_PROGRAMME', 'SUIVI_PROGRAMME', 'CHARGE_DU_SUIVI'],
-  },
-  {
-    key: 'SUPER_ADMIN',
-    name: 'Super Administrateur',
-    shortName: 'Super Admin',
-    icon: '👑',
-    badgeBg: 'bg-red-500/10',
-    badgeText: 'text-red-400',
-    borderColor: 'border-red-500/30',
-    description: 'Supervision générale et audit souverain de la plateforme',
-    aliases: ['SUPER_ADMIN', 'SUPERADMIN', 'ADMIN_GENERAL'],
-  },
-];
 
 // Helper: Calcul de la date de relance à 1 mois avant la date de l'événement
 export function calculateReminderDate(dateStr?: string): {
@@ -392,7 +265,6 @@ export const SuiviProgrammeConsole: React.FC<SuiviProgrammeConsoleProps> = ({ on
     projects = [],
     religiousEvents = [],
     infoRequests = [],
-    adminLogs = [],
     newsItems = [],
     getMemberDuesStatus,
     markNewsAsRead,
@@ -405,10 +277,13 @@ export const SuiviProgrammeConsole: React.FC<SuiviProgrammeConsoleProps> = ({ on
     sendReligiousEventsBatchFromSecretariatToPayor,
     deleteInfoRequest,
     closeInfoRequest,
+    dismissedDemoRequestIds = [],
+    demosDisabled = false,
+    dismissDemoInfoRequests,
   } = useApp();
 
   // Navigation par onglets clairs et structurés
-  const [activeTab, setActiveTab] = useState<'ACTIVITES' | 'DEMANDES_INFO' | 'CONNEXIONS' | 'GBAIRAI_READS' | 'NAVETTE'>('ACTIVITES');
+  const [activeTab, setActiveTab] = useState<'ACTIVITES' | 'DEMANDES_INFO' | 'GBAIRAI_READS' | 'NAVETTE'>('ACTIVITES');
 
   // Filtres pour le suivi des lectures Gbairai
   const [gbairaiFilter, setGbairaiFilter] = useState<'ALL' | 'UNREAD' | 'ALL_READ'>('ALL');
@@ -424,7 +299,6 @@ export const SuiviProgrammeConsole: React.FC<SuiviProgrammeConsoleProps> = ({ on
   const [infoFilter, setInfoFilter] = useState<'ALL' | 'PENDING' | 'REPLIED'>('ALL');
   const [infoSearchQuery, setInfoSearchQuery] = useState<string>('');
   const [cadrageToast, setCadrageToast] = useState<string | null>(null);
-  const [dismissedDemoIds, setDismissedDemoIds] = useState<string[]>([]);
   const [confirmDeleteInfoId, setConfirmDeleteInfoId] = useState<string | null>(null);
   const [deletingInfoId, setDeletingInfoId] = useState<string | null>(null);
   const [confirmPurgeInfo, setConfirmPurgeInfo] = useState(false);
@@ -648,49 +522,14 @@ export const SuiviProgrammeConsole: React.FC<SuiviProgrammeConsoleProps> = ({ on
   }, [activities, projects, religiousEvents]);
 
   // =========================================================
-  // ÉCOUTE FIRESTORE EN TEMPS RÉEL DES CONNEXIONS ET ACTIVITÉS ADMINS & GBAÏRAÏ
+  // ÉCOUTE FIRESTORE EN TEMPS RÉEL DES LECTURES GBAÏRAÏ
   // =========================================================
-  const [realtimeAdminLogs, setRealtimeAdminLogs] = useState<AdminLoginLog[]>([]);
-  const [realtimeAdminDocs, setRealtimeAdminDocs] = useState<Record<string, any>>({});
   const [realtimeNewsItems, setRealtimeNewsItems] = useState<NewsItem[]>([]);
 
   useEffect(() => {
     let isMounted = true;
 
-    // 1. Écoute en temps réel des logs d'administration (admin_logs)
-    const unsubLogs = onSnapshot(
-      collection(db, 'admin_logs'),
-      (snapshot) => {
-        if (!isMounted) return;
-        const loaded: AdminLoginLog[] = [];
-        snapshot.forEach((d) => {
-          loaded.push({ id: d.id, ...(d.data() as any) });
-        });
-        loaded.sort((a, b) => (b.loginTimestamp || '').localeCompare(a.loginTimestamp || ''));
-        setRealtimeAdminLogs(loaded);
-      },
-      (err) => {
-        console.warn('Erreur écouteur temps réel admin_logs:', err);
-      }
-    );
-
-    // 2. Écoute en temps réel des profils administrateurs (admins) pour détecter les sessions persistantes
-    const unsubAdmins = onSnapshot(
-      collection(db, 'admins'),
-      (snapshot) => {
-        if (!isMounted) return;
-        const docsMap: Record<string, any> = {};
-        snapshot.forEach((d) => {
-          docsMap[d.id.toUpperCase().trim()] = d.data();
-        });
-        setRealtimeAdminDocs(docsMap);
-      },
-      (err) => {
-        console.warn('Erreur écouteur temps réel admins:', err);
-      }
-    );
-
-    // 3. Abonnement en temps réel sur la collection news pour actualisation automatique des lectures Gbairai
+    // Abonnement en temps réel sur la collection news pour actualisation automatique des lectures Gbairai
     const unsubNews = onSnapshot(
       collection(db, 'news'),
       (snapshot) => {
@@ -723,203 +562,14 @@ export const SuiviProgrammeConsole: React.FC<SuiviProgrammeConsoleProps> = ({ on
 
     return () => {
       isMounted = false;
-      unsubLogs();
-      unsubAdmins();
       unsubNews();
     };
   }, []);
-
-  const effectiveAdminLogs = useMemo(() => {
-    if (realtimeAdminLogs.length > 0) return realtimeAdminLogs;
-    return adminLogs || [];
-  }, [realtimeAdminLogs, adminLogs]);
 
   const effectiveNewsItems = useMemo(() => {
     if (realtimeNewsItems.length > 0) return realtimeNewsItems;
     return newsItems || [];
   }, [realtimeNewsItems, newsItems]);
-
-  // Date du jour pour le contrôle d'assiduité
-  const todayDateStrings = useMemo(() => {
-    const now = new Date();
-    const isoDate = now.toISOString().split('T')[0];
-    const localYear = now.getFullYear();
-    const localMonth = String(now.getMonth() + 1).padStart(2, '0');
-    const localDay = String(now.getDate()).padStart(2, '0');
-    return [isoDate, `${localYear}-${localMonth}-${localDay}`];
-  }, []);
-
-  const isDateToday = (dateVal?: string): boolean => {
-    if (!dateVal) return false;
-    const cleanStr = String(dateVal).trim();
-    if (todayDateStrings.includes(cleanStr)) return true;
-    const isoPrefix = cleanStr.split('T')[0];
-    if (todayDateStrings.includes(isoPrefix)) return true;
-    const d = new Date(cleanStr);
-    if (!isNaN(d.getTime())) {
-      const now = new Date();
-      return (
-        d.getFullYear() === now.getFullYear() &&
-        d.getMonth() === now.getMonth() &&
-        d.getDate() === now.getDate()
-      );
-    }
-    return false;
-  };
-
-  const todayDisplayDate = useMemo(() => {
-    return new Date().toLocaleDateString('fr-FR', {
-      weekday: 'long',
-      day: 'numeric',
-      month: 'long',
-      year: 'numeric',
-    });
-  }, []);
-
-  const todayLogs = useMemo(() => {
-    return effectiveAdminLogs.filter((log) => {
-      if (!log) return false;
-      if (log.dateString && todayDateStrings.includes(log.dateString)) return true;
-      if (log.loginTimestamp) {
-        const logDateIso = log.loginTimestamp.split('T')[0];
-        if (todayDateStrings.includes(logDateIso)) return true;
-        const d = new Date(log.loginTimestamp);
-        if (!isNaN(d.getTime())) {
-          const now = new Date();
-          return (
-            d.getFullYear() === now.getFullYear() &&
-            d.getMonth() === now.getMonth() &&
-            d.getDate() === now.getDate()
-          );
-        }
-      }
-      return false;
-    });
-  }, [effectiveAdminLogs, todayDateStrings]);
-
-  const deptAttendanceMatch = (dept: AdminDepartmentConfig, role?: string) => {
-    if (!role) return false;
-    const cleanRole = role.toUpperCase().trim();
-    const cleanKey = dept.key.toUpperCase().trim();
-    return (
-      cleanRole === cleanKey ||
-      cleanRole.includes(cleanKey) ||
-      cleanKey.includes(cleanRole) ||
-      dept.aliases.some((alias) => cleanRole.includes(alias))
-    );
-  };
-
-  const departmentAttendance = useMemo(() => {
-    return ADMIN_DEPARTMENTS_CONFIG.map((dept) => {
-      // 1. Logs explicites du jour pour ce département
-      const logsForDept = todayLogs.filter((log) => deptAttendanceMatch(dept, log.role));
-      const sortedLogs = [...logsForDept].sort((a, b) =>
-        (b.loginTimestamp || '').localeCompare(a.loginTimestamp || '')
-      );
-      const latestLog = sortedLogs[0];
-
-      // 2. Vérification des documents admins en temps réel (pour sessions persistantes)
-      const matchingAdminEntries = Object.entries(realtimeAdminDocs).filter(([docKey]) => {
-        return deptAttendanceMatch(dept, docKey);
-      });
-      const activeAdminEntry = matchingAdminEntries.find(([, docData]) => {
-        return (
-          isDateToday(docData?.lastLoginDate) ||
-          isDateToday(docData?.lastAdminAccess) ||
-          isDateToday(docData?.lastActiveAt)
-        );
-      });
-
-      // 3. Vérification des membres responsables rattachés à ce département
-      const officialDept = OFFICIAL_DEPARTMENTS.find((d) => {
-        const dRole = (d.adminRole || '').toUpperCase();
-        return deptAttendanceMatch(dept, dRole);
-      });
-      const deptMembers = (members || []).filter((m) => {
-        const roleStr = `${m.assignedRole || ''} ${(m.departments || []).join(' ')} ${(m.roles || []).join(' ')}`;
-        return (
-          dept.managerMemberIds?.includes(String(m.id)) ||
-          officialDept?.managerMemberIds?.includes(String(m.id)) ||
-          deptAttendanceMatch(dept, m.assignedRole) ||
-          deptAttendanceMatch(dept, roleStr)
-        );
-      });
-      const activeMember = deptMembers.find((m) => {
-        return isDateToday((m as any).lastAdminAccess) || isDateToday(m.lastLogin);
-      });
-
-      // Présent si au moins 1 log du jour OU session persistante active du jour dans Firestore
-      const isConnectedToday = logsForDept.length > 0 || !!activeAdminEntry || !!activeMember;
-      const count = logsForDept.length > 0 ? logsForDept.length : (isConnectedToday ? 1 : 0);
-
-      // Calcul de l'heure la plus récente de connexion ou d'activité
-      const candidateTimestamps: string[] = [
-        latestLog?.loginTimestamp,
-        activeAdminEntry?.[1]?.lastAdminAccess,
-        activeAdminEntry?.[1]?.lastActiveAt,
-        (activeMember as any)?.lastAdminAccess,
-        activeMember?.lastLogin,
-      ].filter((t): t is string => Boolean(t && typeof t === 'string'));
-
-      candidateTimestamps.sort().reverse();
-      const latestTimestamp = candidateTimestamps[0];
-
-      const lastLoginTime = latestTimestamp
-        ? new Date(latestTimestamp).toLocaleTimeString('fr-FR', {
-            hour: '2-digit',
-            minute: '2-digit',
-          })
-        : null;
-
-      return {
-        ...dept,
-        count,
-        isConnectedToday,
-        latestLog,
-        lastLoginTime,
-      };
-    });
-  }, [todayLogs, realtimeAdminDocs, members, todayDateStrings]);
-
-  const connectedDepts = useMemo(() => departmentAttendance.filter((d) => d.isConnectedToday), [departmentAttendance]);
-  const absentDepts = useMemo(() => departmentAttendance.filter((d) => !d.isConnectedToday), [departmentAttendance]);
-
-  // Simulation test de connexion
-  const [isSimulatingLogin, setIsSimulatingLogin] = useState<boolean>(false);
-  const handleSimulateAdminLogin = async (deptKey: string) => {
-    setIsSimulatingLogin(true);
-    try {
-      const targetDept = ADMIN_DEPARTMENTS_CONFIG.find((d) => d.key === deptKey);
-      const now = new Date();
-      const nowIso = now.toISOString();
-      const todayStr = nowIso.split('T')[0];
-
-      await addDoc(collection(db, 'admin_logs'), {
-        userId: deptKey,
-        memberName: targetDept?.name || deptKey,
-        role: deptKey,
-        loginTimestamp: nowIso,
-        dateString: todayStr,
-      });
-
-      await setDoc(
-        doc(db, 'admins', deptKey),
-        {
-          id: deptKey,
-          role: deptKey,
-          lastAdminAccess: nowIso,
-          lastLoginDate: todayStr,
-          lastActiveAt: nowIso,
-          updatedAt: nowIso,
-        },
-        { merge: true }
-      );
-    } catch (err) {
-      console.warn('Erreur simulation admin_logs:', err);
-    } finally {
-      setIsSimulatingLogin(false);
-    }
-  };
 
   // =========================================================
   // 0. SUIVI DES LECTURES GBAIRAI EN TEMPS RÉEL PAR MEMBRE
@@ -1257,8 +907,9 @@ export const SuiviProgrammeConsole: React.FC<SuiviProgrammeConsoleProps> = ({ on
 
   const effectiveInfoRequests = useMemo(() => {
     if (infoRequests && infoRequests.length > 0) return infoRequests;
-    return sampleDemonstrationRequests.filter(r => !dismissedDemoIds.includes(r.id));
-  }, [infoRequests, sampleDemonstrationRequests, dismissedDemoIds]);
+    if (demosDisabled) return [];
+    return sampleDemonstrationRequests.filter(r => !dismissedDemoRequestIds.includes(r.id));
+  }, [infoRequests, sampleDemonstrationRequests, dismissedDemoRequestIds, demosDisabled]);
 
   const isInfoRequestHandled = (req: InfoRequest) => {
     const isReplied = Boolean((req.replyMessage && req.replyMessage.trim().length > 0) || req.status === 'Répondu' || req.repliedAt);
@@ -1327,7 +978,7 @@ export const SuiviProgrammeConsole: React.FC<SuiviProgrammeConsoleProps> = ({ on
           </div>
 
           {/* KPI CARDS EN EN-TÊTE */}
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2.5 w-full md:w-auto">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 w-full md:w-auto">
             <div className="bg-slate-950/80 p-3 rounded-2xl border border-slate-800 text-center">
               <span className="text-[10px] font-bold text-slate-400 uppercase block">Activités</span>
               <span className="text-xl font-black text-white font-mono">{allDepartmentActivities.length}</span>
@@ -1346,12 +997,6 @@ export const SuiviProgrammeConsole: React.FC<SuiviProgrammeConsoleProps> = ({ on
               <span className="text-[10px] font-bold text-rose-400 uppercase block">Attente &gt; 1h</span>
               <span className="text-xl font-black text-rose-400 font-mono">{pendingOverOneHourCount}</span>
               <span className="text-[9px] text-rose-500/80 block">WhatsApp requise</span>
-            </div>
-
-            <div className="bg-slate-950/80 p-3 rounded-2xl border border-emerald-500/30 text-center">
-              <span className="text-[10px] font-bold text-emerald-400 uppercase block">Admins Présents</span>
-              <span className="text-xl font-black text-emerald-400 font-mono">{connectedDepts.length}/{ADMIN_DEPARTMENTS_CONFIG.length}</span>
-              <span className="text-[9px] text-emerald-500/80 block">Aujourd'hui</span>
             </div>
 
             <div
@@ -1411,22 +1056,6 @@ export const SuiviProgrammeConsole: React.FC<SuiviProgrammeConsoleProps> = ({ on
             <span className="bg-emerald-500 text-slate-950 text-[10px] font-black px-1.5 py-0.2 rounded-full shadow animate-pulse">
               {pendingOverOneHourCount}
             </span>
-          )}
-        </button>
-
-        <button
-          type="button"
-          onClick={() => setActiveTab('CONNEXIONS')}
-          className={`flex items-center gap-2 px-4 py-2.5 rounded-xl font-black text-xs sm:text-sm transition-all cursor-pointer ${
-            activeTab === 'CONNEXIONS'
-              ? 'bg-amber-500 text-slate-950 shadow-md scale-102 font-black'
-              : 'text-slate-400 hover:text-white hover:bg-slate-800'
-          }`}
-        >
-          <LogIn className="w-4 h-4 text-emerald-400" />
-          <span>AUDIT CONNEXIONS ADMINS ({connectedDepts.length}/{ADMIN_DEPARTMENTS_CONFIG.length})</span>
-          {connectedDepts.length > 0 && (
-            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping inline-block" />
           )}
         </button>
 
@@ -1966,19 +1595,20 @@ export const SuiviProgrammeConsole: React.FC<SuiviProgrammeConsoleProps> = ({ on
                         onClick={async () => {
                           setIsPurgingInfo(true);
                           const toPurge = effectiveInfoRequests.filter(r => isInfoRequestHandled(r).isHandled);
+                          const demoIds = toPurge.filter(r => r.id.startsWith('DEMO-')).map(r => r.id);
+                          const realItems = toPurge.filter(r => !r.id.startsWith('DEMO-'));
                           let count = 0;
-                          for (const r of toPurge) {
-                            if (r.id.startsWith('DEMO-')) {
-                              setDismissedDemoIds(prev => (prev.includes(r.id) ? prev : [...prev, r.id]));
-                              count++;
-                            } else {
-                              const res = await deleteInfoRequest(r.id);
-                              if (res.success) count++;
-                            }
+                          if (demoIds.length > 0) {
+                            await dismissDemoInfoRequests(demoIds, true);
+                            count += demoIds.length;
+                          }
+                          if (realItems.length > 0) {
+                            const results = await Promise.all(realItems.map(r => deleteInfoRequest(r.id)));
+                            count += results.filter(res => res.success).length;
                           }
                           setIsPurgingInfo(false);
                           setConfirmPurgeInfo(false);
-                          setInfoActionToast(`${count} échange(s) traité(s) ou clôturé(s) purgé(s) du tableau.`);
+                          setInfoActionToast(`${count} échange(s) traité(s) ou clôturé(s) purgé(s) définitivement.`);
                           setTimeout(() => setInfoActionToast(null), 4000);
                         }}
                         className="text-rose-200 bg-rose-600 hover:bg-rose-500 px-2.5 py-1 rounded-lg font-black text-[11px] cursor-pointer disabled:opacity-50"
@@ -2192,8 +1822,8 @@ export const SuiviProgrammeConsole: React.FC<SuiviProgrammeConsoleProps> = ({ on
                             onClick={async () => {
                               setDeletingInfoId(req.id);
                               if (req.id.startsWith('DEMO-')) {
-                                setDismissedDemoIds(prev => (prev.includes(req.id) ? prev : [...prev, req.id]));
-                                setInfoActionToast('Ligne de démonstration supprimée du suivi.');
+                                await dismissDemoInfoRequests([req.id]);
+                                setInfoActionToast('Ligne de démonstration supprimée définitivement.');
                               } else {
                                 const res = await deleteInfoRequest(req.id);
                                 setInfoActionToast(
@@ -2226,210 +1856,6 @@ export const SuiviProgrammeConsole: React.FC<SuiviProgrammeConsoleProps> = ({ on
               })}
             </div>
           )}
-        </div>
-      )}
-
-      {/* ========================================================= */}
-      {/* 5. SECTION 3 : AUDIT DES CONNEXIONS ADMINS (JOUR J) */}
-      {/* ========================================================= */}
-      {activeTab === 'CONNEXIONS' && (
-        <div className="space-y-6 animate-fadeIn">
-          {/* En-tête de section */}
-          <div className="bg-slate-900 border border-emerald-500/30 rounded-3xl p-5 sm:p-6 shadow-xl relative overflow-hidden">
-            <div className="absolute top-0 right-0 w-64 h-64 bg-emerald-500/10 rounded-full blur-3xl pointer-events-none" />
-            <div className="relative z-10 flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
-              <div>
-                <div className="inline-flex items-center gap-2 bg-emerald-500/20 text-emerald-300 px-3 py-1 rounded-full text-xs font-black uppercase tracking-wider mb-2 border border-emerald-500/30">
-                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping inline-block" />
-                  <span>Audit des Connexions Administrateurs • Console Sécurisée</span>
-                </div>
-                <h3 className="text-lg sm:text-xl font-black text-white flex flex-wrap items-center gap-2">
-                  <span>Contrôle d'Assiduité des Départements Admins</span>
-                  <span className="text-xs font-mono font-bold text-slate-300 bg-slate-950 px-2.5 py-1 rounded-xl border border-slate-800">
-                    {todayDisplayDate}
-                  </span>
-                </h3>
-                <p className="text-xs text-slate-400 mt-1 max-w-2xl">
-                  Supervision de l'assiduité des responsables de départements admins (Trésorier, Organisateur, Respo Projet, Payor, Secrétaire, etc.).
-                </p>
-              </div>
-
-              <div className="bg-slate-950 px-4 py-2.5 rounded-2xl border border-slate-800 text-right">
-                <span className="text-[10px] text-slate-400 uppercase font-bold block">Assiduité Globale</span>
-                <span className="text-xl font-black text-emerald-400 font-mono">
-                  {connectedDepts.length} / {ADMIN_DEPARTMENTS_CONFIG.length} connectés
-                </span>
-                <span className="text-[10px] text-slate-500 block">
-                  {todayLogs.length} session(s) aujourd'hui
-                </span>
-              </div>
-            </div>
-          </div>
-
-          {/* Grille des 2 Blocs : Connectés vs Absents */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            {/* BLOC 1 : CONNECTÉS */}
-            <div className="bg-slate-900 border border-slate-800 rounded-3xl p-5 sm:p-6 shadow-xl flex flex-col justify-between">
-              <div>
-                <div className="flex items-center justify-between border-b border-slate-800 pb-3 mb-4">
-                  <div className="flex items-center gap-2.5">
-                    <div className="p-2 bg-emerald-500/10 rounded-xl border border-emerald-500/20 text-emerald-400">
-                      <CheckCircle className="w-5 h-5" />
-                    </div>
-                    <div>
-                      <h4 className="text-sm font-black text-white uppercase tracking-wide">
-                        DÉPARTEMENTS CONNECTÉS AUJOURD'HUI
-                      </h4>
-                      <p className="text-[11px] text-slate-400 font-medium">
-                        Responsables ayant effectué au moins 1 connexion ce jour
-                      </p>
-                    </div>
-                  </div>
-                  <span className="bg-emerald-500/20 text-emerald-300 text-xs font-black px-2.5 py-1 rounded-full border border-emerald-500/30">
-                    🟢 {connectedDepts.length} Présent(s)
-                  </span>
-                </div>
-
-                {connectedDepts.length === 0 ? (
-                  <div className="bg-slate-950/80 rounded-2xl border border-slate-800/80 p-8 text-center space-y-2 my-2">
-                    <Clock className="w-8 h-8 text-slate-600 mx-auto animate-pulse" />
-                    <p className="text-xs font-bold text-slate-300">
-                      Aucune connexion administrative enregistrée aujourd'hui pour l'instant.
-                    </p>
-                    <p className="text-[11px] text-slate-500">
-                      Dès qu'un responsable se connecte, son statut passera instantanément à 🟢 En ligne / Passé aujourd'hui.
-                    </p>
-                  </div>
-                ) : (
-                  <div className="space-y-3 max-h-[420px] overflow-y-auto pr-1">
-                    {connectedDepts.map((dept) => (
-                      <div
-                        key={dept.key}
-                        className="bg-slate-950 p-3.5 rounded-2xl border border-emerald-500/30 hover:border-emerald-500/60 transition-all flex items-center justify-between gap-3 shadow-md"
-                      >
-                        <div className="flex items-center gap-3 min-w-0">
-                          <span className="text-2xl p-2 bg-slate-900 rounded-xl border border-slate-800 shrink-0">
-                            {dept.icon}
-                          </span>
-                          <div className="min-w-0">
-                            <div className="flex items-center gap-2">
-                              <span className={`px-2 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider ${dept.badgeBg} ${dept.badgeText} border ${dept.borderColor}`}>
-                                {dept.shortName}
-                              </span>
-                              <span className="text-xs font-black text-white truncate">
-                                {dept.name}
-                              </span>
-                            </div>
-                            <p className="text-[11px] text-slate-400 truncate mt-0.5">
-                              {dept.description}
-                            </p>
-                          </div>
-                        </div>
-
-                        <div className="text-right shrink-0">
-                          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-black bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
-                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 inline-block" />
-                            <span>{dept.count} session(s)</span>
-                          </span>
-                          {dept.lastLoginTime && (
-                            <span className="block text-[10px] font-mono text-slate-400 mt-1">
-                              Dernier: {dept.lastLoginTime}
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-
-            {/* BLOC 2 : ABSENTS */}
-            <div className="bg-slate-900 border border-slate-800 rounded-3xl p-5 sm:p-6 shadow-xl flex flex-col justify-between">
-              <div>
-                <div className="flex items-center justify-between border-b border-slate-800 pb-3 mb-4">
-                  <div className="flex items-center gap-2.5">
-                    <div className="p-2 bg-rose-500/10 rounded-xl border border-rose-500/20 text-rose-400">
-                      <XCircle className="w-5 h-5" />
-                    </div>
-                    <div>
-                      <h4 className="text-sm font-black text-white uppercase tracking-wide">
-                        DÉPARTEMENTS SANS CONNEXION CE JOUR
-                      </h4>
-                      <p className="text-[11px] text-slate-400 font-medium">
-                        Aucune activité constatée sur la plateforme aujourd'hui
-                      </p>
-                    </div>
-                  </div>
-                  <span className="bg-rose-500/20 text-rose-300 text-xs font-black px-2.5 py-1 rounded-full border border-rose-500/30">
-                    🔴 {absentDepts.length} Absent(s)
-                  </span>
-                </div>
-
-                {absentDepts.length === 0 ? (
-                  <div className="bg-slate-950/80 rounded-2xl border border-emerald-500/30 p-8 text-center space-y-2 my-2">
-                    <CheckCircle className="w-8 h-8 text-emerald-400 mx-auto" />
-                    <p className="text-xs font-black text-emerald-300 uppercase tracking-wide">
-                      Assiduité Parfaite !
-                    </p>
-                    <p className="text-xs text-slate-300">
-                      Tous les départements admins ont enregistré au moins une session aujourd'hui.
-                    </p>
-                  </div>
-                ) : (
-                  <div className="space-y-3 max-h-[420px] overflow-y-auto pr-1">
-                    {absentDepts.map((dept) => {
-                      const contact = getDepartmentContact(dept.key, members);
-                      return (
-                        <div
-                          key={dept.key}
-                          className="bg-slate-950 p-3.5 rounded-2xl border border-rose-500/30 hover:border-rose-500/60 transition-all flex items-center justify-between gap-3 shadow-md"
-                        >
-                          <div className="flex items-center gap-3 min-w-0">
-                            <span className="text-2xl p-2 bg-slate-900 rounded-xl border border-slate-800 shrink-0">
-                              {dept.icon}
-                            </span>
-                            <div className="min-w-0">
-                              <div className="flex items-center gap-2">
-                                <span className={`px-2 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider ${dept.badgeBg} ${dept.badgeText} border ${dept.borderColor}`}>
-                                  {dept.shortName}
-                                </span>
-                                <span className="text-xs font-black text-white truncate">
-                                  {dept.name}
-                                </span>
-                              </div>
-                              <p className="text-[11px] text-slate-400 truncate mt-0.5">
-                                Responsable : <strong className="text-slate-300">{contact.name}</strong> • Tél: {contact.phone}
-                              </p>
-                            </div>
-                          </div>
-
-                          <div className="flex items-center gap-2 shrink-0">
-                            <a
-                              href={`tel:${contact.cleanPhone}`}
-                              className="p-2 bg-slate-900 hover:bg-slate-800 text-slate-300 hover:text-white rounded-xl border border-slate-800 transition-all text-xs"
-                              title={`Appeler ${contact.name}`}
-                            >
-                              <PhoneCall className="w-3.5 h-3.5" />
-                            </a>
-                            <a
-                              href={`https://wa.me/${contact.cleanPhone}?text=${encodeURIComponent(`Bonjour fraternel ${contact.name}. En qualité de Chargé du Suivi du Programme E-ROUAMA, je te sollicite pour une connexion d'étape sur la plateforme.`)}`}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="p-2 bg-emerald-600/20 hover:bg-emerald-600/40 text-emerald-400 rounded-xl border border-emerald-500/30 transition-all text-xs"
-                              title="Relancer sur WhatsApp"
-                            >
-                              <MessageCircle className="w-3.5 h-3.5" />
-                            </a>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
         </div>
       )}
 

@@ -445,8 +445,6 @@ export const AdminPortal: React.FC = () => {
     broadcastCerveauAlert,
     assignMemberRole,
     resetMemberPin,
-    adminUsers,
-    updateAdminCredentials,
     verseOfTheDay,
     updateVerseOfTheDay,
     prayerIntentions,
@@ -2302,9 +2300,6 @@ export const AdminPortal: React.FC = () => {
   } | null>(null);
   const [emailError, setEmailError] = useState<string | null>(null);
   const [sendingProgress, setSendingProgress] = useState<{ current: number; total: number; email?: string } | null>(null);
-  const [editingAdminRole, setEditingAdminRole] = useState<AdminRole | null>(null);
-  const [editLoginId, setEditLoginId] = useState<string>('');
-  const [editPin, setEditPin] = useState<string>('');
 
   // 4b. Relances Email (Trésorerie)
   const [showEmailRelancePanel, setShowEmailRelancePanel] = useState<boolean>(false);
@@ -5189,17 +5184,10 @@ export const AdminPortal: React.FC = () => {
       onConfirm: async () => {
         try {
           setDeletingAnnouncementId(id);
-          await updateDoc(doc(db, "announcements", id), { deleted: true, status: 'deleted' }).catch(() => {});
-          await deleteDoc(doc(db, "announcements", id));
-          try {
-            await updateDoc(doc(db, "news", id), { deleted: true, status: 'deleted' }).catch(() => {});
-            await deleteDoc(doc(db, "news", id));
-          } catch (_) {}
-
+          await deleteNewsItem(id);
           // Mise à jour immédiate du state local
           setAnnouncements(prev => prev.filter(a => a.id !== id));
-          deleteNewsItem(id);
-          setToastMessage("🗑️ Communiqué supprimé avec succès.");
+          setToastMessage("🗑️ Communiqué supprimé définitivement avec succès.");
         } catch (error: any) {
           console.error("Erreur de suppression Firestore :", error);
           setToastMessage("❌ Échec de la suppression : " + (error?.message || error));
@@ -12811,123 +12799,6 @@ export const AdminPortal: React.FC = () => {
                 </table>
               </div>
             )}
-          </div>
-
-          {/* Registre Officiel des Postes Administrateurs & Accès Direct */}
-          <div className="bg-slate-900 rounded-[2.5rem] p-6 sm:p-8 border border-slate-800 shadow-xl space-y-6">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-800 pb-4">
-              <div>
-                <h2 className="text-xl font-black text-white flex items-center gap-2">
-                  <Shield className="w-5 h-5 text-amber-500" />
-                  <span>Registre Officiel des {adminUsers.length} Postes Administrateurs & Accès Direct</span>
-                </h2>
-                <p className="text-xs text-slate-400 mt-1">
-                  Consultez et modifiez en direct les Identifiants de connexion (ID) et Mots de passe (PIN) des {adminUsers.length} postes administrateurs.
-                </p>
-              </div>
-              <div className="text-xs font-bold text-amber-400 bg-amber-500/10 border border-amber-500/20 px-3 py-1.5 rounded-xl self-start sm:self-auto">
-                {adminUsers.length} Postes Administrateurs
-              </div>
-            </div>
-
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-sm text-slate-300">
-                <thead>
-                  <tr className="border-b border-slate-800 text-xs font-black text-slate-400 uppercase">
-                    <th className="py-3 px-4">Poste Admin</th>
-                    <th className="py-3 px-4">Identifiant de Connexion (ID)</th>
-                    <th className="py-3 px-4">Code PIN / Mot de Passe</th>
-                    <th className="py-3 px-4 text-right">Action</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-800/60 font-medium">
-                  {adminUsers.map(admin => {
-                    const isEditing = editingAdminRole === admin.id;
-                    return (
-                      <tr key={admin.id} className="hover:bg-slate-950/40 transition-colors">
-                        <td className="py-4 px-4">
-                          <div className="font-black text-white flex items-center gap-2">
-                            <span className="text-amber-400">🛡️</span>
-                            <span>{admin.roleName}</span>
-                          </div>
-                          <div className="text-[11px] text-slate-400 font-normal">{admin.description}</div>
-                        </td>
-
-                        <td className="py-4 px-4">
-                          {isEditing ? (
-                            <input
-                              type="text"
-                              value={editLoginId}
-                              onChange={e => setEditLoginId(e.target.value)}
-                              className="bg-slate-950 border border-amber-500/50 rounded-xl px-3 py-1.5 text-xs font-black text-amber-300 focus:outline-none"
-                              placeholder="Nouveau ID..."
-                            />
-                          ) : (
-                            <span className="font-mono text-xs font-bold bg-slate-950 text-emerald-400 px-3 py-1.5 rounded-xl border border-slate-800">
-                              {admin.loginId || admin.id}
-                            </span>
-                          )}
-                        </td>
-
-                        <td className="py-4 px-4">
-                          {isEditing ? (
-                            <input
-                              type="text"
-                              value={editPin}
-                              onChange={e => setEditPin(e.target.value)}
-                              className="bg-slate-950 border border-amber-500/50 rounded-xl px-3 py-1.5 text-xs font-black text-amber-300 focus:outline-none"
-                              placeholder="Nouveau PIN..."
-                            />
-                          ) : (
-                            <span className="font-mono text-xs font-bold bg-slate-950 text-amber-300 px-3 py-1.5 rounded-xl border border-slate-800">
-                              {admin.password || admin.pin}
-                            </span>
-                          )}
-                        </td>
-
-                        <td className="py-4 px-4 text-right">
-                          {isEditing ? (
-                            <div className="flex items-center justify-end gap-2">
-                              <button
-                                onClick={() => {
-                                  const res = updateAdminCredentials(admin.id, editLoginId, editPin);
-                                  if (res.success) {
-                                    alert(res.message);
-                                    setEditingAdminRole(null);
-                                  } else {
-                                    alert(res.message);
-                                  }
-                                }}
-                                className="bg-emerald-600 hover:bg-emerald-500 text-white font-black px-3 py-1.5 rounded-xl text-xs shadow transition-all active:scale-95"
-                              >
-                                Enregistrer
-                              </button>
-                              <button
-                                onClick={() => setEditingAdminRole(null)}
-                                className="bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold px-3 py-1.5 rounded-xl text-xs transition-all"
-                              >
-                                Annuler
-                              </button>
-                            </div>
-                          ) : (
-                            <button
-                              onClick={() => {
-                                setEditingAdminRole(admin.id);
-                                setEditLoginId(admin.loginId || admin.id);
-                                setEditPin(admin.password || admin.pin);
-                              }}
-                              className="bg-amber-500/20 text-amber-300 hover:bg-amber-500 hover:text-white border border-amber-500/30 px-3.5 py-1.5 rounded-xl text-xs font-black inline-flex items-center gap-1.5 transition-all shadow-sm"
-                            >
-                              ✏️ <span>MODIFIER LOGINS</span>
-                            </button>
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
           </div>
 
           {/* Consultation des Identifiants des Membres Inscrits (Mode Lecture Seule - Exclusif CERVEAU) */}

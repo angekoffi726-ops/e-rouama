@@ -124,8 +124,8 @@ export const INITIAL_ROUAMA_MEMBERS: RouamaMember[] = [
     fullRosterName: 'GILBERT (DOYEN)',
     nickname: 'DOYEN',
     phone: '2250703567992',
-    isRegistered: false,
-    statut: 'En attente',
+    isRegistered: true,
+    statut: 'Activé',
   },
   {
     id: '11',
@@ -241,7 +241,12 @@ export const isMemberActive = (m: any): boolean => {
     ? String(m.pinCode).trim()
     : (m.pin !== undefined && m.pin !== null ? String(m.pin).trim() : '');
   const hasValidPin = pin !== '' && pin !== 'Non défini';
-  return Boolean(hasValidPin || m.isRegistered === true || m.statut === 'Activé');
+  if (m.resetAt && m.isRegistered === false && !hasValidPin) return false;
+  const hasPayments =
+    (typeof m.totalPaid === 'number' && m.totalPaid > 0) ||
+    (typeof m.solde === 'number' && m.solde > 0) ||
+    (typeof m.montantPaye === 'number' && m.montantPaye > 0);
+  return Boolean(hasValidPin || m.isRegistered === true || m.statut === 'Activé' || hasPayments);
 };
 
 /**
@@ -249,12 +254,5 @@ export const isMemberActive = (m: any): boolean => {
  */
 export const getRegisteredMembersCount = (membersList: any[]): number => {
   if (!Array.isArray(membersList)) return 0;
-  const activeMembers = membersList.filter(
-    (m) =>
-      (m?.pinCode && String(m.pinCode).trim() !== '' && String(m.pinCode).trim() !== 'Non défini') ||
-      (m?.pin && String(m.pin).trim() !== '' && String(m.pin).trim() !== 'Non défini') ||
-      m?.isRegistered === true ||
-      m?.statut === 'Activé'
-  );
-  return activeMembers.length;
+  return membersList.filter(isMemberActive).length;
 };

@@ -103,6 +103,9 @@ interface AppContextType {
   ) => Promise<{ success: boolean; message: string }>;
   markInfoRequestRead: (id: string) => Promise<{ success: boolean }>;
   deleteInfoRequest: (id: string) => Promise<{ success: boolean }>;
+  dismissedDemoRequestIds: string[];
+  demosDisabled: boolean;
+  dismissDemoInfoRequests: (ids: string[], disableAll?: boolean) => Promise<void>;
 
   // Spiritualité
   verseOfTheDay: VerseOfTheDay | null;
@@ -133,6 +136,7 @@ interface AppContextType {
   // Auth
   setCurrentUser: (userOrUpdater: any) => void;
   switchWorkspace: (view: 'MEMBER' | 'ADMIN', targetRole?: AdminRole) => void;
+  activateMemberAccount: (memberId: string, extraFields?: Record<string, any>) => Promise<void>;
   registerMember: (firstNameOrRosterName: string, pin: string) => Promise<{ success: boolean; message: string }>;
   loginMember: (firstNameOrRosterName: string, pin: string) => Promise<{ success: boolean; message: string }>;
   loginAdmin: (adminId: string, pin: string) => { success: boolean; message: string };
@@ -269,12 +273,12 @@ interface AppContextType {
   // Financial Events (Trésorier : Sorties & Cas Sociaux)
   createFinancialEvent: (event: Omit<FinancialEvent, 'id' | 'createdAt' | 'status'>) => void;
   archiveFinancialEvent: (eventId: string) => void;
-  deleteFinancialEvent: (eventId: string) => void;
+  deleteFinancialEvent: (eventId: string) => Promise<void>;
 
   // Projects AGR
   createProject: (project: Omit<AgrProject, 'id' | 'status' | 'tresorierFeasibility' | 'currentReturn'> & { status?: AgrProject['status'] }) => void;
   updateProject: (projectId: string, updates: Partial<AgrProject>) => void;
-  deleteProject: (projectId: string) => void;
+  deleteProject: (projectId: string) => Promise<void>;
   sendProjectToSecretariat: (projectId: string) => void;
   sendProjectsBatchToSecretariat: (projectIds: string[]) => void;
   sendProjectFromSecretariatToSuivi: (projectId: string) => void;
@@ -298,7 +302,7 @@ interface AppContextType {
   updateSecretaryPV: (pvId: string, updates: Partial<SecretaryPV>) => void;
   sendPVFromSecretariatToPayor: (pvId: string) => void;
   returnPVForCorrectionPayor: (pvId: string, feedback: string) => void;
-  deleteSecretaryPV: (pvId: string) => void;
+  deleteSecretaryPV: (pvId: string) => Promise<void>;
   approvePVPayor: (pvId: string) => void;
   archivePVSecretariat: (pvId: string) => void;
   sendPVNoteToCom: (pvId: string) => void;
@@ -317,7 +321,7 @@ interface AppContextType {
   ) => FinancialBilan;
   updateFinancialBilan: (bilanId: string, updates: Partial<FinancialBilan>) => void;
   returnBilanForCorrectionPayor: (bilanId: string, feedback: string) => void;
-  deleteFinancialBilan: (bilanId: string) => void;
+  deleteFinancialBilan: (bilanId: string) => Promise<void>;
   approveBilanPayor: (bilanId: string) => void;
   sendBilanToSecretariat: (bilanId: string) => void;
   sendBilanFromSecretariatToPayor: (bilanId: string) => void;
@@ -334,7 +338,7 @@ interface AppContextType {
     payerId?: string,
     targetMemberIds?: string[]
   ) => void;
-  deleteNewsItem: (newsId: string) => void;
+  deleteNewsItem: (newsId: string) => Promise<void>;
   dismissNewsForMember: (newsId: string) => void;
   markAllGbairaiAsRead: (specificMemberId?: string) => Promise<void> | void;
   assignMemberRole: (memberId: string, role?: AdminRole) => void;
@@ -664,8 +668,114 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const treasuryLoaderRef = useRef<() => Promise<void>>(() => Promise.resolve());
   const gbairaiLoaderRef = useRef<() => Promise<void>>(() => Promise.resolve());
   const navetteLoaderRef = useRef<() => Promise<void>>(() => Promise.resolve());
-  const [newsItems, setNewsItems] = useState<NewsItem[]>(DEFAULT_GBAIRAI_NEWS);
-  const newsItemsRef = useRef<NewsItem[]>(DEFAULT_GBAIRAI_NEWS);
+  const EROUAMA_DELETED_RECORDS_KEY = 'erouama_deleted_records_v1';
+  const EROUAMA_DISMISSED_DEMO_REQS_KEY = 'erouama_dismissed_demo_reqs_v1';
+
+  const readLocalDeletedRecords = (): { ids: string[]; defaultsNewsCleared: boolean } => {
+    try {
+      const raw = localStorage.getItem(EROUAMA_DELETED_RECORDS_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        return {
+          ids: Array.isArray(parsed?.ids) ? parsed.ids : [],
+          defaultsNewsCleared: Boolean(parsed?.defaultsNewsCleared),
+        };
+      }
+    } catch {}
+    return { ids: [], defaultsNewsCleared: false };
+  };
+
+  const readLocalDismissedDemos = (): { ids: string[]; disableAll: boolean } => {
+    try {
+      const raw = localStorage.getItem(EROUAMA_DISMISSED_DEMO_REQS_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        return {
+          ids: Array.isArray(parsed?.ids) ? parsed.ids : [],
+          disableAll: Boolean(parsed?.disableAll),
+        };
+      }
+    } catch {}
+    return { ids: [], disableAll: false };
+  };
+
+  const initialDeletedMeta = readLocalDeletedRecords();
+  const deletedRecordIdsRef = useRef<Set<string>>(new Set(initialDeletedMeta.ids));
+  const defaultsNewsClearedRef = useRef<boolean>(initialDeletedMeta.defaultsNewsCleared);
+  const initialDemoMeta = readLocalDismissedDemos();
+  const [dismissedDemoRequestIds, setDismissedDemoRequestIds] = useState<string[]>(initialDemoMeta.ids);
+  const [demosDisabled, setDemosDisabled] = useState<boolean>(initialDemoMeta.disableAll);
+
+  const infoRequestsMapRef = useRef<Map<string, InfoRequest>>(new Map());
+  const navettesMapRef = useRef<Map<string, InfoRequest>>(new Map());
+  const newsDocsMapRef = useRef<Map<string, NewsItem>>(new Map());
+  const announcementsDocsMapRef = useRef<Map<string, NewsItem>>(new Map());
+
+  const persistDeletedRecordIds = async (ids: string[], options?: { defaultsNewsCleared?: boolean }) => {
+    const cleanIds = ids.filter(Boolean);
+    cleanIds.forEach(id => deletedRecordIdsRef.current.add(id));
+    if (options?.defaultsNewsCleared) {
+      defaultsNewsClearedRef.current = true;
+    }
+    try {
+      localStorage.setItem(
+        EROUAMA_DELETED_RECORDS_KEY,
+        JSON.stringify({
+          ids: Array.from(deletedRecordIdsRef.current),
+          defaultsNewsCleared: defaultsNewsClearedRef.current,
+        })
+      );
+    } catch {}
+    try {
+      const payload: Record<string, any> = {
+        updatedAt: new Date().toISOString(),
+      };
+      if (cleanIds.length > 0) {
+        payload.ids = arrayUnion(...cleanIds);
+      }
+      if (defaultsNewsClearedRef.current) {
+        payload.defaultsNewsCleared = true;
+      }
+      await setDoc(doc(db, 'admin', 'deleted_records_v1'), payload, { merge: true });
+    } catch (err) {
+      console.warn('Erreur persistance deleted_records_v1:', err);
+    }
+  };
+
+  const dismissDemoInfoRequests = async (ids: string[], disableAll: boolean = false) => {
+    const nextIds = Array.from(new Set([...dismissedDemoRequestIds, ...ids.filter(Boolean)]));
+    const nextDisableAll = Boolean(disableAll || demosDisabled || nextIds.length >= 3);
+    setDismissedDemoRequestIds(nextIds);
+    setDemosDisabled(nextDisableAll);
+    try {
+      localStorage.setItem(
+        EROUAMA_DISMISSED_DEMO_REQS_KEY,
+        JSON.stringify({ ids: nextIds, disableAll: nextDisableAll })
+      );
+    } catch {}
+    try {
+      const payload: Record<string, any> = {
+        updatedAt: new Date().toISOString(),
+      };
+      if (ids.length > 0) {
+        payload.ids = arrayUnion(...ids);
+      }
+      if (nextDisableAll) {
+        payload.disableAll = true;
+      }
+      await setDoc(doc(db, 'admin', 'dismissed_demo_requests'), payload, { merge: true });
+    } catch (err) {
+      console.warn('Erreur persistance dismissed_demo_requests:', err);
+    }
+  };
+
+  const getInitialGbairaiNews = (): NewsItem[] => {
+    if (defaultsNewsClearedRef.current) return [];
+    return DEFAULT_GBAIRAI_NEWS.filter(n => !deletedRecordIdsRef.current.has(n.id));
+  };
+
+  const [newsItems, setNewsItems] = useState<NewsItem[]>(getInitialGbairaiNews);
+  const newsItemsRef = useRef<NewsItem[]>(getInitialGbairaiNews());
   const membersRef = useRef<RouamaMember[]>(members);
   const currentUserRef = useRef<CurrentUser | null>(currentUser);
 
@@ -680,6 +790,65 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   useEffect(() => {
     currentUserRef.current = currentUser;
   }, [currentUser]);
+
+  const activateMemberAccount = useCallback(async (memberId: string, extraFields?: Record<string, any>): Promise<void> => {
+    const cleanId = String(memberId || '').trim();
+    if (!cleanId) return;
+    const nowIso = new Date().toISOString();
+    const official = INITIAL_ROUAMA_MEMBERS.find(m => m.id === cleanId);
+    const existing = (membersRef.current || []).find(m => m.id === cleanId);
+
+    const payload: Record<string, any> = {
+      id: cleanId,
+      ...(official ? {
+        firstName: official.firstName,
+        nickname: official.nickname,
+        fullRosterName: official.fullRosterName,
+        phone: existing?.phone || official.phone || '',
+      } : {}),
+      isRegistered: true,
+      statut: 'Activé',
+      resetAt: null,
+      updatedAt: nowIso,
+      ...(extraFields ? sanitizeFirestore(extraFields) : {}),
+    };
+
+    // Préserver le PIN existant s'il n'est pas fourni explicitement
+    if (payload.pin === undefined && (existing?.pin || existing?.pinCode)) {
+      const keepPin = String(existing.pinCode || existing.pin || '').trim();
+      if (keepPin && keepPin !== 'Non défini') {
+        payload.pin = keepPin;
+        payload.pinCode = keepPin;
+      }
+    }
+
+    setMembers(prev => {
+      const next = prev.map(m => (m.id === cleanId ? { ...m, ...payload } : m));
+      membersRef.current = next;
+      return next;
+    });
+
+    setCurrentUser((prev: any) => {
+      if (prev && prev.type === 'MEMBER' && prev.member && String(prev.member.id).trim() === cleanId) {
+        const updatedMember = { ...prev.member, ...payload };
+        try {
+          localStorage.setItem(EROUAMA_ACTIVE_SESSION_KEY, JSON.stringify({ ...prev, member: updatedMember }));
+          localStorage.setItem('rouama_user', JSON.stringify(updatedMember));
+        } catch {}
+        return { ...prev, member: updatedMember };
+      }
+      return prev;
+    });
+
+    try {
+      await Promise.allSettled([
+        setDoc(doc(db, 'users', cleanId), sanitizeFirestore(payload), { merge: true }),
+        setDoc(doc(db, 'members', cleanId), sanitizeFirestore(payload), { merge: true }),
+      ]);
+    } catch (err) {
+      console.warn('Erreur synchronisation activateMemberAccount Firestore:', err);
+    }
+  }, []);
   const [activities, setActivities] = useState<EventActivity[]>([]);
   const [projects, setProjects] = useState<AgrProject[]>([]);
   const [financialEvents, setFinancialEvents] = useState<FinancialEvent[]>([]);
@@ -1149,7 +1318,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         if (rSnap.status === 'fulfilled') {
           const loaded: PaymentDeclaration[] = [];
           rSnap.value.docs.forEach((docSnap) => {
-            if (seenDocIds.has(docSnap.id)) return;
+            if (seenDocIds.has(docSnap.id) || deletedRecordIdsRef.current.has(docSnap.id)) return;
             seenDocIds.add(docSnap.id);
 
             const data = docSnap.data() as any;
@@ -1167,7 +1336,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         if (pSnap.status === 'fulfilled') {
           const loaded: any[] = [];
           pSnap.value.docs.forEach((docSnap) => {
-            if (seenDocIds.has(docSnap.id)) return;
+            if (seenDocIds.has(docSnap.id) || deletedRecordIdsRef.current.has(docSnap.id)) return;
             seenDocIds.add(docSnap.id);
 
             const data = docSnap.data() as any;
@@ -1180,7 +1349,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         if (cSnap.status === 'fulfilled') {
           const loaded: any[] = [];
           cSnap.value.docs.forEach((docSnap) => {
-            if (seenDocIds.has(docSnap.id)) return;
+            if (seenDocIds.has(docSnap.id) || deletedRecordIdsRef.current.has(docSnap.id)) return;
             seenDocIds.add(docSnap.id);
 
             const data = docSnap.data() as any;
@@ -1195,7 +1364,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         if (dSnap.status === 'fulfilled') {
           const loaded: any[] = [];
           dSnap.value.docs.forEach((docSnap) => {
-            if (seenDocIds.has(docSnap.id)) return;
+            if (seenDocIds.has(docSnap.id) || deletedRecordIdsRef.current.has(docSnap.id)) return;
             seenDocIds.add(docSnap.id);
 
             const data = docSnap.data() as any;
@@ -1208,10 +1377,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         if (tSnap.status === 'fulfilled') {
           const loaded: Transaction[] = [];
           tSnap.value.docs.forEach((docSnap) => {
-            if (seenDocIds.has(docSnap.id)) return;
+            if (seenDocIds.has(docSnap.id) || deletedRecordIdsRef.current.has(docSnap.id)) return;
             seenDocIds.add(docSnap.id);
 
             const data = docSnap.data() as any;
+            if (data.status === 'deleted' || data.isHidden === true || data.status === 'hidden') return;
             loaded.push({ ...data, id: docSnap.id });
           });
           loaded.sort((a, b) => ((b as any).createdAt || 0) - ((a as any).createdAt || 0) || b.id.localeCompare(a.id));
@@ -1239,6 +1409,26 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
 
         syncDynamicBalances();
+
+        // Synchronisation automatique d'activation pour tout membre ayant déjà enregistré un paiement / reçu non annulé
+        try {
+          const paidMemberIds = new Set<string>();
+          [...receiptsCache, ...paymentsCache, ...declarationsCache, ...transactionsCache].forEach((entry: any) => {
+            if (!entry) return;
+            if (entry.isHidden || entry.status === 'deleted' || entry.status === 'hidden' || entry.status === 'REJECTED' || entry.status === 'rejected') return;
+            const mId = String(entry.memberId || '').trim();
+            if (mId && INITIAL_ROUAMA_MEMBERS.some(om => om.id === mId)) {
+              paidMemberIds.add(mId);
+            }
+          });
+          paidMemberIds.forEach(mId => {
+            const existingM = (membersRef.current || []).find(m => m.id === mId) as any;
+            const isExplicitReset = Boolean(existingM?.resetAt && existingM?.isRegistered === false && !existingM?.pin && !existingM?.pinCode);
+            if (!isExplicitReset && (!existingM || !existingM.isRegistered || existingM.statut !== 'Activé')) {
+              activateMemberAccount(mId).catch(() => {});
+            }
+          });
+        } catch {}
       } catch (err) {
         console.warn('Erreur chargement Trésorerie (cache actif):', err);
       }
@@ -1252,7 +1442,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           getDocs(collection(db, 'announcements')),
         ]);
         const map = new Map<string, NewsItem>();
-        const processDoc = (d: any) => {
+        const processDoc = (d: any, colName: 'news' | 'announcements') => {
+          if (deletedRecordIdsRef.current.has(d.id)) {
+            deleteDoc(doc(db, colName, d.id)).catch(() => {});
+            return;
+          }
           const item = { id: d.id, ...(d.data() as any) };
           if (
             item.deleted === true ||
@@ -1268,18 +1462,28 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           map.set(d.id, item);
         };
         if (newsSnap.status === 'fulfilled') {
-          newsSnap.value.forEach(processDoc);
+          newsDocsMapRef.current.clear();
+          newsSnap.value.forEach(d => {
+            processDoc(d, 'news');
+            if (map.has(d.id)) newsDocsMapRef.current.set(d.id, map.get(d.id)!);
+          });
         }
         if (annSnap.status === 'fulfilled') {
-          annSnap.value.forEach(processDoc);
+          announcementsDocsMapRef.current.clear();
+          annSnap.value.forEach(d => {
+            processDoc(d, 'announcements');
+            if (map.has(d.id)) announcementsDocsMapRef.current.set(d.id, map.get(d.id)!);
+          });
         }
         const loaded = Array.from(map.values());
         if (loaded.length > 0) {
           loaded.sort((a, b) => b.id.localeCompare(a.id));
           setNewsItems(loaded);
           setReligiousEvents(prev => reconcileHistoricalSpiritualEvents(prev, loaded));
+        } else if (!defaultsNewsClearedRef.current) {
+          setNewsItems(DEFAULT_GBAIRAI_NEWS.filter(n => !deletedRecordIdsRef.current.has(n.id)));
         } else {
-          setNewsItems(DEFAULT_GBAIRAI_NEWS);
+          setNewsItems([]);
         }
       } catch (err) {
         console.warn('Erreur chargement Gbairai (cache actif):', err);
@@ -1287,12 +1491,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
 
     // Cache partagé en mémoire pour consolider les documents de navette (info_requests + navettes)
-    const infoRequestsMap = new Map<string, InfoRequest>();
-    const navettesMap = new Map<string, InfoRequest>();
     const updateNavetteState = () => {
       const combined = new Map<string, InfoRequest>();
-      navettesMap.forEach((v, k) => combined.set(k, v));
-      infoRequestsMap.forEach((v, k) => combined.set(k, v));
+      navettesMapRef.current.forEach((v, k) => {
+        if (!deletedRecordIdsRef.current.has(k)) combined.set(k, v);
+      });
+      infoRequestsMapRef.current.forEach((v, k) => {
+        if (!deletedRecordIdsRef.current.has(k)) combined.set(k, v);
+      });
       const loaded = Array.from(combined.values());
       // Tri purement côté client par createdAt décroissant sans nécessiter d'index composite Firestore
       loaded.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
@@ -1307,10 +1513,24 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           getDocs(collection(db, 'navettes')),
         ]);
         if (infoReqsSnap.status === 'fulfilled') {
-          infoReqsSnap.value.forEach((d) => infoRequestsMap.set(d.id, { id: d.id, ...(d.data() as any) }));
+          infoRequestsMapRef.current.clear();
+          infoReqsSnap.value.forEach((d) => {
+            if (deletedRecordIdsRef.current.has(d.id)) {
+              deleteDoc(doc(db, 'info_requests', d.id)).catch(() => {});
+              return;
+            }
+            infoRequestsMapRef.current.set(d.id, { id: d.id, ...(d.data() as any) });
+          });
         }
         if (navettesSnap.status === 'fulfilled') {
-          navettesSnap.value.forEach((d) => navettesMap.set(d.id, { id: d.id, ...(d.data() as any) }));
+          navettesMapRef.current.clear();
+          navettesSnap.value.forEach((d) => {
+            if (deletedRecordIdsRef.current.has(d.id)) {
+              deleteDoc(doc(db, 'navettes', d.id)).catch(() => {});
+              return;
+            }
+            navettesMapRef.current.set(d.id, { id: d.id, ...(d.data() as any) });
+          });
         }
         updateNavetteState();
       } catch (err) {
@@ -1352,13 +1572,23 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             : (mergedDoc.password || mergedDoc.code || official.pinCode || official.pin || ''));
         const cleanPin = rawPin && String(rawPin).trim() !== '' && String(rawPin).trim() !== 'Non défini' ? String(rawPin).trim() : '';
 
-        const isActive = Boolean(
-          (cleanPin !== '') ||
-          mergedDoc.isRegistered === true ||
-          mergedDoc.statut === 'Activé' ||
-          official.isRegistered === true ||
-          official.statut === 'Activé'
-        );
+        const isExplicitlyReset = Boolean(mergedDoc?.resetAt && mergedDoc?.isRegistered === false && !cleanPin);
+        const hasPaidAmount =
+          (typeof mergedDoc?.totalPaid === 'number' && mergedDoc.totalPaid > 0) ||
+          (typeof mergedDoc?.solde === 'number' && mergedDoc.solde > 0) ||
+          (typeof mergedDoc?.montantPaye === 'number' && mergedDoc.montantPaye > 0) ||
+          Boolean(official.totalPaid && official.totalPaid > 0);
+
+        const isActive = isExplicitlyReset
+          ? false
+          : Boolean(
+              (cleanPin !== '') ||
+              mergedDoc.isRegistered === true ||
+              mergedDoc.statut === 'Activé' ||
+              official.isRegistered === true ||
+              official.statut === 'Activé' ||
+              hasPaidAmount
+            );
 
         const photo =
           (typeof mergedDoc?.photoUrl === 'string' && mergedDoc.photoUrl.trim() ? mergedDoc.photoUrl.trim() : '') ||
@@ -1383,8 +1613,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           email: mergedDoc?.email || official.email || '',
           pin: effectivePin,
           pinCode: effectivePin,
-          statut: isActive ? 'Activé' : 'En attente',
+          statut: isActive ? 'Activé' : "En attente d'activation",
           isRegistered: isActive,
+          resetAt: mergedDoc?.resetAt || undefined,
           avatar: photo,
           photoUrl: photo,
           assignedRole: mergedDoc?.assignedRole || official.assignedRole || defaultRoles.adminRole,
@@ -1405,6 +1636,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         };
       });
 
+      membersRef.current = reconciledList;
       setMembers(reconciledList);
 
       setCurrentUser((prev: any) => {
@@ -1462,7 +1694,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     // Chargeur des autres collections
     const loadOtherCollections = async () => {
       try {
-        const [actSnap, projSnap, finEventSnap, verseSnap, intentSnap, relEventSnap, pvsSnap, bilansSnap, archSnap, adminSnap, progTaskSnap, progAlertSnap, adminLogSnap, resetFlagSnap, purgeTestBatchSnap, purgeCentralisationSnap] = await Promise.allSettled([
+        const [actSnap, projSnap, finEventSnap, verseSnap, intentSnap, relEventSnap, pvsSnap, bilansSnap, archSnap, adminSnap, progTaskSnap, progAlertSnap, adminLogSnap, resetFlagSnap, purgeTestBatchSnap, purgeCentralisationSnap, deletedRecordsSnap, dismissedDemoSnap, regularizeGilbertSnap] = await Promise.allSettled([
           getDocs(collection(db, 'activities')),
           getDocs(collection(db, 'projects')),
           getDocs(collection(db, 'financial_events')),
@@ -1479,7 +1711,77 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           getDoc(doc(db, 'admin', 'workflow_reset_v3')),
           getDoc(doc(db, 'admin', 'purge_test_batch_1794992532283')),
           getDoc(doc(db, 'admin', 'purge_centralisation_v1')),
+          getDoc(doc(db, 'admin', 'deleted_records_v1')),
+          getDoc(doc(db, 'admin', 'dismissed_demo_requests')),
+          getDoc(doc(db, 'admin', 'regularize_gilbert_v1')),
         ]);
+
+        if (regularizeGilbertSnap.status === 'fulfilled' && !regularizeGilbertSnap.value.exists()) {
+          const nowIso = new Date().toISOString();
+          const gilbertFixPayload = {
+            id: '10',
+            firstName: 'GILBERT',
+            nickname: 'DOYEN',
+            fullRosterName: 'GILBERT (DOYEN)',
+            phone: '2250703567992',
+            isRegistered: true,
+            statut: 'Activé',
+            resetAt: null,
+            updatedAt: nowIso,
+          };
+          usersDocsMap.set('10', { ...(usersDocsMap.get('10') || {}), ...gilbertFixPayload, _docId: '10' });
+          membersDocsMap.set('10', { ...(membersDocsMap.get('10') || {}), ...gilbertFixPayload, _docId: '10' });
+          reconcileMembers();
+          Promise.allSettled([
+            setDoc(doc(db, 'users', '10'), gilbertFixPayload, { merge: true }),
+            setDoc(doc(db, 'members', '10'), gilbertFixPayload, { merge: true }),
+          ]).then(() => {
+            setDoc(doc(db, 'admin', 'regularize_gilbert_v1'), {
+              completedAt: nowIso,
+              memberId: '10',
+              phone: '2250703567992',
+              version: '2026.11.18.12',
+            }).catch(() => {});
+          });
+        }
+
+        if (deletedRecordsSnap.status === 'fulfilled' && deletedRecordsSnap.value.exists()) {
+          const data = deletedRecordsSnap.value.data() as any;
+          if (Array.isArray(data?.ids)) {
+            data.ids.forEach((id: string) => {
+              if (id) deletedRecordIdsRef.current.add(id);
+            });
+          }
+          if (data?.defaultsNewsCleared) {
+            defaultsNewsClearedRef.current = true;
+          }
+          try {
+            localStorage.setItem(
+              EROUAMA_DELETED_RECORDS_KEY,
+              JSON.stringify({
+                ids: Array.from(deletedRecordIdsRef.current),
+                defaultsNewsCleared: defaultsNewsClearedRef.current,
+              })
+            );
+          } catch {}
+        }
+
+        if (dismissedDemoSnap.status === 'fulfilled' && dismissedDemoSnap.value.exists()) {
+          const data = dismissedDemoSnap.value.data() as any;
+          const serverIds: string[] = Array.isArray(data?.ids) ? data.ids : [];
+          const serverDisableAll = Boolean(data?.disableAll);
+          setDismissedDemoRequestIds(prev => {
+            const merged = Array.from(new Set([...prev, ...serverIds]));
+            try {
+              localStorage.setItem(
+                EROUAMA_DISMISSED_DEMO_REQS_KEY,
+                JSON.stringify({ ids: merged, disableAll: serverDisableAll || demosDisabled })
+              );
+            } catch {}
+            return merged;
+          });
+          if (serverDisableAll) setDemosDisabled(true);
+        }
 
         const needsWorkflowReset =
           resetFlagSnap.status === 'fulfilled' && !resetFlagSnap.value.exists();
@@ -1504,6 +1806,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         if (actSnap.status === 'fulfilled') {
           const rawLoaded: EventActivity[] = [];
           actSnap.value.forEach(d => {
+            if (deletedRecordIdsRef.current.has(d.id)) {
+              deleteDoc(doc(db, 'activities', d.id)).catch(() => {});
+              return;
+            }
             const data = d.data() as any;
             let actItem: EventActivity = { id: d.id, ...data };
             // Harmonisation automatique si l'événement Soirée Rouama a conservé une date 2026 obsolète
@@ -1597,6 +1903,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         if (projSnap.status === 'fulfilled') {
           const loaded: AgrProject[] = [];
           projSnap.value.forEach(d => {
+            if (deletedRecordIdsRef.current.has(d.id)) {
+              deleteDoc(doc(db, 'projects', d.id)).catch(() => {});
+              return;
+            }
             const projItem: AgrProject = { id: d.id, ...(d.data() as any) };
             if (isTargetTestBatchProject(projItem)) {
               testBatchPurgePromises.push(deleteDoc(doc(db, 'projects', d.id)).catch(console.warn));
@@ -1634,6 +1944,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         if (finEventSnap.status === 'fulfilled') {
           const loaded: FinancialEvent[] = [];
           finEventSnap.value.forEach(d => {
+            if (deletedRecordIdsRef.current.has(d.id)) {
+              deleteDoc(doc(db, 'financial_events', d.id)).catch(() => {});
+              return;
+            }
             const fe: FinancialEvent = { id: d.id, ...(d.data() as any) };
             if (
               needsTestBatchPurge &&
@@ -1669,6 +1983,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         if (relEventSnap.status === 'fulfilled') {
           const loaded: ReligiousEvent[] = [];
           relEventSnap.value.forEach(d => {
+            if (deletedRecordIdsRef.current.has(d.id)) {
+              deleteDoc(doc(db, 'religious_events', d.id)).catch(() => {});
+              return;
+            }
             const data = d.data() as any;
             const st = data.status || 'DRAFT';
             loaded.push({
@@ -1726,19 +2044,37 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
         if (pvsSnap.status === 'fulfilled') {
           const loaded: SecretaryPV[] = [];
-          pvsSnap.value.forEach(d => loaded.push({ id: d.id, ...(d.data() as any) }));
+          pvsSnap.value.forEach(d => {
+            if (deletedRecordIdsRef.current.has(d.id)) {
+              deleteDoc(doc(db, 'secretary_pvs', d.id)).catch(() => {});
+              return;
+            }
+            loaded.push({ id: d.id, ...(d.data() as any) });
+          });
           setPvs(loaded);
         }
 
         if (bilansSnap.status === 'fulfilled') {
           const loaded: FinancialBilan[] = [];
-          bilansSnap.value.forEach(d => loaded.push({ id: d.id, ...(d.data() as any) }));
+          bilansSnap.value.forEach(d => {
+            if (deletedRecordIdsRef.current.has(d.id)) {
+              deleteDoc(doc(db, 'secretary_bilans', d.id)).catch(() => {});
+              return;
+            }
+            loaded.push({ id: d.id, ...(d.data() as any) });
+          });
           setBilans(loaded);
         }
 
         if (archSnap.status === 'fulfilled') {
           const loaded: ArchiveDoc[] = [];
-          archSnap.value.forEach(d => loaded.push({ id: d.id, ...(d.data() as any) }));
+          archSnap.value.forEach(d => {
+            if (deletedRecordIdsRef.current.has(d.id)) {
+              deleteDoc(doc(db, 'archive_docs', d.id)).catch(() => {});
+              return;
+            }
+            loaded.push({ id: d.id, ...(d.data() as any) });
+          });
           setArchiveDocs(loaded);
         }
 
@@ -1777,6 +2113,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         if (progTaskSnap.status === 'fulfilled') {
           const loaded: ProgrammeTask[] = [];
           progTaskSnap.value.forEach(d => {
+            if (deletedRecordIdsRef.current.has(d.id)) {
+              deleteDoc(doc(db, 'programme_tasks', d.id)).catch(() => {});
+              return;
+            }
             const t: ProgrammeTask = { id: d.id, ...(d.data() as any) };
             if (
               needsTestBatchPurge &&
@@ -1794,6 +2134,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         if (progAlertSnap.status === 'fulfilled') {
           const loaded: ProgrammeAlert[] = [];
           progAlertSnap.value.forEach(d => {
+            if (deletedRecordIdsRef.current.has(d.id)) {
+              deleteDoc(doc(db, 'programme_alerts', d.id)).catch(() => {});
+              return;
+            }
             const a: ProgrammeAlert = { id: d.id, ...(d.data() as any) };
             if (
               needsTestBatchPurge &&
@@ -1837,23 +2181,31 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     // ÉCOUTEURS TEMPS RÉEL POUR GBAIRAI ET NAVETTE D'ÉCHANGE
     // Permet au Chargé au Suivi (SDP), aux administrateurs et aux membres de voir les messages et lectures en temps réel
-    const newsDocsMap = new Map<string, NewsItem>();
-    const announcementsDocsMap = new Map<string, NewsItem>();
     const updateGbairaiState = () => {
       const combined = new Map<string, NewsItem>();
-      announcementsDocsMap.forEach((v, k) => combined.set(k, v));
-      newsDocsMap.forEach((v, k) => combined.set(k, v));
+      announcementsDocsMapRef.current.forEach((v, k) => {
+        if (!deletedRecordIdsRef.current.has(k)) combined.set(k, v);
+      });
+      newsDocsMapRef.current.forEach((v, k) => {
+        if (!deletedRecordIdsRef.current.has(k)) combined.set(k, v);
+      });
       const loaded = Array.from(combined.values());
       if (loaded.length > 0) {
         loaded.sort((a, b) => (b.id || '').localeCompare(a.id || ''));
         setNewsItems(loaded);
         setReligiousEvents(prev => reconcileHistoricalSpiritualEvents(prev, loaded));
+      } else if (defaultsNewsClearedRef.current) {
+        setNewsItems([]);
       }
     };
 
-    const handleGbairaiSnapshot = (snapshot: any, targetMap: Map<string, NewsItem>) => {
+    const handleGbairaiSnapshot = (snapshot: any, targetMap: Map<string, NewsItem>, colName: 'news' | 'announcements') => {
       targetMap.clear();
       snapshot.forEach((d: any) => {
+        if (deletedRecordIdsRef.current.has(d.id)) {
+          deleteDoc(doc(db, colName, d.id)).catch(() => {});
+          return;
+        }
         const item = { id: d.id, ...(d.data() as any) };
         if (
           item.deleted === true ||
@@ -1872,22 +2224,26 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
 
     const unsubGbairaiNews = onSnapshot(collection(db, 'news'), (snapshot) => {
-      handleGbairaiSnapshot(snapshot, newsDocsMap);
+      handleGbairaiSnapshot(snapshot, newsDocsMapRef.current, 'news');
     }, (err) => {
       console.warn('Erreur écouteur temps réel news Gbairai:', err);
     });
 
     const unsubGbairaiAnnouncements = onSnapshot(collection(db, 'announcements'), (snapshot) => {
-      handleGbairaiSnapshot(snapshot, announcementsDocsMap);
+      handleGbairaiSnapshot(snapshot, announcementsDocsMapRef.current, 'announcements');
     }, (err) => {
       console.warn('Erreur écouteur temps réel announcements Gbairai:', err);
     });
 
     // Écouteur temps réel pour les navettes et demandes d'information (écoute simultanée et consolidée de info_requests et navettes)
     const unsubInfoRequests = onSnapshot(collection(db, 'info_requests'), (snapshot) => {
-      infoRequestsMap.clear();
+      infoRequestsMapRef.current.clear();
       snapshot.forEach((d) => {
-        infoRequestsMap.set(d.id, { id: d.id, ...(d.data() as any) });
+        if (deletedRecordIdsRef.current.has(d.id)) {
+          deleteDoc(doc(db, 'info_requests', d.id)).catch(() => {});
+          return;
+        }
+        infoRequestsMapRef.current.set(d.id, { id: d.id, ...(d.data() as any) });
       });
       updateNavetteState();
     }, (err) => {
@@ -1895,14 +2251,80 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
 
     const unsubNavettesCol = onSnapshot(collection(db, 'navettes'), (snapshot) => {
-      navettesMap.clear();
+      navettesMapRef.current.clear();
       snapshot.forEach((d) => {
-        navettesMap.set(d.id, { id: d.id, ...(d.data() as any) });
+        if (deletedRecordIdsRef.current.has(d.id)) {
+          deleteDoc(doc(db, 'navettes', d.id)).catch(() => {});
+          return;
+        }
+        navettesMapRef.current.set(d.id, { id: d.id, ...(d.data() as any) });
       });
       updateNavetteState();
     }, (err) => {
       console.warn('Erreur écouteur temps réel navettes:', err);
     });
+
+    // Synchronisation temps réel des suppressions persistantes et des démos masquées
+    const unsubDeletedRecords = onSnapshot(doc(db, 'admin', 'deleted_records_v1'), (docSnap) => {
+      if (!docSnap.exists()) return;
+      const data = docSnap.data() as any;
+      let changed = false;
+      if (Array.isArray(data?.ids)) {
+        data.ids.forEach((id: string) => {
+          if (id && !deletedRecordIdsRef.current.has(id)) {
+            deletedRecordIdsRef.current.add(id);
+            infoRequestsMapRef.current.delete(id);
+            navettesMapRef.current.delete(id);
+            newsDocsMapRef.current.delete(id);
+            announcementsDocsMapRef.current.delete(id);
+            changed = true;
+          }
+        });
+      }
+      if (data?.defaultsNewsCleared && !defaultsNewsClearedRef.current) {
+        defaultsNewsClearedRef.current = true;
+        changed = true;
+      }
+      if (changed) {
+        try {
+          localStorage.setItem(
+            EROUAMA_DELETED_RECORDS_KEY,
+            JSON.stringify({
+              ids: Array.from(deletedRecordIdsRef.current),
+              defaultsNewsCleared: defaultsNewsClearedRef.current,
+            })
+          );
+        } catch {}
+        updateNavetteState();
+        updateGbairaiState();
+        setActivities(prev => prev.filter(a => !deletedRecordIdsRef.current.has(a.id)));
+        setProjects(prev => prev.filter(p => !deletedRecordIdsRef.current.has(p.id)));
+        setFinancialEvents(prev => prev.filter(fe => !deletedRecordIdsRef.current.has(fe.id)));
+        setReligiousEvents(prev => prev.filter(r => !deletedRecordIdsRef.current.has(r.id)));
+        setPvs(prev => prev.filter(pv => !deletedRecordIdsRef.current.has(pv.id)));
+        setBilans(prev => prev.filter(b => !deletedRecordIdsRef.current.has(b.id)));
+        setProgrammeTasks(prev => prev.filter(t => !deletedRecordIdsRef.current.has(t.id)));
+        setProgrammeAlerts(prev => prev.filter(a => !deletedRecordIdsRef.current.has(a.id)));
+      }
+    }, () => {});
+
+    const unsubDismissedDemos = onSnapshot(doc(db, 'admin', 'dismissed_demo_requests'), (docSnap) => {
+      if (!docSnap.exists()) return;
+      const data = docSnap.data() as any;
+      const serverIds: string[] = Array.isArray(data?.ids) ? data.ids : [];
+      const serverDisableAll = Boolean(data?.disableAll);
+      setDismissedDemoRequestIds(prev => {
+        const merged = Array.from(new Set([...prev, ...serverIds]));
+        try {
+          localStorage.setItem(
+            EROUAMA_DISMISSED_DEMO_REQS_KEY,
+            JSON.stringify({ ids: merged, disableAll: serverDisableAll })
+          );
+        } catch {}
+        return merged;
+      });
+      if (serverDisableAll) setDemosDisabled(true);
+    }, () => {});
 
     // Écouteur temps réel pour les logs d'activité/connexions administratives
     const unsubAdminLogs = onSnapshot(collection(db, 'admin_logs'), (snapshot) => {
@@ -1920,6 +2342,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const unsubReligiousEvents = onSnapshot(collection(db, 'religious_events'), (snapshot) => {
       const loaded: ReligiousEvent[] = [];
       snapshot.forEach((d) => {
+        if (deletedRecordIdsRef.current.has(d.id)) {
+          deleteDoc(doc(db, 'religious_events', d.id)).catch(() => {});
+          return;
+        }
         const data = d.data() as any;
         const st = data.status || 'DRAFT';
         loaded.push({
@@ -1955,6 +2381,28 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       console.warn('Erreur écouteur temps réel treasury/balances:', err);
     });
 
+    // Écouteurs temps réel pour users et members (synchronisation instantanée des statuts et compteurs d'inscrits)
+    const unsubUsersCol = onSnapshot(collection(db, 'users'), (snapshot) => {
+      usersDocsMap.clear();
+      snapshot.forEach((docSnap) => {
+        if (['TRESORIER', 'CERVEAU', 'PAYOR', 'SDP', 'ORGANISATEUR', 'ORGANISATION', 'PROJET', 'COM', 'SECRETARIAT', 'SPIRITUALITE'].includes(docSnap.id)) return;
+        usersDocsMap.set(docSnap.id, { ...docSnap.data(), _docId: docSnap.id });
+      });
+      reconcileMembers();
+    }, (err) => {
+      console.warn('Erreur écouteur temps réel users:', err);
+    });
+
+    const unsubMembersCol = onSnapshot(collection(db, 'members'), (snapshot) => {
+      membersDocsMap.clear();
+      snapshot.forEach((docSnap) => {
+        membersDocsMap.set(docSnap.id, { ...docSnap.data(), _docId: docSnap.id });
+      });
+      reconcileMembers();
+    }, (err) => {
+      console.warn('Erreur écouteur temps réel members:', err);
+    });
+
     // Références pour rafraîchissements ponctuels après création ou validation
     treasuryLoaderRef.current = loadTreasury;
     gbairaiLoaderRef.current = loadGbairai;
@@ -1965,9 +2413,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (unsubGbairaiAnnouncements) unsubGbairaiAnnouncements();
       if (unsubInfoRequests) unsubInfoRequests();
       if (unsubNavettesCol) unsubNavettesCol();
+      if (unsubDeletedRecords) unsubDeletedRecords();
+      if (unsubDismissedDemos) unsubDismissedDemos();
       if (unsubAdminLogs) unsubAdminLogs();
       if (unsubReligiousEvents) unsubReligiousEvents();
       if (unsubTreasuryBalances) unsubTreasuryBalances();
+      if (unsubUsersCol) unsubUsersCol();
+      if (unsubMembersCol) unsubMembersCol();
     };
   }, []);
 
@@ -2185,6 +2637,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       fullRosterName: matched.fullRosterName,
       isRegistered: true,
       statut: 'Activé',
+      resetAt: null,
       pin: String(pin).trim(),
       pinCode: String(pin).trim(),
       avatar: avatarUrl || "",
@@ -2343,6 +2796,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           pin: expectedPin,
           isRegistered: true,
           statut: "Activé",
+          resetAt: null,
           lastLogin: nowIso
         });
       } catch {
@@ -2351,6 +2805,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           pin: expectedPin,
           isRegistered: true,
           statut: 'Activé',
+          resetAt: null,
           lastLogin: nowIso
         }, { merge: true });
       }
@@ -2360,6 +2815,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           pin: expectedPin,
           isRegistered: true,
           statut: 'Activé',
+          resetAt: null,
           lastLogin: nowIso
         }, { merge: true });
       } catch (e) {
@@ -3119,6 +3575,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setDoc(doc(db, 'declarations', docRef.id), sanitizeFirestore(fullDocData), { merge: true }),
       ]);
 
+      // Synchroniser automatiquement le statut Activé du membre lors de tout paiement de cotisation/activité
+      activateMemberAccount(String(activeMember.id)).catch(() => {});
+
       const displayCategory = fund === 'COTISATION'
         ? (amount >= 500 && amount % 500 === 0
             ? `Cotisation Mensuelle (${Math.floor(amount / 500)} mois)`
@@ -3518,6 +3977,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         duesStatus: duesStatus,
         statutCotisation: duesStatus,
         statutDemande: 'valide',
+        isRegistered: true,
+        statut: 'Activé',
+        resetAt: null,
         dernierPaiementId: targetId,
         derniereValidation: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
@@ -3664,7 +4126,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           ? 'A_JOUR'
           : 'RETARD';
 
-      const updateData = {
+      const updateData: Record<string, any> = {
         totalPaid,
         solde: totalPaid,
         montantPaye: totalPaid,
@@ -3674,6 +4136,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         duesStatus,
         statutCotisation: duesStatus,
         statutDemande: 'valide',
+        ...(totalPaid > 0 ? { isRegistered: true, statut: 'Activé', resetAt: null } : {}),
         updatedAt: new Date().toISOString(),
       };
 
@@ -3760,6 +4223,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         return pId !== targetId;
       })
     );
+    await persistDeletedRecordIds([targetId]);
 
     // Traitement Firestore en arrière-plan
     try {
@@ -3792,6 +4256,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     // 3. Mise à jour synchrone immédiate pour retirer la ligne instantanément de l'affichage local
     setDeclarations(prev => prev.filter(d => (d.id || (d as any)._id || (d as any).docId) !== targetId && d.status !== 'deleted'));
     setTransactions(prev => prev.filter(t => (t.id || (t as any)._id || (t as any).docId) !== targetId));
+    await persistDeletedRecordIds([targetId]);
 
     try {
       // 1. Double action : status = 'deleted' pour sécuriser l'exclusion immédiate
@@ -3826,10 +4291,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const deleteTransaction = async (txId: string) => {
     if (!txId) return;
     const targetId = txId.trim();
+    setTransactions(prev => prev.filter(t => t.id !== targetId));
     try {
-      await deleteDoc(doc(db, 'transactions', targetId)).catch(console.warn);
-      await deleteDoc(doc(db, 'payments', targetId)).catch(() => {});
-      setTransactions(prev => prev.filter(t => t.id !== targetId));
+      await persistDeletedRecordIds([targetId]);
+      await Promise.allSettled([
+        deleteDoc(doc(db, 'transactions', targetId)),
+        deleteDoc(doc(db, 'payments', targetId)),
+      ]);
     } catch (err) {
       console.error('Erreur deleteTransaction Firestore:', err);
       throw err;
@@ -4624,6 +5092,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         );
       }
     }
+    if (!specificMemberId && targetMember && (!targetMember.isRegistered || targetMember.statut !== 'Activé')) {
+      activateMemberAccount(String(targetMemberId)).catch(() => {});
+    }
   };
 
   const markAllGbairaiAsRead = useCallback(async (specificMemberId?: string): Promise<void> => {
@@ -4633,6 +5104,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     const curMembers = membersRef.current || [];
     const targetMember = curMembers.find(m => String(m.id).trim() === targetMemberId);
+    if (!specificMemberId && targetMember && (!targetMember.isRegistered || targetMember.statut !== 'Activé')) {
+      activateMemberAccount(targetMemberId).catch(() => {});
+    }
     const targetNick = targetMember?.nickname || (curUser?.member?.id === targetMemberId ? curUser?.member?.nickname : undefined);
     const toAdd = [targetMemberId];
     if (targetNick) toAdd.push(targetNick);
@@ -4694,17 +5168,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, []);
 
   const deleteNewsItem = async (newsId: string) => {
-    try {
-      await updateDoc(doc(db, 'news', newsId), { deleted: true, isDeleted: true, status: 'deleted', isHidden: true }).catch(() => {});
-      await deleteDoc(doc(db, 'news', newsId));
-    } catch (err) {
-      console.warn('Erreur lors de la suppression Firestore du communiqué (news) :', err);
-    }
-    try {
-      await updateDoc(doc(db, 'announcements', newsId), { deleted: true, isDeleted: true, status: 'deleted', isHidden: true }).catch(() => {});
-      await deleteDoc(doc(db, 'announcements', newsId));
-    } catch (_) {}
+    newsDocsMapRef.current.delete(newsId);
+    announcementsDocsMapRef.current.delete(newsId);
     setNewsItems(prev => prev.filter(n => n.id !== newsId));
+    await persistDeletedRecordIds([newsId], { defaultsNewsCleared: true });
+    await Promise.allSettled([
+      deleteDoc(doc(db, 'news', newsId)),
+      deleteDoc(doc(db, 'announcements', newsId)),
+    ]);
     try {
       window.dispatchEvent(new Event('storage'));
     } catch (_) {}
@@ -5171,9 +5642,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const deleteActivity = async (activityId: string) => {
+    setActivities(prev => prev.filter(a => a.id !== activityId));
     try {
+      await persistDeletedRecordIds([activityId]);
       await deleteDoc(doc(db, 'activities', activityId));
-      setActivities(prev => prev.filter(a => a.id !== activityId));
     } catch (err) {
       console.warn('Erreur lors de la suppression de l\'activité :', err);
       throw err;
@@ -5251,9 +5723,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     );
   };
 
-  const deleteFinancialEvent = (eventId: string) => {
-    deleteDoc(doc(db, 'financial_events', eventId)).catch(console.warn);
+  const deleteFinancialEvent = async (eventId: string) => {
     setFinancialEvents(prev => prev.filter(e => e.id !== eventId));
+    await persistDeletedRecordIds([eventId]);
+    await deleteDoc(doc(db, 'financial_events', eventId)).catch(console.warn);
   };
 
   // Projets AGR
@@ -5745,9 +6218,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     );
   };
 
-  const deleteProject = (projectId: string) => {
-    deleteDoc(doc(db, 'projects', projectId)).catch(console.warn);
+  const deleteProject = async (projectId: string) => {
     setProjects(prev => prev.filter(p => p.id !== projectId));
+    await persistDeletedRecordIds([projectId]);
+    await deleteDoc(doc(db, 'projects', projectId)).catch(console.warn);
   };
 
   // Secrétariat, PVs et Bilans
@@ -5994,9 +6468,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setPvs(prev => prev.map(p => (p.id === pvId ? { ...p, ...updates } : p)));
   };
 
-  const deleteSecretaryPV = (pvId: string) => {
-    deleteDoc(doc(db, 'secretary_pvs', pvId)).catch(console.warn);
+  const deleteSecretaryPV = async (pvId: string) => {
     setPvs(prev => prev.filter(p => p.id !== pvId));
+    await persistDeletedRecordIds([pvId]);
+    await deleteDoc(doc(db, 'secretary_pvs', pvId)).catch(console.warn);
   };
 
   const createFinancialBilan = (
@@ -6132,9 +6607,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }).catch(console.warn);
   };
 
-  const deleteFinancialBilan = (bilanId: string) => {
-    deleteDoc(doc(db, 'secretary_bilans', bilanId)).catch(console.warn);
+  const deleteFinancialBilan = async (bilanId: string) => {
     setBilans(prev => prev.filter(b => b.id !== bilanId));
+    await persistDeletedRecordIds([bilanId]);
+    await deleteDoc(doc(db, 'secretary_bilans', bilanId)).catch(console.warn);
   };
 
   const sendBilanToSecretariat = (bilanId: string) => {
@@ -6378,11 +6854,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const resetMemberPin = (memberId: string) => {
-    const resetPayload = { pin: null, pinCode: null, isRegistered: false, statut: 'En attente', updatedAt: new Date().toISOString() };
+    const nowIso = new Date().toISOString();
+    const resetPayload = { pin: '', pinCode: '', isRegistered: false, statut: "En attente d'activation", resetAt: nowIso, updatedAt: nowIso };
     setDoc(doc(db, 'users', memberId), resetPayload, { merge: true }).catch(console.warn);
     setDoc(doc(db, 'members', memberId), resetPayload, { merge: true }).catch(console.warn);
     setMembers(prev =>
-      prev.map(m => (m.id === memberId ? { ...m, pin: undefined, pinCode: undefined, isRegistered: false, statut: 'En attente' } : m))
+      prev.map(m => (m.id === memberId ? { ...m, pin: undefined, pinCode: undefined, isRegistered: false, statut: "En attente d'activation", resetAt: nowIso } : m))
     );
     try {
       const currentList = getStoredRegisteredUsers();
@@ -6430,9 +6907,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const deleteProgrammeTask = async (taskId: string): Promise<{ success: boolean }> => {
+    const linkedAlertIds = programmeAlerts.filter(a => a.taskId === taskId).map(a => a.id);
+    setProgrammeTasks(prev => prev.filter(t => t.id !== taskId));
+    setProgrammeAlerts(prev => prev.filter(a => a.taskId !== taskId));
     try {
-      await deleteDoc(doc(db, 'programme_tasks', taskId));
-      setProgrammeTasks(prev => prev.filter(t => t.id !== taskId));
+      await persistDeletedRecordIds([taskId, ...linkedAlertIds]);
+      await Promise.allSettled([
+        deleteDoc(doc(db, 'programme_tasks', taskId)),
+        ...linkedAlertIds.map(aId => deleteDoc(doc(db, 'programme_alerts', aId))),
+      ]);
       return { success: true };
     } catch (err) {
       console.warn('Erreur deleteProgrammeTask:', err);
@@ -6521,7 +7004,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         messages: [initialMsg],
       };
       await setDoc(doc(db, 'info_requests', id), sanitizeFirestore(newReq));
+      infoRequestsMapRef.current.set(id, newReq);
       setInfoRequests(prev => [newReq, ...prev.filter(r => r.id !== id)]);
+      dismissDemoInfoRequests([], true).catch(() => {});
 
       // Notification Push FCM envoyée au rôle / département destinataire
       dispatchPushNotification({
@@ -6617,7 +7102,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         messages: updatedMessages,
       };
 
-      await updateDoc(doc(db, 'info_requests', id), sanitizeFirestore(updates));
+      const [r1, r2] = await Promise.allSettled([
+        updateDoc(doc(db, 'info_requests', id), sanitizeFirestore(updates)),
+        updateDoc(doc(db, 'navettes', id), sanitizeFirestore(updates)),
+      ]);
+      if (r1.status === 'rejected' && r2.status === 'rejected') {
+        throw r1.reason;
+      }
+      if (infoRequestsMapRef.current.has(id)) {
+        infoRequestsMapRef.current.set(id, { ...infoRequestsMapRef.current.get(id)!, ...updates });
+      }
+      if (navettesMapRef.current.has(id)) {
+        navettesMapRef.current.set(id, { ...navettesMapRef.current.get(id)!, ...updates });
+      }
       setInfoRequests(prev =>
         prev.map(r => (r.id === id ? { ...r, ...updates } : r))
       );
@@ -6669,7 +7166,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             updatedAt: nowIso,
           };
 
-      await updateDoc(doc(db, 'info_requests', id), sanitizeFirestore(updates));
+      const [r1, r2] = await Promise.allSettled([
+        updateDoc(doc(db, 'info_requests', id), sanitizeFirestore(updates)),
+        updateDoc(doc(db, 'navettes', id), sanitizeFirestore(updates)),
+      ]);
+      if (r1.status === 'rejected' && r2.status === 'rejected') {
+        throw r1.reason;
+      }
+      if (infoRequestsMapRef.current.has(id)) {
+        infoRequestsMapRef.current.set(id, { ...infoRequestsMapRef.current.get(id)!, ...updates });
+      }
+      if (navettesMapRef.current.has(id)) {
+        navettesMapRef.current.set(id, { ...navettesMapRef.current.get(id)!, ...updates });
+      }
       setInfoRequests(prev =>
         prev.map(r => (r.id === id ? { ...r, ...updates } : r))
       );
@@ -6688,7 +7197,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const markInfoRequestRead = async (id: string): Promise<{ success: boolean }> => {
     try {
-      await updateDoc(doc(db, 'info_requests', id), { isRead: true, updatedAt: new Date().toISOString() });
+      const readUpdates = { isRead: true, updatedAt: new Date().toISOString() };
+      const [r1, r2] = await Promise.allSettled([
+        updateDoc(doc(db, 'info_requests', id), readUpdates),
+        updateDoc(doc(db, 'navettes', id), readUpdates),
+      ]);
+      if (r1.status === 'rejected' && r2.status === 'rejected') {
+        throw r1.reason;
+      }
+      if (infoRequestsMapRef.current.has(id)) {
+        infoRequestsMapRef.current.set(id, { ...infoRequestsMapRef.current.get(id)!, isRead: true });
+      }
+      if (navettesMapRef.current.has(id)) {
+        navettesMapRef.current.set(id, { ...navettesMapRef.current.get(id)!, isRead: true });
+      }
       setInfoRequests(prev =>
         prev.map(r => (r.id === id ? { ...r, isRead: true } : r))
       );
@@ -6700,9 +7222,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const deleteInfoRequest = async (id: string): Promise<{ success: boolean }> => {
+    infoRequestsMapRef.current.delete(id);
+    navettesMapRef.current.delete(id);
+    setInfoRequests(prev => prev.filter(r => r.id !== id));
     try {
-      await deleteDoc(doc(db, 'info_requests', id));
-      setInfoRequests(prev => prev.filter(r => r.id !== id));
+      await Promise.all([
+        persistDeletedRecordIds([id]),
+        dismissDemoInfoRequests([], true),
+      ]);
+      await Promise.allSettled([
+        deleteDoc(doc(db, 'info_requests', id)),
+        deleteDoc(doc(db, 'navettes', id)),
+      ]);
       return { success: true };
     } catch (err) {
       console.warn("Erreur deleteInfoRequest:", err);
@@ -6949,12 +7480,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const deleteReligiousEvent = async (eventId: string) => {
+    setReligiousEvents(prev => prev.filter(e => e.id !== eventId));
+    await persistDeletedRecordIds([eventId]);
     try {
       await deleteDoc(doc(db, 'religious_events', eventId));
     } catch (err) {
       console.warn('Erreur Firestore deleteDoc religious_events:', err);
     }
-    setReligiousEvents(prev => prev.filter(e => e.id !== eventId));
   };
 
   const createReligiousEvent = (
@@ -7351,6 +7883,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         createProgrammeAlert,
         resolveProgrammeAlert,
         infoRequests,
+        dismissedDemoRequestIds,
+        demosDisabled,
+        dismissDemoInfoRequests,
         createInfoRequest,
         replyInfoRequest,
         closeInfoRequest,
@@ -7382,6 +7917,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         archiveReligiousEventSecretariat,
         setCurrentUser,
         switchWorkspace,
+        activateMemberAccount,
         registerMember,
         loginMember,
         loginAdmin,

@@ -144,7 +144,7 @@ export const EditMemberModal: React.FC<EditMemberModalProps> = ({
     try {
       const existingMemberData = member;
       const finalPin = trimmedPin || existingMemberData.pinCode || existingMemberData.pin || '';
-      const isActif = Boolean(finalPin || existingMemberData.isRegistered);
+      const isActif = Boolean(finalPin || existingMemberData.isRegistered || Number(existingMemberData.totalPaid || existingMemberData.solde || 0) > 0);
       const formFields = {
         firstName: trimmedFirstName,
         nickname: nickname.trim() || trimmedFirstName,
@@ -155,6 +155,7 @@ export const EditMemberModal: React.FC<EditMemberModalProps> = ({
         pinCode: finalPin,
         isRegistered: isActif,
         statut: isActif ? 'Activé' : "En attente d'activation",
+        resetAt: isActif ? null : (existingMemberData.resetAt ?? null),
       };
 
       // RÈGLE STRICTE N°1 & N°2 :
