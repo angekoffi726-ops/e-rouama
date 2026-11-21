@@ -89,6 +89,8 @@ export interface ReligiousEvent {
   batchId?: string;
   batchTitle?: string;
   isConsolidated?: boolean;
+  createdAtMs?: number;
+  updatedAtMs?: number;
 }
 
 export interface RouamaMember {
@@ -383,6 +385,8 @@ export interface EventActivity {
   batchId?: string;
   batchTitle?: string;
   isConsolidated?: boolean;
+  createdAtMs?: number;
+  updatedAtMs?: number;
 }
 
 export const DEFAULT_ANNIVERSAIRE_ACTIVITY: EventActivity = {
@@ -531,6 +535,8 @@ export interface AgrProject {
   batchId?: string;
   batchTitle?: string;
   isConsolidated?: boolean;
+  createdAtMs?: number;
+  updatedAtMs?: number;
 }
 
 export interface ArchiveDoc {
@@ -583,6 +589,8 @@ export interface SecretaryPV {
   ackByComAt?: string;
   publishedByCom?: boolean;
   publishedByComAt?: string;
+  createdAtMs?: number;
+  updatedAtMs?: number;
 }
 
 export interface FinancialBilan {

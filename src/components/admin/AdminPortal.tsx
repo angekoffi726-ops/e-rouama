@@ -429,6 +429,7 @@ export const AdminPortal: React.FC = () => {
     deleteActivity,
     refreshTreasury,
     isRefreshingData,
+    treasuryRegularizations: ctxTreasuryRegularizations,
     approveActivityPayor,
     projects,
     createProject,
@@ -501,6 +502,9 @@ export const AdminPortal: React.FC = () => {
     ackReligiousEventCOM,
     archiveReligiousEventSecretariat,
     sendComGbairaiAlert,
+    cloudSyncError,
+    clearCloudSyncError,
+    refreshProjects,
   } = useApp();
 
   // État d'ouverture du bloc interne Canal de Navette & Échanges par département (ouvert par défaut)
@@ -1093,32 +1097,26 @@ export const AdminPortal: React.FC = () => {
       });
     };
 
-    // Chargement initial rapide sans bloquer le rendu
-    Promise.allSettled([
-      getDocs(collection(db, 'payments')),
-      getDocs(collection(db, 'cotisations')),
-      getDocs(collection(db, 'receipts')),
-    ])
-      .then(([pSnap, cSnap, rSnap]) => {
-        if (!isMounted) return;
-        const snapshot = pSnap.status === 'fulfilled' ? pSnap.value : null;
-        const cotSnapshot = cSnap.status === 'fulfilled' ? cSnap.value : null;
-        const receiptSnapshot = rSnap.status === 'fulfilled' ? rSnap.value : null;
-
-        const loaded: any[] = [];
+    // Chargement initial rapide uniquement pour 'cotisations' (payments et receipts reçoivent leur instantané via onSnapshot)
+    getDocs(collection(db, 'cotisations'))
+      .then((cotSnapshot) => {
+        if (!isMounted || cotSnapshot.empty) return;
+        const cotLoaded: any[] = [];
         const seenDocIds = new Set<string>();
         const seenSignatures = new Set<string>();
-
-        if (snapshot) snapshot.docs.forEach(d => processDoc(d, loaded, seenDocIds, seenSignatures));
-        if (cotSnapshot) cotSnapshot.docs.forEach(d => processDoc(d, loaded, seenDocIds, seenSignatures));
-        if (receiptSnapshot) receiptSnapshot.docs.forEach(d => processDoc(d, loaded, seenDocIds, seenSignatures));
-
-        if (isMounted && loaded.length > 0) {
-          setFirestorePayments(loaded);
+        cotSnapshot.docs.forEach(d => processDoc(d, cotLoaded, seenDocIds, seenSignatures));
+        if (isMounted && cotLoaded.length > 0) {
+          setFirestorePayments(prev => {
+            const map = new Map<string, any>(prev.map(p => [p.id, p]));
+            cotLoaded.forEach(item => {
+              if (!map.has(item.id)) map.set(item.id, item);
+            });
+            return Array.from(map.values());
+          });
         }
       })
       .catch((error) => {
-        console.warn('Lecture directe paiements/cotisations:', error);
+        console.warn('Lecture cotisations:', error);
       });
 
     // ÉCOUTEUR TEMPS RÉEL FIRESTORE (onSnapshot) SUR LES PAIEMENTS
@@ -1323,23 +1321,12 @@ export const AdminPortal: React.FC = () => {
     }
   });
 
-  // Écoute en direct des régularisations enregistrées dans doc(db, 'treasury', 'balances')
+  // Synchronisation réactive des régularisations via l'écouteur unique treasury/balances d'AppContext
   useEffect(() => {
-    const unsub = onSnapshot(doc(db, 'treasury', 'balances'), (docSnap) => {
-      if (docSnap.exists()) {
-        const d = docSnap.data();
-        if (d && d.regularizations) {
-          setTreasuryRegularizations(d.regularizations);
-          try {
-            localStorage.setItem('erouama_treasury_regularizations', JSON.stringify(d.regularizations));
-          } catch {}
-        }
-      }
-    }, (err) => {
-      console.warn('Erreur écoute regularizations doc(treasury, balances):', err);
-    });
-    return () => unsub();
-  }, []);
+    if (ctxTreasuryRegularizations && typeof ctxTreasuryRegularizations === 'object') {
+      setTreasuryRegularizations(ctxTreasuryRegularizations);
+    }
+  }, [ctxTreasuryRegularizations]);
 
   // Soldes en direct par sous-caisse calculés strictement depuis les transactions validées et décaissements,
   // intégrant toute régularisation manuelle enregistrée par le Trésorier tout en préservant l'automatisme pour les opérations futures
@@ -2355,6 +2342,27 @@ export const AdminPortal: React.FC = () => {
   const [projPilotTeam, setProjPilotTeam] = useState<string[]>([]);
   const [customPilotInput, setCustomPilotInput] = useState<string>('');
   const [editingProjectId, setEditingProjectId] = useState<string | null>(null);
+  const [isSavingProject, setIsSavingProject] = useState<boolean>(false);
+  const [projectSyncError, setProjectSyncError] = useState<string | null>(null);
+  const [isRefreshingProjects, setIsRefreshingProjects] = useState<boolean>(false);
+
+  const handleRefreshProjectsFromServer = async () => {
+    setIsRefreshingProjects(true);
+    try {
+      const res = await refreshProjects();
+      if (!res.ok) {
+        const msg = res.error || 'Impossible de contacter le serveur Firestore.';
+        setProjectSyncError(msg);
+        setToastMessage(`❌ ${msg}`);
+      } else {
+        setProjectSyncError(null);
+        clearCloudSyncError();
+        setToastMessage(`🔄 Projets synchronisés depuis le serveur (${res.count ?? 0} dossier${(res.count ?? 0) > 1 ? 's' : ''}).`);
+      }
+    } finally {
+      setIsRefreshingProjects(false);
+    }
+  };
 
   // Multi-sélection pour consolidation en un document unique
   const [selectedProjectIds, setSelectedProjectIds] = useState<string[]>([]);
@@ -5073,76 +5081,19 @@ export const AdminPortal: React.FC = () => {
   };
 
   // 1. CHARGEMENT DES DONNÉES DEPUIS FIRESTORE (useEffect / fetchAnnouncements) :
-  // 1. CHARGEMENT DES DONNÉES DEPUIS FIRESTORE (useEffect / fetchAnnouncements) :
-  // Assure que l'ID Firestore et les champs author / createdBy sont explicitement inclus dans chaque objet
-  // 1. SYNCHRONISATION EN TEMPS RÉEL (onSnapshot) DES ANNONCES & MESSAGES DEPUIS FIRESTORE
-  // Garantit la mise à jour instantanée des communiqués pour les consoles administratives sans rechargement
+  // 1. SYNCHRONISATION EN TEMPS RÉEL DES ANNONCES & MESSAGES VIA AppContext (source unique news + announcements)
   useEffect(() => {
-    let isMounted = true;
-    const annDocsMap = new Map<string, NewsItem>();
-    const newsDocsMap = new Map<string, NewsItem>();
-
-    const updateAdminAnnouncements = () => {
-      if (!isMounted) return;
-      const combined = new Map<string, NewsItem>();
-      annDocsMap.forEach((v, k) => combined.set(k, v));
-      newsDocsMap.forEach((v, k) => combined.set(k, v));
-      const list = Array.from(combined.values());
-      list.sort((a, b) => (b.id || '').localeCompare(a.id || ''));
-      setAnnouncements(list);
-    };
-
-    const processDocs = (docs: any[], targetMap: Map<string, NewsItem>) => {
-      targetMap.clear();
-      docs.forEach(docSnap => {
-        const data = docSnap.data();
-        if (data.deleted === true || data.status === 'deleted' || data.isDeleted === true) {
-          return;
-        }
-        const authorVal = data.author || data.authorRole || data.createdBy || '';
-        const createdByVal = data.createdBy || data.authorRole || data.author || '';
-        if (data.dispatchChannel !== 'MAIL') {
-          targetMap.set(docSnap.id, {
-            id: docSnap.id,
-            ...data,
-            author: authorVal,
-            createdBy: createdByVal,
-          } as NewsItem);
-        }
-      });
-      updateAdminAnnouncements();
-    };
-
-    const unsubAnn = onSnapshot(collection(db, 'announcements'), (snapshot) => {
-      processDocs(snapshot.docs, annDocsMap);
-    }, (err) => {
-      console.warn("Écouteur temps réel announcements (admin):", err);
-    });
-
-    const unsubNews = onSnapshot(collection(db, 'news'), (snapshot) => {
-      processDocs(snapshot.docs, newsDocsMap);
-    }, (err) => {
-      console.warn("Écouteur temps réel news (admin):", err);
-    });
-
-    return () => {
-      isMounted = false;
-      unsubAnn();
-      unsubNews();
-    };
-  }, []);
-
-  // Synchronisation de secours si newsItems est déjà alimenté par le contexte
-  useEffect(() => {
-    if (newsItems.length > 0 && announcements.length === 0) {
-      setAnnouncements(newsItems.map(item => ({
-        id: item.id,
+    const list = (newsItems || [])
+      .filter(item => !item.deleted && !item.isDeleted && item.status !== 'deleted' && item.dispatchChannel !== 'MAIL')
+      .map(item => ({
         ...item,
+        id: item.id,
         author: item.author || item.authorRole || item.createdBy || '',
         createdBy: item.createdBy || item.authorRole || item.author || '',
-      })));
-    }
-  }, [newsItems, announcements.length]);
+      }))
+      .sort((a, b) => (b.id || '').localeCompare(a.id || ''));
+    setAnnouncements(list);
+  }, [newsItems]);
 
   // FILTRAGE STRICT PAR AUTEUR POUR LE COM (comAnnouncements) :
   // Seuls les communiqués émis par le COM (author === 'COM' || createdBy === 'COM') apparaissent.
@@ -10430,7 +10381,21 @@ export const AdminPortal: React.FC = () => {
 
             {/* 2. SECTION PROJETS AGR (COMMISSION PROJETS) */}
             {(() => {
-              const secProjs = projects.filter(p => p.sentToSecretariat);
+              const secProjs = projects.filter(
+                p =>
+                  p.sentToSecretariat ||
+                  [
+                    'SENT_TO_SECRETARIAT',
+                    'SENT_TO_SUIVI',
+                    'PENDING_PAYOR',
+                    'pending_payor_approval',
+                    'APPROVED_PAYOR',
+                    'approved_by_payor',
+                    'returned_for_correction',
+                    'PUBLISHED',
+                    'active',
+                  ].includes(p.status || '')
+              );
               const projBatches = new Map<string, AgrProject[]>();
               const singleProjs: AgrProject[] = [];
               secProjs.forEach(p => {
@@ -10446,14 +10411,33 @@ export const AdminPortal: React.FC = () => {
 
               return (
                 <div className="space-y-4 pt-4 border-t border-slate-800">
-                  <div className="flex items-center justify-between gap-2 border-b border-slate-800/80 pb-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800/80 pb-2">
                     <h3 className="text-sm font-black text-emerald-400 uppercase tracking-wider flex items-center gap-2">
                       <span>💼 2. Dossiers Projets AGR (Commission Projets)</span>
                       <span className="bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 px-2 py-0.5 rounded-full text-[10px]">
                         {totalDistinctProjs}
                       </span>
                     </h3>
+                    <button
+                      type="button"
+                      disabled={isRefreshingProjects}
+                      onClick={handleRefreshProjectsFromServer}
+                      className="bg-slate-800 hover:bg-slate-700 disabled:opacity-60 text-emerald-300 border border-emerald-500/30 font-bold px-3 py-1.5 rounded-xl text-[11px] flex items-center gap-1.5 transition-all cursor-pointer"
+                    >
+                      <RefreshCw className={`w-3.5 h-3.5 ${isRefreshingProjects ? 'animate-spin' : ''}`} />
+                      <span>{isRefreshingProjects ? 'Actualisation...' : 'Actualiser depuis le serveur'}</span>
+                    </button>
                   </div>
+
+                  {(cloudSyncError || projectSyncError) && (
+                    <div className="p-3.5 bg-rose-950/60 border border-rose-500/50 rounded-2xl flex items-start gap-2.5 text-xs text-rose-100">
+                      <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                      <div className="space-y-1 flex-1">
+                        <p className="font-black text-rose-300 uppercase text-[11px]">Erreur de synchronisation serveur cloud</p>
+                        <p>{projectSyncError || cloudSyncError}</p>
+                      </div>
+                    </div>
+                  )}
 
                   {totalDistinctProjs === 0 ? (
                     <div className="text-center py-6 text-slate-500 text-xs bg-slate-950 rounded-2xl border border-dashed border-slate-800">
@@ -14338,6 +14322,28 @@ export const AdminPortal: React.FC = () => {
             </span>
           </div>
 
+          {(cloudSyncError || projectSyncError) && (
+            <div className="p-4 bg-rose-950/70 border-2 border-rose-500/60 rounded-2xl flex items-start justify-between gap-3 text-xs text-rose-100">
+              <div className="flex items-start gap-2.5">
+                <AlertTriangle className="w-5 h-5 text-rose-400 shrink-0 mt-0.5" />
+                <div className="space-y-1">
+                  <p className="font-black text-rose-300 uppercase">Synchronisation Cloud Impossible</p>
+                  <p>{projectSyncError || cloudSyncError}</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setProjectSyncError(null);
+                  clearCloudSyncError();
+                }}
+                className="text-rose-300 hover:text-white px-2 py-1 rounded-lg bg-rose-900/50 text-[11px] font-bold shrink-0 cursor-pointer"
+              >
+                Fermer
+              </button>
+            </div>
+          )}
+
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div>
               <label className="block text-xs font-bold text-slate-400 uppercase mb-2">Titre du Projet</label>
@@ -14530,82 +14536,113 @@ export const AdminPortal: React.FC = () => {
           <div className="flex flex-wrap items-center gap-3 pt-2">
             <button
               type="button"
-              onClick={() => {
+              disabled={isSavingProject}
+              onClick={async () => {
                 if (!projTitle.trim()) {
-                  alert('Veuillez spécifier le titre du projet.');
+                  const errMsg = 'Veuillez spécifier le titre du projet.';
+                  setProjectSyncError(errMsg);
+                  setToastMessage(`❌ ${errMsg}`);
                   return;
                 }
                 const requiredAmt = Number(projRequiredPerMember) || 0;
                 const totalCost = Number(projCostInput) || 0;
 
-                if (editingProjectId) {
-                  const existingProj = projects.find(p => p.id === editingProjectId);
-                  const hadPassedSuiviOrPayor = Boolean(
-                    existingProj &&
-                    (existingProj.suiviReviewed ||
-                      existingProj.sentToPayor ||
-                      existingProj.isPostMeetingRevision ||
-                      ['returned_for_correction', 'PENDING_PAYOR', 'pending_payor_approval', 'APPROVED_PAYOR', 'approved_by_payor', 'PUBLISHED', 'active'].includes(existingProj.status || ''))
-                  );
+                setIsSavingProject(true);
+                setProjectSyncError(null);
+                try {
+                  if (editingProjectId) {
+                    const existingProj = projects.find(p => p.id === editingProjectId);
+                    const hadPassedSuiviOrPayor = Boolean(
+                      existingProj &&
+                      (existingProj.suiviReviewed ||
+                        existingProj.sentToPayor ||
+                        existingProj.isPostMeetingRevision ||
+                        ['returned_for_correction', 'PENDING_PAYOR', 'pending_payor_approval', 'APPROVED_PAYOR', 'approved_by_payor', 'PUBLISHED', 'active'].includes(existingProj.status || ''))
+                    );
 
-                  updateProject(editingProjectId, {
-                    title: projTitle.trim(),
-                    category: projCategory,
-                    estimatedCost: totalCost,
-                    requiredAmountPerMember: requiredAmt,
-                    dateRealisation: projEventDate,
-                    eventDate: projEventDate,
-                    paymentDeadline: projPaymentDeadline,
-                    description: projDesc,
-                    pilotTeam: projPilotTeam,
-                    status: 'DRAFT',
-                    sentToSecretariat: false,
-                    sentToSuivi: false,
-                    sentToPayor: false,
-                    officialDocGenerated: true,
-                    payorFeedback: '',
-                    ...(hadPassedSuiviOrPayor ? { suiviReviewed: true, isPostMeetingRevision: true } : {}),
-                  });
-                  setToastMessage(
-                    hadPassedSuiviOrPayor
-                      ? `💾 Révision post-réunion du projet "${projTitle.trim()}" enregistrée ! Lors de l'envoi au Secrétariat, elle ira directement au Payor.`
-                      : `💾 Projet "${projTitle.trim()}" mis à jour dans votre espace !`
-                  );
-                  setEditingProjectId(null);
-                } else {
-                  createProject({
-                    title: projTitle.trim(),
-                    category: projCategory,
-                    estimatedCost: totalCost,
-                    requiredAmountPerMember: requiredAmt,
-                    dateRealisation: projEventDate,
-                    eventDate: projEventDate,
-                    paymentDeadline: projPaymentDeadline,
-                    description: projDesc,
-                    pilotTeam: projPilotTeam,
-                    date: new Date().toLocaleDateString('fr-FR'),
-                    createdBy: 'COMMISSION PROJET',
-                    status: 'DRAFT',
-                    sentToSecretariat: false,
-                    officialDocGenerated: true,
-                  });
-                  setToastMessage(`💾 Projet "${projTitle.trim()}" enregistré comme brouillon ! Prévisualisez le dossier puis transmettez-le au Secrétariat Général.`);
+                    const saveRes = await updateProject(editingProjectId, {
+                      title: projTitle.trim(),
+                      category: projCategory,
+                      estimatedCost: totalCost,
+                      requiredAmountPerMember: requiredAmt,
+                      dateRealisation: projEventDate,
+                      eventDate: projEventDate,
+                      paymentDeadline: projPaymentDeadline,
+                      description: projDesc,
+                      pilotTeam: projPilotTeam,
+                      status: 'DRAFT',
+                      sentToSecretariat: false,
+                      sentToSuivi: false,
+                      sentToPayor: false,
+                      officialDocGenerated: true,
+                      payorFeedback: '',
+                      ...(hadPassedSuiviOrPayor ? { suiviReviewed: true, isPostMeetingRevision: true } : {}),
+                    });
+                    if (!saveRes.ok) {
+                      const errMsg = saveRes.error || `Échec de synchronisation cloud du projet "${projTitle.trim()}".`;
+                      setProjectSyncError(errMsg);
+                      setToastMessage(`❌ ${errMsg}`);
+                      return;
+                    }
+                    setProjectSyncError(null);
+                    clearCloudSyncError();
+                    setToastMessage(
+                      hadPassedSuiviOrPayor
+                        ? `💾 Révision post-réunion du projet "${projTitle.trim()}" synchronisée ! Lors de l'envoi au Secrétariat, elle ira directement au Payor.`
+                        : `💾 Projet "${projTitle.trim()}" mis à jour et synchronisé sur le serveur !`
+                    );
+                    setEditingProjectId(null);
+                  } else {
+                    const createRes = await createProject({
+                      title: projTitle.trim(),
+                      category: projCategory,
+                      estimatedCost: totalCost,
+                      requiredAmountPerMember: requiredAmt,
+                      dateRealisation: projEventDate,
+                      eventDate: projEventDate,
+                      paymentDeadline: projPaymentDeadline,
+                      description: projDesc,
+                      pilotTeam: projPilotTeam,
+                      date: new Date().toLocaleDateString('fr-FR'),
+                      createdBy: 'COMMISSION PROJET',
+                      status: 'DRAFT',
+                      sentToSecretariat: false,
+                      officialDocGenerated: true,
+                    });
+                    if (!createRes.ok) {
+                      const errMsg = createRes.error || `Impossible d'enregistrer le projet "${projTitle.trim()}" sur le serveur.`;
+                      setProjectSyncError(errMsg);
+                      setToastMessage(`❌ ${errMsg}`);
+                      return;
+                    }
+                    setProjectSyncError(null);
+                    clearCloudSyncError();
+                    setToastMessage(`💾 Projet "${projTitle.trim()}" enregistré et confirmé sur le serveur ! Prévisualisez le dossier puis transmettez-le au Secrétariat Général.`);
+                  }
+
+                  setProjTitle('');
+                  setProjCategory('');
+                  setProjCostInput('');
+                  setProjRequiredPerMember('');
+                  setProjEventDate('');
+                  setProjPaymentDeadline('');
+                  setProjDesc('');
+                  setProjPilotTeam([]);
+                  setCustomPilotInput('');
+                } finally {
+                  setIsSavingProject(false);
                 }
-
-                setProjTitle('');
-                setProjCategory('');
-                setProjCostInput('');
-                setProjRequiredPerMember('');
-                setProjEventDate('');
-                setProjPaymentDeadline('');
-                setProjDesc('');
-                setProjPilotTeam([]);
-                setCustomPilotInput('');
               }}
-              className="bg-emerald-600 hover:bg-emerald-500 text-white font-black py-3.5 px-6 rounded-2xl shadow-lg text-sm flex items-center gap-2 active:scale-95 transition-all cursor-pointer"
+              className="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-60 disabled:cursor-not-allowed text-white font-black py-3.5 px-6 rounded-2xl shadow-lg text-sm flex items-center gap-2 active:scale-95 transition-all cursor-pointer"
             >
               <Sparkles className="w-4 h-4" />
-              <span>{editingProjectId ? '💾 Enregistrer les Modifications' : '💾 Enregistrer le Projet (Brouillon)'}</span>
+              <span>
+                {isSavingProject
+                  ? '⏳ Synchronisation en cours...'
+                  : editingProjectId
+                  ? '💾 Enregistrer les Modifications'
+                  : '💾 Enregistrer le Projet (Brouillon)'}
+              </span>
             </button>
 
             {editingProjectId && (
@@ -14638,10 +14675,31 @@ export const AdminPortal: React.FC = () => {
               <Rocket className="w-5 h-5 text-emerald-500" />
               <span>Dossiers de Projets AGR Montés & Suivis ({projects.length})</span>
             </h2>
-            <span className="text-xs text-slate-400">
-              Statuts : Brouillon ➜ Secrétariat ➜ En attente Payor ➜ Visé Payor ➜ Publié par Projets (Gagne-Pain + DJAI + Alerte COM)
-            </span>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                disabled={isRefreshingProjects}
+                onClick={handleRefreshProjectsFromServer}
+                className="bg-slate-800 hover:bg-slate-700 disabled:opacity-60 text-emerald-300 border border-emerald-500/30 font-bold px-3 py-1.5 rounded-xl text-xs flex items-center gap-1.5 transition-all cursor-pointer"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${isRefreshingProjects ? 'animate-spin' : ''}`} />
+                <span>{isRefreshingProjects ? 'Actualisation...' : 'Actualiser depuis le serveur'}</span>
+              </button>
+              <span className="text-xs text-slate-400">
+                Statuts : Brouillon ➜ Secrétariat ➜ En attente Payor ➜ Visé Payor ➜ Publié par Projets (Gagne-Pain + DJAI + Alerte COM)
+              </span>
+            </div>
           </div>
+
+          {(cloudSyncError || projectSyncError) && (
+            <div className="p-4 bg-rose-950/70 border-2 border-rose-500/60 rounded-2xl flex items-start gap-2.5 text-xs text-rose-100">
+              <AlertTriangle className="w-5 h-5 text-rose-400 shrink-0 mt-0.5" />
+              <div className="space-y-1 flex-1">
+                <p className="font-black text-rose-300 uppercase">Synchronisation Cloud Impossible</p>
+                <p>{projectSyncError || cloudSyncError}</p>
+              </div>
+            </div>
+          )}
 
           {/* Multi-sélection et Consolidation de Projets en un document unique */}
           {projects.length > 0 && (
@@ -14696,11 +14754,19 @@ export const AdminPortal: React.FC = () => {
 
                   <button
                     type="button"
-                    onClick={() => {
-                      sendProjectsBatchToSecretariat(selectedProjectIds);
+                    onClick={async () => {
                       const count = selectedProjectIds.length;
+                      const res = await sendProjectsBatchToSecretariat(selectedProjectIds);
+                      if (!res.ok) {
+                        const errMsg = res.error || 'Échec de transmission au Secrétariat.';
+                        setProjectSyncError(errMsg);
+                        setToastMessage(`❌ ${errMsg}`);
+                        return;
+                      }
+                      setProjectSyncError(null);
+                      clearCloudSyncError();
                       setSelectedProjectIds([]);
-                      setToastMessage(`📤 Dossier Global (${count} projets) transmis au Secrétariat Général !`);
+                      setToastMessage(`📤 Dossier Global (${count} projets) transmis et confirmé sur le serveur !`);
                     }}
                     className="bg-emerald-600 hover:bg-emerald-500 text-white font-black px-4 py-2.5 rounded-xl text-xs flex items-center gap-1.5 shadow-lg transition-all active:scale-95 cursor-pointer"
                     title="Transmettre ce lot consolidé au Secrétariat Général"
@@ -14908,9 +14974,18 @@ export const AdminPortal: React.FC = () => {
                         {batchProjs.some(bp => bp.status === 'DRAFT' || bp.status === 'returned_for_correction' || !bp.status) && (
                           <button
                             type="button"
-                            onClick={() => {
-                              batchProjs.forEach(bp => sendProjectToSecretariat(bp.id));
-                              setToastMessage(`📤 Dossier Global (${batchProjs.length} projets) transmis au Secrétariat Général !`);
+                            onClick={async () => {
+                              const results = await Promise.all(batchProjs.map(bp => sendProjectToSecretariat(bp.id)));
+                              const failed = results.find(r => !r.ok);
+                              if (failed) {
+                                const errMsg = failed.error || "Échec de transmission d'un ou plusieurs projets au Secrétariat.";
+                                setProjectSyncError(errMsg);
+                                setToastMessage(`❌ ${errMsg}`);
+                                return;
+                              }
+                              setProjectSyncError(null);
+                              clearCloudSyncError();
+                              setToastMessage(`📤 Dossier Global (${batchProjs.length} projets) transmis et confirmé sur le serveur !`);
                             }}
                             className="bg-amber-600 hover:bg-amber-500 text-white font-black px-4 py-2 rounded-xl flex items-center gap-1.5 shadow active:scale-95 transition-all text-xs cursor-pointer"
                           >
@@ -15187,9 +15262,17 @@ export const AdminPortal: React.FC = () => {
                       {(p.status === 'DRAFT' || p.status === 'returned_for_correction' || (!p.status && !isPendingPayor && !isApprovedByPayor)) && (
                         <button
                           type="button"
-                          onClick={() => {
-                            sendProjectToSecretariat(p.id);
-                            setToastMessage(`📤 Projet "${p.title}" transmis au Secrétariat Général pour centralisation !`);
+                          onClick={async () => {
+                            const res = await sendProjectToSecretariat(p.id);
+                            if (!res.ok) {
+                              const errMsg = res.error || `Échec de transmission du projet "${p.title}" au Secrétariat.`;
+                              setProjectSyncError(errMsg);
+                              setToastMessage(`❌ ${errMsg}`);
+                              return;
+                            }
+                            setProjectSyncError(null);
+                            clearCloudSyncError();
+                            setToastMessage(`📤 Projet "${p.title}" transmis et confirmé sur le serveur !`);
                           }}
                           className="bg-amber-600 hover:bg-amber-500 text-white font-black px-4 py-2 rounded-xl flex items-center gap-1.5 shadow active:scale-95 transition-all text-xs cursor-pointer"
                         >
@@ -19133,11 +19216,19 @@ export const AdminPortal: React.FC = () => {
                       {activeRole !== 'PAYOR' && activeRole !== 'SECRETARIAT' && activeRole !== 'SDP' && !isApproved && (
                         <button
                           type="button"
-                          onClick={() => {
+                          onClick={async () => {
                             if (docType === 'CONSOLIDATED_PROJECTS') {
-                              sendProjectsBatchToSecretariat(rawData.items.map((p: any) => p.id));
+                              const res = await sendProjectsBatchToSecretariat(rawData.items.map((p: any) => p.id));
+                              if (!res.ok) {
+                                const errMsg = res.error || 'Échec de transmission du Dossier Global au Secrétariat.';
+                                setProjectSyncError(errMsg);
+                                setToastMessage(`❌ ${errMsg}`);
+                                return;
+                              }
+                              setProjectSyncError(null);
+                              clearCloudSyncError();
                               setSelectedProjectIds([]);
-                              setToastMessage(`📤 Dossier Global (${rawData.items.length} projets) transmis au Secrétariat Général !`);
+                              setToastMessage(`📤 Dossier Global (${rawData.items.length} projets) transmis et confirmé sur le serveur !`);
                             } else if (docType === 'CONSOLIDATED_ACTIVITIES') {
                               sendActivitiesBatchToSecretariat(rawData.items.map((a: any) => a.id));
                               setSelectedActivityIds([]);
@@ -19446,18 +19537,26 @@ export const AdminPortal: React.FC = () => {
                           {(!rawData.sentToSecretariat && rawData.status !== 'SENT_TO_SECRETARIAT' && rawData.status !== 'SENT_TO_SUIVI' && rawData.status !== 'PENDING_PAYOR') ? (
                             <button
                               type="button"
-                              onClick={() => {
-                                const doc = payorViewingOfficialDoc;
-                                if (doc.type === 'PROJECT') {
-                                  sendProjectToSecretariat(doc.data.id);
-                                } else if (doc.type === 'ACTIVITY') {
-                                  sendActivityToSecretariat(doc.data.id);
-                                } else if (doc.type === 'RELIGIOUS_EVENT') {
-                                  sendReligiousEventToSecretariat(doc.data.id);
-                                } else if (doc.type === 'BILAN') {
-                                  sendBilanToSecretariat(doc.data.id);
+                              onClick={async () => {
+                                const docItem = payorViewingOfficialDoc;
+                                if (docItem.type === 'PROJECT') {
+                                  const res = await sendProjectToSecretariat(docItem.data.id);
+                                  if (!res.ok) {
+                                    const errMsg = res.error || `Échec de transmission de "${docItem.data.title || docItem.data.id}" au Secrétariat.`;
+                                    setProjectSyncError(errMsg);
+                                    setToastMessage(`❌ ${errMsg}`);
+                                    return;
+                                  }
+                                  setProjectSyncError(null);
+                                  clearCloudSyncError();
+                                } else if (docItem.type === 'ACTIVITY') {
+                                  sendActivityToSecretariat(docItem.data.id);
+                                } else if (docItem.type === 'RELIGIOUS_EVENT') {
+                                  sendReligiousEventToSecretariat(docItem.data.id);
+                                } else if (docItem.type === 'BILAN') {
+                                  sendBilanToSecretariat(docItem.data.id);
                                 }
-                                setToastMessage(`📤 Document "${doc.data.title || doc.data.id}" transmis au Secrétariat Général !`);
+                                setToastMessage(`📤 Document "${docItem.data.title || docItem.data.id}" transmis au Secrétariat Général !`);
                                 setPayorViewingOfficialDoc(null);
                               }}
                               className="bg-amber-600 hover:bg-amber-500 text-white font-black px-4 py-2.5 rounded-xl text-xs flex items-center gap-1.5 shadow active:scale-95 transition-all cursor-pointer"

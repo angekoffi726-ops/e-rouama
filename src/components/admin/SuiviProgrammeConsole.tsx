@@ -1,6 +1,4 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { collection, onSnapshot } from 'firebase/firestore';
-import { db } from '../../firebase';
 import { useApp } from '../../context/AppContext';
 import {
   AdminRole,
@@ -522,54 +520,9 @@ export const SuiviProgrammeConsole: React.FC<SuiviProgrammeConsoleProps> = ({ on
   }, [activities, projects, religiousEvents]);
 
   // =========================================================
-  // ÉCOUTE FIRESTORE EN TEMPS RÉEL DES LECTURES GBAÏRAÏ
+  // LECTURES GBAÏRAÏ EN TEMPS RÉEL (VIA AppContext)
   // =========================================================
-  const [realtimeNewsItems, setRealtimeNewsItems] = useState<NewsItem[]>([]);
-
-  useEffect(() => {
-    let isMounted = true;
-
-    // Abonnement en temps réel sur la collection news pour actualisation automatique des lectures Gbairai
-    const unsubNews = onSnapshot(
-      collection(db, 'news'),
-      (snapshot) => {
-        if (!isMounted) return;
-        const loaded: NewsItem[] = [];
-        snapshot.forEach((d) => {
-          const item = { id: d.id, ...(d.data() as any) };
-          if (
-            item.deleted === true ||
-            item.isDeleted === true ||
-            item.status === 'deleted' ||
-            item.status === 'supprime' ||
-            item.status === 'hidden' ||
-            item.isHidden === true ||
-            item.dispatchChannel === 'MAIL'
-          ) {
-            return;
-          }
-          loaded.push(item);
-        });
-        if (loaded.length > 0) {
-          loaded.sort((a, b) => b.id.localeCompare(a.id));
-          setRealtimeNewsItems(loaded);
-        }
-      },
-      (err) => {
-        console.warn('Erreur abonnement temps réel news Gbairai:', err);
-      }
-    );
-
-    return () => {
-      isMounted = false;
-      unsubNews();
-    };
-  }, []);
-
-  const effectiveNewsItems = useMemo(() => {
-    if (realtimeNewsItems.length > 0) return realtimeNewsItems;
-    return newsItems || [];
-  }, [realtimeNewsItems, newsItems]);
+  const effectiveNewsItems = useMemo(() => newsItems || [], [newsItems]);
 
   // =========================================================
   // 0. SUIVI DES LECTURES GBAIRAI EN TEMPS RÉEL PAR MEMBRE

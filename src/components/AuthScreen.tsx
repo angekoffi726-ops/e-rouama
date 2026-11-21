@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { collection, onSnapshot, doc, updateDoc, setDoc, addDoc } from 'firebase/firestore';
+import { collection, doc, updateDoc, setDoc, addDoc } from 'firebase/firestore';
 import { db } from '../firebase';
 import { useApp } from '../context/AppContext';
 import { ADMIN_USERS, INITIAL_ROUAMA_MEMBERS, getRegisteredMembersCount, isMemberActive } from '../data/membersData';
@@ -19,72 +19,17 @@ const normalizeName = (str: string): string => {
 export const AuthScreen: React.FC = () => {
   const { registerMember, loginMember, loginAdmin, members, adminUsers, setCurrentUser, activateMemberAccount } = useApp();
 
-  // Synchronisation temps réel directe des collections 'users' et 'members' depuis Firestore
-  const [firestoreUsers, setFirestoreUsers] = useState<any[]>([]);
-
   useEffect(() => {
     // Reconstitution et rafraîchissement automatique du token FCM dès l'ouverture de l'écran de Login
     refreshFcmTokenOnStartup();
-
-    let isMounted = true;
-    const usersDocs = new Map<string, any>();
-    const membersDocs = new Map<string, any>();
-
-    const updateCombined = () => {
-      if (!isMounted) return;
-      const mergedMap = new Map<string, any>();
-      usersDocs.forEach((v, k) => mergedMap.set(k, v));
-      membersDocs.forEach((v, k) => {
-        const prev = mergedMap.get(k) || {};
-        mergedMap.set(k, { ...prev, ...v });
-      });
-      setFirestoreUsers(Array.from(mergedMap.values()));
-    };
-
-    const unsubUsers = onSnapshot(collection(db, 'users'), (snap) => {
-      usersDocs.clear();
-      snap.docs.forEach((d) => {
-        usersDocs.set(d.id, { _docId: d.id, id: d.id, ...d.data() });
-      });
-      updateCombined();
-    }, (err) => {
-      console.warn('Écouteur temps réel users (AuthScreen):', err);
-    });
-
-    const unsubMembers = onSnapshot(collection(db, 'members'), (snap) => {
-      membersDocs.clear();
-      snap.docs.forEach((d) => {
-        membersDocs.set(d.id, { _docId: d.id, id: d.id, ...d.data() });
-      });
-      updateCombined();
-    }, (err) => {
-      console.warn('Écouteur temps réel members (AuthScreen):', err);
-    });
-
-    return () => {
-      isMounted = false;
-      unsubUsers();
-      unsubMembers();
-    };
   }, []);
 
   // 1. DÉFINITION UNIQUE ET SYNCHRONISATION EN TEMPS RÉEL DU COMPTEUR DE MEMBRES
-  // Réconciliation directe avec les 12 membres officiels + état global AppContext pour un affichage 100% unifié
+  // Réconciliation directe avec les 12 membres officiels + état global AppContext (source unique temps réel)
   const liveMembersList = useMemo(() => {
     return INITIAL_ROUAMA_MEMBERS.map((official) => {
       const ctxMember = (members || []).find((m) => m.id === official.id);
-      const fsDoc = (firestoreUsers || []).find((u) => {
-        if (u.id === official.id || u._docId === official.id) return true;
-        const uFirst = normalizeName(u.firstName);
-        const oFirst = normalizeName(official.firstName);
-        if (uFirst && oFirst && uFirst === oFirst) return true;
-        const uNick = normalizeName(u.nickname);
-        const oNick = normalizeName(official.nickname);
-        if (uNick && oNick && uNick === oNick) return true;
-        return false;
-      }) || {};
-
-      const uDoc = { ...fsDoc, ...(ctxMember || {}) };
+      const uDoc: any = ctxMember || {};
       const rawPin = uDoc.pinCode !== undefined ? uDoc.pinCode : (uDoc.pin !== undefined ? uDoc.pin : (official.pinCode || official.pin || ''));
       const cleanPin = rawPin && String(rawPin).trim() !== '' && String(rawPin).trim() !== 'Non défini' ? String(rawPin).trim() : '';
 
@@ -111,7 +56,7 @@ export const AuthScreen: React.FC = () => {
         statut: isActif ? 'Activé' : "En attente d'activation",
       };
     });
-  }, [firestoreUsers, members]);
+  }, [members]);
 
   // 2. UNIFICATION DU COMPTEUR SUR LA PAGE DE CONNEXION ET DANS LE CERVEAU
   const activeCount = getRegisteredMembersCount(liveMembersList);

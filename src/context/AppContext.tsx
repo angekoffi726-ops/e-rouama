@@ -45,12 +45,21 @@ import {
   addDoc,
   getDoc,
   getDocs,
+  getDocFromServer,
+  getDocsFromServer,
   onSnapshot,
   runTransaction,
   arrayUnion,
+  arrayRemove,
   deleteField,
 } from 'firebase/firestore';
-import { db, testFirestoreConnection, sanitizeFirestore } from '../firebase';
+import {
+  db,
+  testFirestoreConnection,
+  sanitizeFirestore,
+  formatFirestoreErrorMessage,
+  probeFirestoreRestStatus,
+} from '../firebase';
 import { compressReceiptImage } from '../utils/imageCompressor';
 import { dispatchPushNotification } from '../utils/pushNotificationService';
 
@@ -71,6 +80,9 @@ interface AppContextType {
   pvs: SecretaryPV[];
   bilans: FinancialBilan[];
   isFirebaseConnected: boolean;
+  cloudSyncError: string | null;
+  clearCloudSyncError: () => void;
+  treasuryRegularizations: Record<string, any> | null;
 
   // Suivi du Programme & Alertes Auditeur (SDP)
   programmeTasks: ProgrammeTask[];
@@ -276,11 +288,11 @@ interface AppContextType {
   deleteFinancialEvent: (eventId: string) => Promise<void>;
 
   // Projects AGR
-  createProject: (project: Omit<AgrProject, 'id' | 'status' | 'tresorierFeasibility' | 'currentReturn'> & { status?: AgrProject['status'] }) => void;
-  updateProject: (projectId: string, updates: Partial<AgrProject>) => void;
+  createProject: (project: Omit<AgrProject, 'id' | 'status' | 'tresorierFeasibility' | 'currentReturn'> & { status?: AgrProject['status'] }) => Promise<{ ok: boolean; error?: string }>;
+  updateProject: (projectId: string, updates: Partial<AgrProject>) => Promise<{ ok: boolean; error?: string }>;
   deleteProject: (projectId: string) => Promise<void>;
-  sendProjectToSecretariat: (projectId: string) => void;
-  sendProjectsBatchToSecretariat: (projectIds: string[]) => void;
+  sendProjectToSecretariat: (projectId: string) => Promise<{ ok: boolean; error?: string }>;
+  sendProjectsBatchToSecretariat: (projectIds: string[]) => Promise<{ ok: boolean; error?: string }>;
   sendProjectFromSecretariatToSuivi: (projectId: string) => void;
   sendProjectsBatchFromSecretariatToSuivi: (projectIds: string[]) => void;
   sendProjectFromSecretariatToPayor: (projectId: string) => void;
@@ -363,6 +375,7 @@ interface AppContextType {
   resetAllData: () => void;
   refreshTreasury: () => Promise<void>;
   refreshNavette: () => Promise<void>;
+  refreshProjects: () => Promise<{ ok: boolean; error?: string; count?: number }>;
   isRefreshingData: boolean;
 }
 
@@ -554,6 +567,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const [isFirebaseConnected, setIsFirebaseConnected] = useState<boolean>(false);
+  const [treasuryRegularizations, setTreasuryRegularizations] = useState<Record<string, any> | null>(null);
+  const syncedPresenceKeysRef = useRef<Set<string>>(new Set());
 
   // Normalisateur universel de la caisse d'un décaissement (caisseSource ou fund)
   const normalizeWithdrawalFund = (wOrSource: any): FundType => {
@@ -671,18 +686,26 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const EROUAMA_DELETED_RECORDS_KEY = 'erouama_deleted_records_v1';
   const EROUAMA_DISMISSED_DEMO_REQS_KEY = 'erouama_dismissed_demo_reqs_v1';
 
-  const readLocalDeletedRecords = (): { ids: string[]; defaultsNewsCleared: boolean } => {
+  const readLocalDeletedRecords = (): {
+    ids: string[];
+    deletedTimestamps: Record<string, number>;
+    defaultsNewsCleared: boolean;
+  } => {
     try {
       const raw = localStorage.getItem(EROUAMA_DELETED_RECORDS_KEY);
       if (raw) {
         const parsed = JSON.parse(raw);
         return {
           ids: Array.isArray(parsed?.ids) ? parsed.ids : [],
+          deletedTimestamps:
+            parsed?.deletedTimestamps && typeof parsed.deletedTimestamps === 'object'
+              ? parsed.deletedTimestamps
+              : {},
           defaultsNewsCleared: Boolean(parsed?.defaultsNewsCleared),
         };
       }
     } catch {}
-    return { ids: [], defaultsNewsCleared: false };
+    return { ids: [], deletedTimestamps: {}, defaultsNewsCleared: false };
   };
 
   const readLocalDismissedDemos = (): { ids: string[]; disableAll: boolean } => {
@@ -701,10 +724,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const initialDeletedMeta = readLocalDeletedRecords();
   const deletedRecordIdsRef = useRef<Set<string>>(new Set(initialDeletedMeta.ids));
+  const deletedTimestampsRef = useRef<Record<string, number>>(initialDeletedMeta.deletedTimestamps || {});
   const defaultsNewsClearedRef = useRef<boolean>(initialDeletedMeta.defaultsNewsCleared);
   const initialDemoMeta = readLocalDismissedDemos();
   const [dismissedDemoRequestIds, setDismissedDemoRequestIds] = useState<string[]>(initialDemoMeta.ids);
   const [demosDisabled, setDemosDisabled] = useState<boolean>(initialDemoMeta.disableAll);
+
+  const [cloudSyncError, setCloudSyncError] = useState<string | null>(null);
+  const clearCloudSyncError = useCallback(() => setCloudSyncError(null), []);
 
   const infoRequestsMapRef = useRef<Map<string, InfoRequest>>(new Map());
   const navettesMapRef = useRef<Map<string, InfoRequest>>(new Map());
@@ -733,26 +760,93 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
-  const persistDeletedRecordIds = async (ids: string[], options?: { defaultsNewsCleared?: boolean }) => {
-    const cleanIds = ids.filter(Boolean);
-    cleanIds.forEach(id => deletedRecordIdsRef.current.add(id));
-    if (options?.defaultsNewsCleared) {
-      defaultsNewsClearedRef.current = true;
+  const persistFirestoreDoc = async (
+    collectionName: string,
+    docId: string,
+    payload: Record<string, any>,
+    merge: boolean,
+    label: string
+  ): Promise<{ ok: boolean; error?: string }> => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+      const offlineMsg = 'Appareil hors-ligne : aucune modification enregistrée sur le serveur cloud.';
+      setCloudSyncError(offlineMsg);
+      return { ok: false, error: offlineMsg };
     }
+    try {
+      const docRef = doc(db, collectionName, docId);
+      const cleanPayload = sanitizeFirestore(payload);
+      const writePromise = merge
+        ? setDoc(docRef, cleanPayload, { merge: true }).then(() => 'OK' as const)
+        : setDoc(docRef, cleanPayload).then(() => 'OK' as const);
+      const timeoutPromise = new Promise<'TIMEOUT'>((resolve) => {
+        timer = setTimeout(() => resolve('TIMEOUT'), 5500);
+      });
+      const result = await Promise.race([writePromise, timeoutPromise]);
+      if (result === 'OK') {
+        setCloudSyncError(null);
+        return { ok: true };
+      }
+
+      // Timeout SDK : le SDK Firebase retente silencieusement en cas de quota 429 ou d'absence de réseau.
+      // Ne JAMAIS retourner ok=true sans confirmation serveur : sondage REST rapide pour diagnostic exact.
+      const restProbe = await probeFirestoreRestStatus(collectionName, docId);
+      const errMsg = !restProbe.ok && restProbe.message
+        ? restProbe.message
+        : `Délai d’écriture serveur dépassé (${label}) : l’enregistrement sur le serveur cloud n’a pas pu être confirmé.`;
+      console.warn(`[Échec Sync Cloud] ${label} (${collectionName}/${docId}): ${errMsg}`);
+      setCloudSyncError(errMsg);
+      return { ok: false, error: errMsg };
+    } catch (err: any) {
+      let errMsg = formatFirestoreErrorMessage(err);
+      if (!errMsg.includes('429') && !errMsg.includes('PERMISSION_DENIED')) {
+        const restProbe = await probeFirestoreRestStatus(collectionName, docId);
+        if (!restProbe.ok && restProbe.message) {
+          errMsg = restProbe.message;
+        }
+      }
+      console.warn(`[Erreur Firestore] ${label} (${collectionName}/${docId}):`, err);
+      setCloudSyncError(errMsg);
+      return { ok: false, error: errMsg };
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  };
+
+  const syncLocalDeletedStorage = () => {
     try {
       localStorage.setItem(
         EROUAMA_DELETED_RECORDS_KEY,
         JSON.stringify({
           ids: Array.from(deletedRecordIdsRef.current),
+          deletedTimestamps: deletedTimestampsRef.current,
           defaultsNewsCleared: defaultsNewsClearedRef.current,
         })
       );
     } catch {}
+  };
+
+  const persistDeletedRecordIds = async (ids: string[], options?: { defaultsNewsCleared?: boolean }) => {
+    const cleanIds = ids.filter(Boolean);
+    const nowTs = Date.now();
+    cleanIds.forEach(id => {
+      deletedRecordIdsRef.current.add(id);
+      deletedTimestampsRef.current[id] = nowTs;
+    });
+    if (options?.defaultsNewsCleared) {
+      defaultsNewsClearedRef.current = true;
+    }
+    syncLocalDeletedStorage();
     const payload: Record<string, any> = {
       updatedAt: new Date().toISOString(),
     };
     if (cleanIds.length > 0) {
       payload.ids = arrayUnion(...cleanIds);
+      const tsPatch: Record<string, number> = {};
+      cleanIds.forEach(id => {
+        tsPatch[id] = nowTs;
+      });
+      payload.deletedTimestamps = tsPatch;
     }
     if (defaultsNewsClearedRef.current) {
       payload.defaultsNewsCleared = true;
@@ -761,6 +855,31 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setDoc(doc(db, 'admin', 'deleted_records_v1'), payload, { merge: true }),
       4000,
       'persistDeletedRecordIds'
+    );
+  };
+
+  const unblockDeletedRecordIds = async (ids: string[]) => {
+    const cleanIds = ids.filter(id => Boolean(id) && deletedRecordIdsRef.current.has(id));
+    if (cleanIds.length === 0) return;
+    const tsDeletePatch: Record<string, any> = {};
+    cleanIds.forEach(id => {
+      deletedRecordIdsRef.current.delete(id);
+      delete deletedTimestampsRef.current[id];
+      tsDeletePatch[id] = deleteField();
+    });
+    syncLocalDeletedStorage();
+    await runWithTimeout(
+      setDoc(
+        doc(db, 'admin', 'deleted_records_v1'),
+        {
+          ids: arrayRemove(...cleanIds),
+          deletedTimestamps: tsDeletePatch,
+          updatedAt: new Date().toISOString(),
+        },
+        { merge: true }
+      ),
+      4000,
+      'unblockDeletedRecordIds'
     );
   };
 
@@ -914,6 +1033,124 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, []);
   const [activities, setActivities] = useState<EventActivity[]>([]);
   const [projects, setProjects] = useState<AgrProject[]>([]);
+  const projectsRef = useRef<AgrProject[]>([]);
+  const setProjectsSynced = useCallback(
+    (updater: AgrProject[] | ((prev: AgrProject[]) => AgrProject[])) => {
+      setProjects(prev => {
+        const next = typeof updater === 'function' ? updater(prev) : updater;
+        projectsRef.current = next;
+        return next;
+      });
+    },
+    []
+  );
+
+  const isTargetTestBatchProject = (
+    p: Partial<AgrProject> & { id: string },
+    strictLegacyIdMatch = false
+  ): boolean => {
+    const normTitle = String(p.title || '').trim().toUpperCase();
+    const docDate = String(p.dateRealisation || p.eventDate || '').trim();
+    if (p.batchId === 'BATCH-PROJ-1794992532283') return true;
+    if (normTitle === 'RES' && (docDate === '2027-01-02' || p.id === 'PROJ-001')) return true;
+    if (normTitle === 'FER' && (docDate === '2027-02-05' || p.id === 'PROJ-002')) return true;
+    if (strictLegacyIdMatch && (p.id === 'PROJ-001' || p.id === 'PROJ-002') && (!normTitle || normTitle === 'RES' || normTitle === 'FER')) {
+      return true;
+    }
+    return false;
+  };
+
+  const evaluateProjectTombstone = (
+    dId: string,
+    projItem: Partial<AgrProject> & { id: string },
+    strictLegacyIdMatch = false
+  ): 'TEST_PURGE' | 'DELETED' | 'UNBLOCK' | 'KEEP' => {
+    if (isTargetTestBatchProject(projItem, strictLegacyIdMatch)) return 'TEST_PURGE';
+    if (!deletedRecordIdsRef.current.has(dId)) return 'KEEP';
+    const deletedAt = deletedTimestampsRef.current[dId] || 0;
+    const docTs = Number(projItem.updatedAtMs || projItem.createdAtMs || 0);
+    // Ne jamais bloquer un projet légitime portant un autre titre (ex: Agriculture ROUAMA / Garba journalier)
+    // s'il a été créé sans timestamp sur un ancien ID PROJ-001 / PROJ-002
+    const normTitle = String(projItem.title || '').trim().toUpperCase();
+    if ((dId === 'PROJ-001' || dId === 'PROJ-002') && normTitle && normTitle !== 'RES' && normTitle !== 'FER' && docTs === 0) {
+      return 'UNBLOCK';
+    }
+    // Si aucune date de suppression précise n'est connue ou si le document serveur est plus récent, débloquer
+    if (deletedAt === 0 || (docTs > 0 && docTs > deletedAt)) {
+      return 'UNBLOCK';
+    }
+    return 'DELETED';
+  };
+
+  const sortProjectsList = (list: AgrProject[]): AgrProject[] => {
+    return [...list].sort((a, b) => {
+      const tsDiff = (b.createdAtMs || 0) - (a.createdAtMs || 0);
+      if (tsDiff !== 0) return tsDiff;
+      return (b.id || '').localeCompare(a.id || '');
+    });
+  };
+
+  const reconcileActivitiesSnapshot = (rawLoaded: EventActivity[]): EventActivity[] => {
+    const loaded: EventActivity[] = [];
+    let hasSoiree = false;
+    let hasAnniv = false;
+
+    for (const raw of rawLoaded) {
+      let item = raw;
+      if (
+        item.fixedType === 'SOIREE_ROUAMA' ||
+        item.id === 'ACT-SOIREE-2026' ||
+        item.id === 'ACT-SOIREE-2027' ||
+        item.title?.toUpperCase().includes('SOIRÉE') ||
+        item.title?.toUpperCase().includes('SOIREE')
+      ) {
+        if (item.eventDate === 'Août 2026' || item.eventYear === '2026' || !item.eventDate || item.eventDate.includes('2026')) {
+          item = {
+            ...item,
+            title: 'SOIRÉE ROUAMA 2027',
+            eventDate: 'Août 2027',
+            eventYear: '2027',
+            eventMonth: '8',
+            eventDay: '1',
+            isDayPending: true,
+          };
+        }
+      }
+
+      const isSoiree =
+        item.fixedType === 'SOIREE_ROUAMA' ||
+        item.id === 'ACT-SOIREE-2027' ||
+        item.id === 'ACT-SOIREE-2026' ||
+        item.title?.toUpperCase().includes('SOIRÉE') ||
+        item.title?.toUpperCase().includes('SOIREE');
+      const isAnniv =
+        item.fixedType === 'ANNIVERSAIRE' ||
+        item.id === 'ACT-ANNIVERSAIRE-2027' ||
+        item.title?.toUpperCase().includes('ANNIVERSAIRE');
+
+      if (isSoiree) {
+        if (hasSoiree) continue;
+        hasSoiree = true;
+        loaded.push({ ...item, id: item.id === 'ACT-SOIREE-2026' ? 'ACT-SOIREE-2027' : item.id });
+        continue;
+      }
+
+      if (isAnniv) {
+        if (hasAnniv) continue;
+        hasAnniv = true;
+        loaded.push(item);
+        continue;
+      }
+
+      if (!loaded.some(a => a.id === item.id)) {
+        loaded.push(item);
+      }
+    }
+
+    loaded.sort((a, b) => b.id.localeCompare(a.id));
+    return loaded;
+  };
+
   const [financialEvents, setFinancialEvents] = useState<FinancialEvent[]>([]);
   const [archiveDocs, setArchiveDocs] = useState<ArchiveDoc[]>([]);
   const [pvs, setPvs] = useState<SecretaryPV[]>([]);
@@ -957,7 +1194,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return uniqueResult.sort((a, b) => (b.createdAt || b.publishedAt || b.id).localeCompare(a.createdAt || a.publishedAt || a.id));
   };
 
-  // Sauvegarder la session active locale et enregistrer automatiquement l'assiduité du jour
+  // Sauvegarder la session active locale (sans déclencher d'écriture Firestore en boucle)
   useEffect(() => {
     try {
       if (currentUser) {
@@ -967,24 +1204,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         } else {
           localStorage.setItem('rouama_user', JSON.stringify(currentUser));
         }
-
-        // Enregistrement automatique de présence admin pour les sessions persistantes de la veille
-        try {
-          if (currentUser.type === 'ADMIN' && currentUser.adminRole) {
-            recordAdminActivity(currentUser.adminRole, currentUser.adminRole, currentUser.adminRole);
-          } else if (currentUser.type === 'MEMBER' && currentUser.member) {
-            const role = currentUser.member.assignedRole || currentUser.adminRole;
-            if (role) {
-              recordAdminActivity(
-                role,
-                `${currentUser.member.firstName || ''} (${currentUser.member.nickname || ''})`,
-                currentUser.member.id
-              );
-            }
-          }
-        } catch (actErr) {
-          console.warn('Enregistrement automatique présence admin ignoré:', actErr);
-        }
       } else {
         localStorage.removeItem(EROUAMA_ACTIVE_SESSION_KEY);
         localStorage.removeItem('rouama_user');
@@ -993,6 +1212,27 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       console.warn('Erreur stockage session locale:', e);
     }
   }, [currentUser]);
+
+  // Enregistrement automatique dédupliqué de présence admin (une seule fois par jour/rôle/session)
+  useEffect(() => {
+    if (!currentUser) return;
+    try {
+      if (currentUser.type === 'ADMIN' && currentUser.adminRole) {
+        recordAdminActivity(currentUser.adminRole, currentUser.adminRole, currentUser.adminRole);
+      } else if (currentUser.type === 'MEMBER' && currentUser.member) {
+        const role = currentUser.member.assignedRole || currentUser.adminRole;
+        if (role) {
+          recordAdminActivity(
+            role,
+            `${currentUser.member.firstName || ''} (${currentUser.member.nickname || ''})`,
+            currentUser.member.id
+          );
+        }
+      }
+    } catch (actErr) {
+      console.warn('Enregistrement automatique présence admin ignoré:', actErr);
+    }
+  }, [currentUser?.type, currentUser?.adminRole, currentUser?.member?.id, currentUser?.member?.assignedRole]);
 
   // =========================================================================
   // ÉCOUTEURS EN TEMPS RÉEL (onSnapshot) FIREBASE FIRESTORE
@@ -1472,26 +1712,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
 
         syncDynamicBalances();
-
-        // Synchronisation automatique d'activation pour tout membre ayant déjà enregistré un paiement / reçu non annulé
-        try {
-          const paidMemberIds = new Set<string>();
-          [...receiptsCache, ...paymentsCache, ...declarationsCache, ...transactionsCache].forEach((entry: any) => {
-            if (!entry) return;
-            if (entry.isHidden || entry.status === 'deleted' || entry.status === 'hidden' || entry.status === 'REJECTED' || entry.status === 'rejected') return;
-            const mId = String(entry.memberId || '').trim();
-            if (mId && INITIAL_ROUAMA_MEMBERS.some(om => om.id === mId)) {
-              paidMemberIds.add(mId);
-            }
-          });
-          paidMemberIds.forEach(mId => {
-            const existingM = (membersRef.current || []).find(m => m.id === mId) as any;
-            const isExplicitReset = Boolean(existingM?.resetAt && existingM?.isRegistered === false && !existingM?.pin && !existingM?.pinCode);
-            if (!isExplicitReset && (!existingM || !existingM.isRegistered || existingM.statut !== 'Activé')) {
-              activateMemberAccount(mId).catch(() => {});
-            }
-          });
-        } catch {}
       } catch (err) {
         console.warn('Erreur chargement Trésorerie (cache actif):', err);
       }
@@ -1710,9 +1930,34 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             normalizeRosterString(m.nickname) === normalizeRosterString(prev.member!.nickname)
           );
           if (fresh) {
-            const photo = fresh.photoUrl || fresh.avatar || prev.member.photoUrl || prev.member.avatar;
+            const prevM = prev.member;
+            const photo = fresh.photoUrl || fresh.avatar || prevM.photoUrl || prevM.avatar || '';
+            const hasChanged =
+              (prevM.photoUrl || '') !== photo ||
+              (prevM.avatar || '') !== photo ||
+              prevM.statut !== fresh.statut ||
+              prevM.isRegistered !== fresh.isRegistered ||
+              prevM.assignedRole !== fresh.assignedRole ||
+              prevM.pin !== fresh.pin ||
+              prevM.pinCode !== fresh.pinCode ||
+              prevM.phone !== fresh.phone ||
+              prevM.email !== fresh.email ||
+              prevM.resetAt !== fresh.resetAt ||
+              prevM.resteADevoir !== fresh.resteADevoir ||
+              prevM.totalPaid !== fresh.totalPaid ||
+              prevM.solde !== fresh.solde ||
+              prevM.unpaidMonths !== fresh.unpaidMonths ||
+              prevM.duesStatus !== fresh.duesStatus ||
+              prevM.statutDemande !== fresh.statutDemande ||
+              JSON.stringify(prevM.roles || []) !== JSON.stringify(fresh.roles || []) ||
+              JSON.stringify(prevM.departments || []) !== JSON.stringify(fresh.departments || []);
+
+            if (!hasChanged) {
+              return prev;
+            }
+
             const updatedMember = {
-              ...prev.member,
+              ...prevM,
               ...fresh,
               avatar: photo,
               photoUrl: photo,
@@ -1754,284 +1999,54 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
     };
 
-    // Chargeur des autres collections
-    const loadOtherCollections = async () => {
+    // Chargeur unique pour les collections SANS écouteur temps réel (spiritualité, admins)
+    // et vérification unique des drapeaux de migration non encore validés localement (économie stricte du quota Firestore)
+    const COMPLETED_MIGRATIONS_CACHE_KEY = 'erouama_completed_migrations_v1';
+    const readMigrationsCache = (): Record<string, boolean> => {
       try {
-        const [actSnap, projSnap, finEventSnap, verseSnap, intentSnap, relEventSnap, pvsSnap, bilansSnap, archSnap, adminSnap, progTaskSnap, progAlertSnap, adminLogSnap, resetFlagSnap, purgeTestBatchSnap, purgeCentralisationSnap, deletedRecordsSnap, dismissedDemoSnap, regularizeGilbertSnap] = await Promise.allSettled([
-          getDocs(collection(db, 'activities')),
-          getDocs(collection(db, 'projects')),
-          getDocs(collection(db, 'financial_events')),
+        const raw = localStorage.getItem(COMPLETED_MIGRATIONS_CACHE_KEY);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (parsed && typeof parsed === 'object') return parsed;
+        }
+      } catch {}
+      return {};
+    };
+    const saveMigrationsCache = (patch: Record<string, boolean>) => {
+      try {
+        const merged = { ...readMigrationsCache(), ...patch };
+        localStorage.setItem(COMPLETED_MIGRATIONS_CACHE_KEY, JSON.stringify(merged));
+      } catch {}
+    };
+
+    const loadStaticCollectionsAndFlags = async () => {
+      try {
+        const migCache = readMigrationsCache();
+        const [
+          verseSnap,
+          intentSnap,
+          adminSnap,
+          resetFlagSnap,
+          purgeTestBatchSnap,
+          purgeCentralisationSnap,
+          regularizeGilbertSnap,
+        ] = await Promise.allSettled([
           getDoc(doc(db, 'spiritual', 'verse')),
           getDocs(collection(db, 'prayer_intentions')),
-          getDocs(collection(db, 'religious_events')),
-          getDocs(collection(db, 'secretary_pvs')),
-          getDocs(collection(db, 'secretary_bilans')),
-          getDocs(collection(db, 'archive_docs')),
           getDocs(collection(db, 'admins')),
-          getDocs(collection(db, 'programme_tasks')),
-          getDocs(collection(db, 'programme_alerts')),
-          getDocs(collection(db, 'admin_logs')),
-          getDoc(doc(db, 'admin', 'workflow_reset_v3')),
-          getDoc(doc(db, 'admin', 'purge_test_batch_1794992532283')),
-          getDoc(doc(db, 'admin', 'purge_centralisation_v1')),
-          getDoc(doc(db, 'admin', 'deleted_records_v1')),
-          getDoc(doc(db, 'admin', 'dismissed_demo_requests')),
-          getDoc(doc(db, 'admin', 'regularize_gilbert_v1')),
+          migCache.workflow_reset_v3
+            ? Promise.resolve({ exists: () => true } as any)
+            : getDoc(doc(db, 'admin', 'workflow_reset_v3')),
+          migCache.purge_test_batch_1794992532283
+            ? Promise.resolve({ exists: () => true } as any)
+            : getDoc(doc(db, 'admin', 'purge_test_batch_1794992532283')),
+          migCache.purge_centralisation_v1
+            ? Promise.resolve({ exists: () => true } as any)
+            : getDoc(doc(db, 'admin', 'purge_centralisation_v1')),
+          migCache.regularize_gilbert_v1
+            ? Promise.resolve({ exists: () => true } as any)
+            : getDoc(doc(db, 'admin', 'regularize_gilbert_v1')),
         ]);
-
-        if (regularizeGilbertSnap.status === 'fulfilled' && !regularizeGilbertSnap.value.exists()) {
-          const nowIso = new Date().toISOString();
-          const gilbertFixPayload = {
-            id: '10',
-            firstName: 'GILBERT',
-            nickname: 'DOYEN',
-            fullRosterName: 'GILBERT (DOYEN)',
-            phone: '2250703567992',
-            isRegistered: true,
-            statut: 'Activé',
-            resetAt: null,
-            updatedAt: nowIso,
-          };
-          usersDocsMap.set('10', { ...(usersDocsMap.get('10') || {}), ...gilbertFixPayload, _docId: '10' });
-          membersDocsMap.set('10', { ...(membersDocsMap.get('10') || {}), ...gilbertFixPayload, _docId: '10' });
-          reconcileMembers();
-          Promise.allSettled([
-            setDoc(doc(db, 'users', '10'), gilbertFixPayload, { merge: true }),
-            setDoc(doc(db, 'members', '10'), gilbertFixPayload, { merge: true }),
-          ]).then(() => {
-            setDoc(doc(db, 'admin', 'regularize_gilbert_v1'), {
-              completedAt: nowIso,
-              memberId: '10',
-              phone: '2250703567992',
-              version: '2026.11.18.12',
-            }).catch(() => {});
-          });
-        }
-
-        if (deletedRecordsSnap.status === 'fulfilled' && deletedRecordsSnap.value.exists()) {
-          const data = deletedRecordsSnap.value.data() as any;
-          if (Array.isArray(data?.ids)) {
-            data.ids.forEach((id: string) => {
-              if (id) deletedRecordIdsRef.current.add(id);
-            });
-          }
-          if (data?.defaultsNewsCleared) {
-            defaultsNewsClearedRef.current = true;
-          }
-          try {
-            localStorage.setItem(
-              EROUAMA_DELETED_RECORDS_KEY,
-              JSON.stringify({
-                ids: Array.from(deletedRecordIdsRef.current),
-                defaultsNewsCleared: defaultsNewsClearedRef.current,
-              })
-            );
-          } catch {}
-        }
-
-        if (dismissedDemoSnap.status === 'fulfilled' && dismissedDemoSnap.value.exists()) {
-          const data = dismissedDemoSnap.value.data() as any;
-          const serverIds: string[] = Array.isArray(data?.ids) ? data.ids : [];
-          const serverDisableAll = Boolean(data?.disableAll);
-          setDismissedDemoRequestIds(prev => {
-            const merged = Array.from(new Set([...prev, ...serverIds]));
-            try {
-              localStorage.setItem(
-                EROUAMA_DISMISSED_DEMO_REQS_KEY,
-                JSON.stringify({ ids: merged, disableAll: serverDisableAll || demosDisabled })
-              );
-            } catch {}
-            return merged;
-          });
-          if (serverDisableAll) setDemosDisabled(true);
-        }
-
-        const needsWorkflowReset =
-          resetFlagSnap.status === 'fulfilled' && !resetFlagSnap.value.exists();
-        const needsCentralisationPurge =
-          purgeCentralisationSnap.status === 'fulfilled' && !purgeCentralisationSnap.value.exists();
-        const centralisationPurgePromises: Promise<any>[] = [];
-        const needsTestBatchPurge =
-          purgeTestBatchSnap.status === 'fulfilled' && !purgeTestBatchSnap.value.exists();
-        const testBatchPurgePromises: Promise<any>[] = [];
-        const isTargetTestBatchProject = (p: Partial<AgrProject> & { id: string }): boolean => {
-          const normTitle = String(p.title || '').trim().toUpperCase();
-          const docDate = String(p.dateRealisation || p.eventDate || '').trim();
-          if (p.batchId === 'BATCH-PROJ-1794992532283') return true;
-          if (!needsTestBatchPurge) return false;
-          if (p.id === 'PROJ-001' && normTitle === 'RES') return true;
-          if (p.id === 'PROJ-002' && normTitle === 'FER') return true;
-          if (normTitle === 'RES' && docDate === '2027-01-02') return true;
-          if (normTitle === 'FER' && docDate === '2027-02-05') return true;
-          return false;
-        };
-
-        if (actSnap.status === 'fulfilled') {
-          const rawLoaded: EventActivity[] = [];
-          actSnap.value.forEach(d => {
-            if (deletedRecordIdsRef.current.has(d.id)) {
-              deleteDoc(doc(db, 'activities', d.id)).catch(() => {});
-              return;
-            }
-            const data = d.data() as any;
-            let actItem: EventActivity = { id: d.id, ...data };
-            // Harmonisation automatique si l'événement Soirée Rouama a conservé une date 2026 obsolète
-            if (
-              actItem.fixedType === 'SOIREE_ROUAMA' ||
-              actItem.id === 'ACT-SOIREE-2026' ||
-              actItem.id === 'ACT-SOIREE-2027' ||
-              actItem.title?.toUpperCase().includes('SOIRÉE') ||
-              actItem.title?.toUpperCase().includes('SOIREE')
-            ) {
-              if (actItem.eventDate === 'Août 2026' || actItem.eventYear === '2026' || !actItem.eventDate || actItem.eventDate.includes('2026')) {
-                actItem = {
-                  ...actItem,
-                  title: 'SOIRÉE ROUAMA 2027',
-                  eventDate: 'Août 2027',
-                  eventYear: '2027',
-                  eventMonth: '8',
-                  eventDay: '1',
-                  isDayPending: true,
-                };
-              }
-            }
-            rawLoaded.push(actItem);
-          });
-
-          // Déduplication stricte : ne conserver qu'un seul exemplaire de la Soirée Rouama et de l'Anniversaire
-          const loaded: EventActivity[] = [];
-          let hasSoiree = false;
-          let hasAnniv = false;
-
-          for (const item of rawLoaded) {
-            const isSoiree =
-              item.fixedType === 'SOIREE_ROUAMA' ||
-              item.id === 'ACT-SOIREE-2027' ||
-              item.id === 'ACT-SOIREE-2026' ||
-              item.title?.toUpperCase().includes('SOIRÉE') ||
-              item.title?.toUpperCase().includes('SOIREE');
-            const isAnniv =
-              item.fixedType === 'ANNIVERSAIRE' ||
-              item.id === 'ACT-ANNIVERSAIRE-2027' ||
-              item.title?.toUpperCase().includes('ANNIVERSAIRE');
-
-            if (isSoiree) {
-              if (hasSoiree) continue;
-              hasSoiree = true;
-              loaded.push({ ...item, id: item.id === 'ACT-SOIREE-2026' ? 'ACT-SOIREE-2027' : item.id });
-              continue;
-            }
-
-            if (isAnniv) {
-              if (hasAnniv) continue;
-              hasAnniv = true;
-              loaded.push(item);
-              continue;
-            }
-
-            if (!loaded.some(a => a.id === item.id)) {
-              loaded.push(item);
-            }
-          }
-
-          if (needsWorkflowReset || needsCentralisationPurge) {
-            for (let i = 0; i < loaded.length; i++) {
-              const a = loaded[i];
-              const upStatus = String(a.status || '').trim().toUpperCase();
-              if (upStatus === 'PUBLISHED' || upStatus === 'ACTIVE' || (needsWorkflowReset && !a.status)) {
-                const resetPayload = {
-                  status: 'DRAFT' as const,
-                  sentToSecretariat: false,
-                  sentToSuivi: false,
-                  sentToPayor: false,
-                  sentToCom: false,
-                  ackByCom: false,
-                  gbairaiAlertSentByCom: false,
-                  publishedAt: '',
-                  publishedByDeptAt: '',
-                  payorSignature: null as any,
-                };
-                centralisationPurgePromises.push(
-                  setDoc(doc(db, 'activities', a.id), resetPayload, { merge: true }).catch(() => {})
-                );
-                loaded[i] = { ...a, ...resetPayload, payorSignature: undefined };
-              }
-            }
-          }
-
-          loaded.sort((a, b) => b.id.localeCompare(a.id));
-          setActivities(loaded);
-        }
-
-        if (projSnap.status === 'fulfilled') {
-          const loaded: AgrProject[] = [];
-          projSnap.value.forEach(d => {
-            if (deletedRecordIdsRef.current.has(d.id)) {
-              deleteDoc(doc(db, 'projects', d.id)).catch(() => {});
-              return;
-            }
-            const projItem: AgrProject = { id: d.id, ...(d.data() as any) };
-            if (isTargetTestBatchProject(projItem)) {
-              testBatchPurgePromises.push(deleteDoc(doc(db, 'projects', d.id)).catch(console.warn));
-              return;
-            }
-            loaded.push(projItem);
-          });
-          if (needsWorkflowReset || needsCentralisationPurge) {
-            for (let i = 0; i < loaded.length; i++) {
-              const p = loaded[i];
-              const upStatus = String(p.status || '').trim().toUpperCase();
-              if (upStatus === 'PUBLISHED' || upStatus === 'ACTIVE' || (needsWorkflowReset && !p.status)) {
-                const resetPayload = {
-                  status: 'DRAFT' as const,
-                  sentToSecretariat: false,
-                  sentToSuivi: false,
-                  sentToPayor: false,
-                  sentToCom: false,
-                  ackByCom: false,
-                  gbairaiAlertSentByCom: false,
-                  publishedAt: '',
-                  publishedByDeptAt: '',
-                  payorSignature: null as any,
-                };
-                centralisationPurgePromises.push(
-                  setDoc(doc(db, 'projects', p.id), resetPayload, { merge: true }).catch(() => {})
-                );
-                loaded[i] = { ...p, ...resetPayload, payorSignature: undefined };
-              }
-            }
-          }
-          setProjects(loaded);
-        }
-
-        if (finEventSnap.status === 'fulfilled') {
-          const loaded: FinancialEvent[] = [];
-          finEventSnap.value.forEach(d => {
-            if (deletedRecordIdsRef.current.has(d.id)) {
-              deleteDoc(doc(db, 'financial_events', d.id)).catch(() => {});
-              return;
-            }
-            const fe: FinancialEvent = { id: d.id, ...(d.data() as any) };
-            if (
-              needsTestBatchPurge &&
-              (fe.id === 'PROJ-001' || fe.id === 'PROJ-002' || (fe as any).batchId === 'BATCH-PROJ-1794992532283')
-            ) {
-              testBatchPurgePromises.push(deleteDoc(doc(db, 'financial_events', d.id)).catch(console.warn));
-              return;
-            }
-            loaded.push(fe);
-          });
-          if (needsWorkflowReset) {
-            for (let i = 0; i < loaded.length; i++) {
-              const fe = loaded[i];
-              if (fe.fund === 'LOISIRS' && fe.status === 'PUBLISHED') {
-                setDoc(doc(db, 'financial_events', fe.id), { status: 'ARCHIVED' }, { merge: true }).catch(() => {});
-                loaded[i] = { ...fe, status: 'ARCHIVED' };
-              }
-            }
-          }
-          setFinancialEvents(loaded);
-        }
 
         if (verseSnap.status === 'fulfilled' && verseSnap.value.exists()) {
           setVerseOfTheDay(verseSnap.value.data() as VerseOfTheDay);
@@ -2043,110 +2058,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           setPrayerIntentions(loaded);
         }
 
-        if (relEventSnap.status === 'fulfilled') {
-          const loaded: ReligiousEvent[] = [];
-          relEventSnap.value.forEach(d => {
-            if (deletedRecordIdsRef.current.has(d.id)) {
-              deleteDoc(doc(db, 'religious_events', d.id)).catch(() => {});
-              return;
-            }
-            const data = d.data() as any;
-            const st = data.status || 'DRAFT';
-            loaded.push({
-              ...data,
-              id: d.id,
-              status: st,
-              publishedToGbairai: Boolean(st === 'PUBLISHED' && (data.publishedToGbairai || data.publishedAt)),
-            });
-          });
-          if (needsWorkflowReset || needsCentralisationPurge) {
-            for (let i = 0; i < loaded.length; i++) {
-              const evt = loaded[i];
-              const upStatus = String(evt.status || '').trim().toUpperCase();
-              if (upStatus === 'PUBLISHED' || upStatus === 'ACTIVE' || evt.publishedToGbairai) {
-                const resetPayload = {
-                  status: 'DRAFT' as const,
-                  publishedToGbairai: false,
-                  publishedAt: '',
-                  publishedByDeptAt: '',
-                  sentToSecretariat: false,
-                  sentToSuivi: false,
-                  sentToPayor: false,
-                  sentToCom: false,
-                  ackByCom: false,
-                  gbairaiAlertSentByCom: false,
-                  payorSignature: null as any,
-                };
-                centralisationPurgePromises.push(
-                  setDoc(doc(db, 'religious_events', evt.id), resetPayload, { merge: true }).catch(() => {})
-                );
-                loaded[i] = { ...evt, ...resetPayload, payorSignature: undefined };
-              }
-            }
-          }
-          const currentNews = newsItemsRef.current || [];
-          const reconciled = reconcileHistoricalSpiritualEvents(loaded, currentNews);
-          setReligiousEvents(reconciled);
-        }
-
-        if (needsWorkflowReset) {
-          setDoc(doc(db, 'admin', 'workflow_reset_v3'), {
-            completedAt: new Date().toISOString(),
-            version: '2026.11.18.3',
-          }).catch(() => {});
-        }
-
-        if (needsCentralisationPurge && actSnap.status === 'fulfilled' && projSnap.status === 'fulfilled' && relEventSnap.status === 'fulfilled') {
-          Promise.allSettled(centralisationPurgePromises).then(() => {
-            setDoc(doc(db, 'admin', 'purge_centralisation_v1'), {
-              completedAt: new Date().toISOString(),
-              version: '2026.11.18.10',
-            }).catch(() => {});
-          });
-        }
-
-        if (pvsSnap.status === 'fulfilled') {
-          const loaded: SecretaryPV[] = [];
-          pvsSnap.value.forEach(d => {
-            if (deletedRecordIdsRef.current.has(d.id)) {
-              deleteDoc(doc(db, 'secretary_pvs', d.id)).catch(() => {});
-              return;
-            }
-            loaded.push({ id: d.id, ...(d.data() as any) });
-          });
-          setPvs(loaded);
-        }
-
-        if (bilansSnap.status === 'fulfilled') {
-          const loaded: FinancialBilan[] = [];
-          bilansSnap.value.forEach(d => {
-            if (deletedRecordIdsRef.current.has(d.id)) {
-              deleteDoc(doc(db, 'secretary_bilans', d.id)).catch(() => {});
-              return;
-            }
-            loaded.push({ id: d.id, ...(d.data() as any) });
-          });
-          setBilans(loaded);
-        }
-
-        if (archSnap.status === 'fulfilled') {
-          const loaded: ArchiveDoc[] = [];
-          archSnap.value.forEach(d => {
-            if (deletedRecordIdsRef.current.has(d.id)) {
-              deleteDoc(doc(db, 'archive_docs', d.id)).catch(() => {});
-              return;
-            }
-            loaded.push({ id: d.id, ...(d.data() as any) });
-          });
-          setArchiveDocs(loaded);
-        }
-
         if (adminSnap.status === 'fulfilled' && !adminSnap.value.empty) {
           setAdminUsers(prev => {
             const map = new Map<string, AdminUser>();
             ADMIN_USERS.forEach(a => map.set(a.id, a));
             prev.forEach(a => map.set(a.id, a));
-            adminSnap.value.forEach(d => {
+            adminSnap.value.forEach((d: any) => {
               const data = d.data() as any;
               const existing = map.get(d.id as any);
               const pwd = data.password || data.pin || (existing ? (existing.password || existing.pin) : '');
@@ -2172,75 +2089,91 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           });
         }
 
-        const purgedTaskIds = new Set<string>();
-        if (progTaskSnap.status === 'fulfilled') {
-          const loaded: ProgrammeTask[] = [];
-          progTaskSnap.value.forEach(d => {
-            if (deletedRecordIdsRef.current.has(d.id)) {
-              deleteDoc(doc(db, 'programme_tasks', d.id)).catch(() => {});
-              return;
-            }
-            const t: ProgrammeTask = { id: d.id, ...(d.data() as any) };
-            if (
-              needsTestBatchPurge &&
-              (t.sourceId === 'PROJ-001' || t.sourceId === 'PROJ-002' || t.sourceId === 'BATCH-PROJ-1794992532283')
-            ) {
-              purgedTaskIds.add(d.id);
-              testBatchPurgePromises.push(deleteDoc(doc(db, 'programme_tasks', d.id)).catch(console.warn));
-              return;
-            }
-            loaded.push(t);
-          });
-          setProgrammeTasks(loaded);
+        if (regularizeGilbertSnap.status === 'fulfilled') {
+          if (regularizeGilbertSnap.value.exists()) {
+            saveMigrationsCache({ regularize_gilbert_v1: true });
+          } else {
+            const nowIso = new Date().toISOString();
+            const gilbertFixPayload = {
+              id: '10',
+              firstName: 'GILBERT',
+              nickname: 'DOYEN',
+              fullRosterName: 'GILBERT (DOYEN)',
+              phone: '2250703567992',
+              isRegistered: true,
+              statut: 'Activé',
+              resetAt: null,
+              updatedAt: nowIso,
+            };
+            usersDocsMap.set('10', { ...(usersDocsMap.get('10') || {}), ...gilbertFixPayload, _docId: '10' });
+            membersDocsMap.set('10', { ...(membersDocsMap.get('10') || {}), ...gilbertFixPayload, _docId: '10' });
+            reconcileMembers();
+            Promise.allSettled([
+              setDoc(doc(db, 'users', '10'), gilbertFixPayload, { merge: true }),
+              setDoc(doc(db, 'members', '10'), gilbertFixPayload, { merge: true }),
+            ]).then(() => {
+              setDoc(doc(db, 'admin', 'regularize_gilbert_v1'), {
+                completedAt: nowIso,
+                memberId: '10',
+                phone: '2250703567992',
+                version: '2026.11.18.12',
+              })
+                .then(() => saveMigrationsCache({ regularize_gilbert_v1: true }))
+                .catch(() => {});
+            });
+          }
         }
 
-        if (progAlertSnap.status === 'fulfilled') {
-          const loaded: ProgrammeAlert[] = [];
-          progAlertSnap.value.forEach(d => {
-            if (deletedRecordIdsRef.current.has(d.id)) {
-              deleteDoc(doc(db, 'programme_alerts', d.id)).catch(() => {});
-              return;
-            }
-            const a: ProgrammeAlert = { id: d.id, ...(d.data() as any) };
-            if (
-              needsTestBatchPurge &&
-              a.taskId &&
-              (purgedTaskIds.has(a.taskId) || a.taskId === 'PROJ-001' || a.taskId === 'PROJ-002' || a.taskId === 'BATCH-PROJ-1794992532283')
-            ) {
-              testBatchPurgePromises.push(deleteDoc(doc(db, 'programme_alerts', d.id)).catch(console.warn));
-              return;
-            }
-            loaded.push(a);
-          });
-          setProgrammeAlerts(loaded);
+        const needsWorkflowReset =
+          resetFlagSnap.status === 'fulfilled' && !resetFlagSnap.value.exists();
+        const needsTestBatchPurge =
+          purgeTestBatchSnap.status === 'fulfilled' && !purgeTestBatchSnap.value.exists();
+        const needsCentralisationPurge =
+          purgeCentralisationSnap.status === 'fulfilled' && !purgeCentralisationSnap.value.exists();
+
+        if (resetFlagSnap.status === 'fulfilled' && resetFlagSnap.value.exists()) {
+          saveMigrationsCache({ workflow_reset_v3: true });
+        }
+        if (purgeTestBatchSnap.status === 'fulfilled' && purgeTestBatchSnap.value.exists()) {
+          saveMigrationsCache({ purge_test_batch_1794992532283: true });
+        }
+        if (purgeCentralisationSnap.status === 'fulfilled' && purgeCentralisationSnap.value.exists()) {
+          saveMigrationsCache({ purge_centralisation_v1: true });
         }
 
-        if (needsTestBatchPurge && projSnap.status === 'fulfilled') {
-          Promise.allSettled(testBatchPurgePromises).then(() => {
-            setDoc(doc(db, 'admin', 'purge_test_batch_1794992532283'), {
-              completedAt: new Date().toISOString(),
-              purgedIds: ['PROJ-001', 'PROJ-002', 'BATCH-PROJ-1794992532283'],
-              version: '2026.11.18.9',
-            }).catch(() => {});
-          });
+        if (needsWorkflowReset) {
+          setDoc(doc(db, 'admin', 'workflow_reset_v3'), {
+            completedAt: new Date().toISOString(),
+            version: '2026.11.18.3',
+          })
+            .then(() => saveMigrationsCache({ workflow_reset_v3: true }))
+            .catch(() => {});
         }
-
-        if (adminLogSnap.status === 'fulfilled') {
-          const loaded: AdminLoginLog[] = [];
-          adminLogSnap.value.forEach(d => loaded.push({ id: d.id, ...(d.data() as any) }));
-          setAdminLogs(loaded);
+        if (needsTestBatchPurge) {
+          setDoc(doc(db, 'admin', 'purge_test_batch_1794992532283'), {
+            completedAt: new Date().toISOString(),
+            purgedIds: ['PROJ-001', 'PROJ-002', 'BATCH-PROJ-1794992532283'],
+            version: '2026.11.18.9',
+          })
+            .then(() => saveMigrationsCache({ purge_test_batch_1794992532283: true }))
+            .catch(() => {});
+        }
+        if (needsCentralisationPurge) {
+          setDoc(doc(db, 'admin', 'purge_centralisation_v1'), {
+            completedAt: new Date().toISOString(),
+            version: '2026.11.18.10',
+          })
+            .then(() => saveMigrationsCache({ purge_centralisation_v1: true }))
+            .catch(() => {});
         }
       } catch (err) {
-        console.warn('Erreur chargement autres collections:', err);
+        console.warn('Erreur chargement collections statiques:', err);
       }
     };
 
-    // Chargement unique et propre au montage du composant
+    // Chargement initial optimisé (les collections avec onSnapshot ci-dessous reçoivent leur instantané initial directement sans double lecture)
     loadTreasury();
-    loadGbairai();
-    loadNavette();
-    loadMembersAndUsers();
-    loadOtherCollections();
+    loadStaticCollectionsAndFlags();
 
     // ÉCOUTEURS TEMPS RÉEL POUR GBAIRAI ET NAVETTE D'ÉCHANGE
     // Permet au Chargé au Suivi (SDP), aux administrateurs et aux membres de voir les messages et lectures en temps réel
@@ -2262,11 +2195,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
     };
 
-    const handleGbairaiSnapshot = (snapshot: any, targetMap: Map<string, NewsItem>, colName: 'news' | 'announcements') => {
+    const handleGbairaiSnapshot = (snapshot: any, targetMap: Map<string, NewsItem>) => {
       targetMap.clear();
       snapshot.forEach((d: any) => {
         if (deletedRecordIdsRef.current.has(d.id)) {
-          deleteDoc(doc(db, colName, d.id)).catch(() => {});
           return;
         }
         const item = { id: d.id, ...(d.data() as any) };
@@ -2287,13 +2219,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
 
     const unsubGbairaiNews = onSnapshot(collection(db, 'news'), (snapshot) => {
-      handleGbairaiSnapshot(snapshot, newsDocsMapRef.current, 'news');
+      handleGbairaiSnapshot(snapshot, newsDocsMapRef.current);
     }, (err) => {
       console.warn('Erreur écouteur temps réel news Gbairai:', err);
     });
 
     const unsubGbairaiAnnouncements = onSnapshot(collection(db, 'announcements'), (snapshot) => {
-      handleGbairaiSnapshot(snapshot, announcementsDocsMapRef.current, 'announcements');
+      handleGbairaiSnapshot(snapshot, announcementsDocsMapRef.current);
     }, (err) => {
       console.warn('Erreur écouteur temps réel announcements Gbairai:', err);
     });
@@ -2303,7 +2235,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       infoRequestsMapRef.current.clear();
       snapshot.forEach((d) => {
         if (deletedRecordIdsRef.current.has(d.id)) {
-          deleteDoc(doc(db, 'info_requests', d.id)).catch(() => {});
           return;
         }
         infoRequestsMapRef.current.set(d.id, { id: d.id, ...(d.data() as any) });
@@ -2317,7 +2248,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       navettesMapRef.current.clear();
       snapshot.forEach((d) => {
         if (deletedRecordIdsRef.current.has(d.id)) {
-          deleteDoc(doc(db, 'navettes', d.id)).catch(() => {});
           return;
         }
         navettesMapRef.current.set(d.id, { id: d.id, ...(d.data() as any) });
@@ -2332,6 +2262,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (!docSnap.exists()) return;
       const data = docSnap.data() as any;
       let changed = false;
+      if (data?.deletedTimestamps && typeof data.deletedTimestamps === 'object') {
+        Object.entries(data.deletedTimestamps).forEach(([id, ts]) => {
+          if (id && typeof ts === 'number' && !isNaN(ts)) {
+            if ((deletedTimestampsRef.current[id] || 0) < ts) {
+              deletedTimestampsRef.current[id] = ts;
+              changed = true;
+            }
+          }
+        });
+      }
       if (Array.isArray(data?.ids)) {
         data.ids.forEach((id: string) => {
           if (id && !deletedRecordIdsRef.current.has(id)) {
@@ -2349,19 +2289,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         changed = true;
       }
       if (changed) {
-        try {
-          localStorage.setItem(
-            EROUAMA_DELETED_RECORDS_KEY,
-            JSON.stringify({
-              ids: Array.from(deletedRecordIdsRef.current),
-              defaultsNewsCleared: defaultsNewsClearedRef.current,
-            })
-          );
-        } catch {}
+        syncLocalDeletedStorage();
         updateNavetteState();
         updateGbairaiState();
         setActivities(prev => prev.filter(a => !deletedRecordIdsRef.current.has(a.id)));
-        setProjects(prev => prev.filter(p => !deletedRecordIdsRef.current.has(p.id)));
+        setProjectsSynced(prev =>
+          prev.filter(p => {
+            const v = evaluateProjectTombstone(p.id, p, false);
+            return v === 'KEEP' || v === 'UNBLOCK';
+          })
+        );
         setFinancialEvents(prev => prev.filter(fe => !deletedRecordIdsRef.current.has(fe.id)));
         setReligiousEvents(prev => prev.filter(r => !deletedRecordIdsRef.current.has(r.id)));
         setPvs(prev => prev.filter(pv => !deletedRecordIdsRef.current.has(pv.id)));
@@ -2406,7 +2343,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const loaded: ReligiousEvent[] = [];
       snapshot.forEach((d) => {
         if (deletedRecordIdsRef.current.has(d.id)) {
-          deleteDoc(doc(db, 'religious_events', d.id)).catch(() => {});
           return;
         }
         const data = d.data() as any;
@@ -2425,10 +2361,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       console.warn('Erreur écouteur temps réel religious_events:', err);
     });
 
-    // Écouteur temps réel pour les soldes de trésorerie (synchronisation instantanée de Cotisation Mensuelle et Caisse Totale)
+    // Écouteur temps réel pour les soldes et régularisations de trésorerie
     const unsubTreasuryBalances = onSnapshot(doc(db, 'treasury', 'balances'), (docSnap) => {
       if (docSnap.exists()) {
-        const data = docSnap.data() as Record<string, number>;
+        const data = docSnap.data() as Record<string, any>;
         setFundBalances(prev => ({
           ...prev,
           COTISATION: typeof data.COTISATION === 'number' ? data.COTISATION : prev.COTISATION,
@@ -2439,6 +2375,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           CAS_SOCIAUX: typeof data.CAS_SOCIAUX === 'number' ? data.CAS_SOCIAUX : prev.CAS_SOCIAUX,
           EXTRA: typeof data.EXTRA === 'number' ? data.EXTRA : prev.EXTRA,
         }));
+        if (data && data.regularizations && typeof data.regularizations === 'object') {
+          setTreasuryRegularizations(data.regularizations);
+          try {
+            localStorage.setItem('erouama_treasury_regularizations', JSON.stringify(data.regularizations));
+          } catch {}
+        }
       }
     }, (err) => {
       console.warn('Erreur écouteur temps réel treasury/balances:', err);
@@ -2466,6 +2408,124 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       console.warn('Erreur écouteur temps réel members:', err);
     });
 
+    // Écouteurs temps réel multi-appareils pour Projets AGR, Activités, Finances, Secrétariat, Archives et Suivi
+    const unsubProjectsCol = onSnapshot(collection(db, 'projects'), (snapshot) => {
+      setCloudSyncError(null);
+      setIsFirebaseConnected(true);
+      const loaded: AgrProject[] = [];
+      const unblockedIds: string[] = [];
+      snapshot.forEach((d) => {
+        const projItem: AgrProject = { id: d.id, ...(d.data() as any) };
+        const verdict = evaluateProjectTombstone(d.id, projItem, false);
+        if (verdict === 'TEST_PURGE' || verdict === 'DELETED') {
+          return;
+        }
+        if (verdict === 'UNBLOCK') {
+          unblockedIds.push(d.id);
+        }
+        loaded.push(projItem);
+      });
+      if (unblockedIds.length > 0) {
+        unblockDeletedRecordIds(unblockedIds).catch(() => {});
+      }
+      setProjectsSynced(sortProjectsList(loaded));
+    }, (err) => {
+      const msg = formatFirestoreErrorMessage(err);
+      console.warn('Erreur écouteur temps réel projects:', err);
+      setCloudSyncError(msg);
+    });
+
+    const unsubActivitiesCol = onSnapshot(collection(db, 'activities'), (snapshot) => {
+      const rawLoaded: EventActivity[] = [];
+      snapshot.forEach((d) => {
+        if (deletedRecordIdsRef.current.has(d.id)) {
+          return;
+        }
+        rawLoaded.push({ id: d.id, ...(d.data() as any) });
+      });
+      setActivities(reconcileActivitiesSnapshot(rawLoaded));
+    }, (err) => {
+      console.warn('Erreur écouteur temps réel activities:', err);
+    });
+
+    const unsubFinancialEventsCol = onSnapshot(collection(db, 'financial_events'), (snapshot) => {
+      const loaded: FinancialEvent[] = [];
+      snapshot.forEach((d) => {
+        if (deletedRecordIdsRef.current.has(d.id)) {
+          return;
+        }
+        loaded.push({ id: d.id, ...(d.data() as any) });
+      });
+      setFinancialEvents(loaded);
+    }, (err) => {
+      console.warn('Erreur écouteur temps réel financial_events:', err);
+    });
+
+    const unsubPvsCol = onSnapshot(collection(db, 'secretary_pvs'), (snapshot) => {
+      const loaded: SecretaryPV[] = [];
+      snapshot.forEach((d) => {
+        if (deletedRecordIdsRef.current.has(d.id)) {
+          return;
+        }
+        loaded.push({ id: d.id, ...(d.data() as any) });
+      });
+      setPvs(loaded);
+    }, (err) => {
+      console.warn('Erreur écouteur temps réel secretary_pvs:', err);
+    });
+
+    const unsubBilansCol = onSnapshot(collection(db, 'secretary_bilans'), (snapshot) => {
+      const loaded: FinancialBilan[] = [];
+      snapshot.forEach((d) => {
+        if (deletedRecordIdsRef.current.has(d.id)) {
+          return;
+        }
+        loaded.push({ id: d.id, ...(d.data() as any) });
+      });
+      setBilans(loaded);
+    }, (err) => {
+      console.warn('Erreur écouteur temps réel secretary_bilans:', err);
+    });
+
+    const unsubArchiveDocsCol = onSnapshot(collection(db, 'archive_docs'), (snapshot) => {
+      const loaded: ArchiveDoc[] = [];
+      snapshot.forEach((d) => {
+        if (deletedRecordIdsRef.current.has(d.id)) {
+          return;
+        }
+        loaded.push({ id: d.id, ...(d.data() as any) });
+      });
+      setArchiveDocs(loaded);
+    }, (err) => {
+      console.warn('Erreur écouteur temps réel archive_docs:', err);
+    });
+
+    const unsubProgrammeTasksCol = onSnapshot(collection(db, 'programme_tasks'), (snapshot) => {
+      const loaded: ProgrammeTask[] = [];
+      snapshot.forEach((d) => {
+        if (deletedRecordIdsRef.current.has(d.id)) {
+          return;
+        }
+        loaded.push({ id: d.id, ...(d.data() as any) });
+      });
+      setProgrammeTasks(loaded);
+    }, (err) => {
+      console.warn('Erreur écouteur temps réel programme_tasks:', err);
+    });
+
+    const unsubProgrammeAlertsCol = onSnapshot(collection(db, 'programme_alerts'), (snapshot) => {
+      const loaded: ProgrammeAlert[] = [];
+      snapshot.forEach((d) => {
+        if (deletedRecordIdsRef.current.has(d.id)) {
+          return;
+        }
+        loaded.push({ id: d.id, ...(d.data() as any) });
+      });
+      setProgrammeAlerts(loaded);
+    }, (err) => {
+      console.warn('Erreur écouteur temps réel programme_alerts:', err);
+    });
+
     // Références pour rafraîchissements ponctuels après création ou validation
     treasuryLoaderRef.current = loadTreasury;
     gbairaiLoaderRef.current = loadGbairai;
@@ -2483,6 +2543,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (unsubTreasuryBalances) unsubTreasuryBalances();
       if (unsubUsersCol) unsubUsersCol();
       if (unsubMembersCol) unsubMembersCol();
+      if (unsubProjectsCol) unsubProjectsCol();
+      if (unsubActivitiesCol) unsubActivitiesCol();
+      if (unsubFinancialEventsCol) unsubFinancialEventsCol();
+      if (unsubPvsCol) unsubPvsCol();
+      if (unsubBilansCol) unsubBilansCol();
+      if (unsubArchiveDocsCol) unsubArchiveDocsCol();
+      if (unsubProgrammeTasksCol) unsubProgrammeTasksCol();
+      if (unsubProgrammeAlertsCol) unsubProgrammeAlertsCol();
     };
   }, []);
 
@@ -2516,20 +2584,48 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
             setCurrentUser((prev: any) => {
               if (prev && prev.type === 'MEMBER' && prev.member && String(prev.member.id).trim() === currentUserId) {
+                const prevM = prev.member;
+                const nextPhoto = photo || prevM.photoUrl;
+                const nextAvatar = photo || prevM.avatar;
+                const nextReste = typeof data.resteADevoir === 'number' ? data.resteADevoir : prevM.resteADevoir;
+                const nextTotal = typeof data.totalPaid === 'number' ? data.totalPaid : (typeof data.solde === 'number' ? data.solde : prevM.totalPaid);
+                const nextSolde = typeof data.solde === 'number' ? data.solde : (typeof data.totalPaid === 'number' ? data.totalPaid : prevM.solde);
+                const nextUnpaid = typeof data.unpaidMonths === 'number' ? data.unpaidMonths : (typeof data.moisRetard === 'number' ? data.moisRetard : prevM.unpaidMonths);
+                const nextRetard = typeof data.moisRetard === 'number' ? data.moisRetard : (typeof data.unpaidMonths === 'number' ? data.unpaidMonths : prevM.moisRetard);
+                const nextDues = data.duesStatus || data.statutCotisation || prevM.duesStatus;
+                const nextStatutCot = data.statutCotisation || data.duesStatus || prevM.statutCotisation;
+                const nextStatutDem = data.statutDemande || prevM.statutDemande;
+
+                const hasChanged =
+                  prevM.photoUrl !== nextPhoto ||
+                  prevM.avatar !== nextAvatar ||
+                  prevM.resteADevoir !== nextReste ||
+                  prevM.totalPaid !== nextTotal ||
+                  prevM.solde !== nextSolde ||
+                  prevM.unpaidMonths !== nextUnpaid ||
+                  prevM.moisRetard !== nextRetard ||
+                  prevM.duesStatus !== nextDues ||
+                  prevM.statutCotisation !== nextStatutCot ||
+                  prevM.statutDemande !== nextStatutDem ||
+                  prevM.statut !== (data.statut ?? prevM.statut) ||
+                  prevM.isRegistered !== (data.isRegistered ?? prevM.isRegistered);
+
+                if (!hasChanged) return prev;
+
                 const updatedMember = {
-                  ...prev.member,
+                  ...prevM,
                   ...data,
                   id: currentUserId,
-                  photoUrl: photo || prev.member.photoUrl,
-                  avatar: photo || prev.member.avatar,
-                  resteADevoir: typeof data.resteADevoir === 'number' ? data.resteADevoir : prev.member.resteADevoir,
-                  totalPaid: typeof data.totalPaid === 'number' ? data.totalPaid : (typeof data.solde === 'number' ? data.solde : prev.member.totalPaid),
-                  solde: typeof data.solde === 'number' ? data.solde : (typeof data.totalPaid === 'number' ? data.totalPaid : prev.member.solde),
-                  unpaidMonths: typeof data.unpaidMonths === 'number' ? data.unpaidMonths : (typeof data.moisRetard === 'number' ? data.moisRetard : prev.member.unpaidMonths),
-                  moisRetard: typeof data.moisRetard === 'number' ? data.moisRetard : (typeof data.unpaidMonths === 'number' ? data.unpaidMonths : prev.member.moisRetard),
-                  duesStatus: data.duesStatus || data.statutCotisation || prev.member.duesStatus,
-                  statutCotisation: data.statutCotisation || data.duesStatus || prev.member.statutCotisation,
-                  statutDemande: data.statutDemande || prev.member.statutDemande,
+                  photoUrl: nextPhoto,
+                  avatar: nextAvatar,
+                  resteADevoir: nextReste,
+                  totalPaid: nextTotal,
+                  solde: nextSolde,
+                  unpaidMonths: nextUnpaid,
+                  moisRetard: nextRetard,
+                  duesStatus: nextDues,
+                  statutCotisation: nextStatutCot,
+                  statutDemande: nextStatutDem,
                 };
                 try {
                   localStorage.setItem(
@@ -2633,6 +2729,61 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     } catch (err) {
       console.warn('Erreur actualisation manuelle navette:', err);
     } finally {
+      setIsRefreshingData(false);
+    }
+  };
+
+  const refreshProjects = async (): Promise<{ ok: boolean; error?: string; count?: number }> => {
+    setIsRefreshingData(true);
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    try {
+      if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+        const offlineMsg = 'Appareil hors-ligne : impossible d’actualiser les projets depuis le serveur.';
+        setCloudSyncError(offlineMsg);
+        return { ok: false, error: offlineMsg };
+      }
+      const timeoutPromise = new Promise<null>((resolve) => {
+        timer = setTimeout(() => resolve(null), 6000);
+      });
+      const snap = await Promise.race([
+        getDocsFromServer(collection(db, 'projects')),
+        timeoutPromise,
+      ]);
+      if (!snap) {
+        const restProbe = await probeFirestoreRestStatus('projects');
+        const errMsg = !restProbe.ok && restProbe.message
+          ? restProbe.message
+          : 'Délai dépassé lors de la lecture des projets depuis le serveur Firestore.';
+        setCloudSyncError(errMsg);
+        return { ok: false, error: errMsg };
+      }
+      const loaded: AgrProject[] = [];
+      const unblockedIds: string[] = [];
+      snap.forEach((d) => {
+        const projItem: AgrProject = { id: d.id, ...(d.data() as any) };
+        const verdict = evaluateProjectTombstone(d.id, projItem, false);
+        if (verdict === 'TEST_PURGE' || verdict === 'DELETED') return;
+        if (verdict === 'UNBLOCK') unblockedIds.push(d.id);
+        loaded.push(projItem);
+      });
+      if (unblockedIds.length > 0) {
+        unblockDeletedRecordIds(unblockedIds).catch(() => {});
+      }
+      const sorted = sortProjectsList(loaded);
+      setProjectsSynced(sorted);
+      setCloudSyncError(null);
+      setIsFirebaseConnected(true);
+      return { ok: true, count: sorted.length };
+    } catch (err: any) {
+      let errMsg = formatFirestoreErrorMessage(err);
+      if (!errMsg.includes('429') && !errMsg.includes('PERMISSION_DENIED')) {
+        const restProbe = await probeFirestoreRestStatus('projects');
+        if (!restProbe.ok && restProbe.message) errMsg = restProbe.message;
+      }
+      setCloudSyncError(errMsg);
+      return { ok: false, error: errMsg };
+    } finally {
+      if (timer) clearTimeout(timer);
       setIsRefreshingData(false);
     }
   };
@@ -2914,7 +3065,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return { success: true, message: `Bienvenue chez vous, ${connectedMember.nickname} !` };
   };
 
-  // Enregistrement de l'activité/présence en temps réel d'un administrateur (session persistante & connexions)
+  // Enregistrement de l'activité/présence d'un administrateur (strictement dédupliqué pour éviter toute boucle d'écriture Firestore)
   const recordAdminActivity = useCallback(async (role: string, memberName?: string, userId?: string) => {
     if (!role || !role.trim()) return;
     const cleanRole = role.trim().toUpperCase().replace(/[\s-]/g, '_');
@@ -2922,8 +3073,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const nowIso = now.toISOString();
     const todayStr = nowIso.split('T')[0];
 
+    const curUser = currentUserRef.current;
+    const targetUserId = userId || (curUser?.type === 'MEMBER' ? curUser.member?.id : undefined);
+    const presenceSyncKey = `erouama_presence_synced_${cleanRole}_${targetUserId || 'none'}_${todayStr}`;
+
     try {
-      // 1. Mise à jour Firestore du document admins/${cleanRole}
+      if (syncedPresenceKeysRef.current.has(presenceSyncKey) || sessionStorage.getItem(presenceSyncKey)) {
+        return;
+      }
+    } catch {}
+    syncedPresenceKeysRef.current.add(presenceSyncKey);
+    try {
+      sessionStorage.setItem(presenceSyncKey, nowIso);
+    } catch {}
+
+    try {
+      // 1. Mise à jour Firestore du document admins/${cleanRole} (une fois par session/jour)
       await setDoc(
         doc(db, 'admins', cleanRole),
         sanitizeFirestore({
@@ -2939,9 +3104,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         { merge: true }
       ).catch(e => console.warn('Mise à jour admins doc:', e));
 
-      // 2. Si userId ou memberId fourni, mise à jour dans users
-      const curUser = currentUserRef.current;
-      const targetUserId = userId || (curUser?.type === 'MEMBER' ? curUser.member?.id : undefined);
+      // 2. Si userId ou memberId fourni, mise à jour ponctuelle dans users (sans boucle sur onSnapshot)
       if (targetUserId) {
         setDoc(
           doc(db, 'users', String(targetUserId)),
@@ -2954,12 +3117,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         ).catch(() => {});
       }
 
-      // 3. Déduplication quotidienne pour admin_logs afin d'éviter le spamming à chaque clic
+      // 3. Déduplication quotidienne pour admin_logs afin d'éviter le spamming
       const sessionDedupKey = `erouama_admin_activity_${cleanRole}_${todayStr}`;
-      const alreadyLoggedToday = sessionStorage.getItem(sessionDedupKey);
+      let alreadyLoggedToday: string | null = null;
+      try {
+        alreadyLoggedToday = sessionStorage.getItem(sessionDedupKey);
+      } catch {}
 
       if (!alreadyLoggedToday) {
-        sessionStorage.setItem(sessionDedupKey, nowIso);
+        try {
+          sessionStorage.setItem(sessionDedupKey, nowIso);
+        } catch {}
         await addDoc(
           collection(db, 'admin_logs'),
           sanitizeFirestore({
@@ -5302,8 +5470,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         if (!isNaN(num) && num > maxActSeq) maxActSeq = num;
       }
     });
-    const nextActSeq = maxActSeq > 0 ? maxActSeq + 1 : (activities.length + 1);
-    const seqActId = `ORG-${String(nextActSeq).padStart(3, '0')}`;
+    let nextActSeq = maxActSeq > 0 ? maxActSeq + 1 : (activities.length + 1);
+    let seqActId = `ORG-${String(nextActSeq).padStart(3, '0')}`;
+    while (activities.some(a => a.id === seqActId) || deletedRecordIdsRef.current.has(seqActId)) {
+      nextActSeq++;
+      seqActId = `ORG-${String(nextActSeq).padStart(3, '0')}`;
+    }
 
     const newAct: EventActivity = {
       ...activity,
@@ -5311,6 +5483,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       status: 'DRAFT',
       budgetStatus: (activity.budget && activity.budget > 0) ? 'PENDING_TRESORIER' : 'NONE',
       createdAt: new Date().toISOString(),
+      createdAtMs: Date.now(),
+      updatedAtMs: Date.now(),
       sentToSecretariat: false,
       sentToPayor: false,
       sentToCom: false,
@@ -5795,22 +5969,69 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     ]);
   };
 
+  const verifyProjectOnServer = async (
+    projectId: string,
+    requireSentToSecretariat = false
+  ): Promise<{ ok: boolean; error?: string }> => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    try {
+      const timeoutPromise = new Promise<null>((resolve) => {
+        timer = setTimeout(() => resolve(null), 4500);
+      });
+      const snap = await Promise.race([
+        getDocFromServer(doc(db, 'projects', projectId)),
+        timeoutPromise,
+      ]);
+      if (!snap) {
+        const restProbe = await probeFirestoreRestStatus('projects', projectId);
+        const errMsg = !restProbe.ok && restProbe.message
+          ? restProbe.message
+          : `Vérification serveur non confirmée pour le projet ${projectId}.`;
+        setCloudSyncError(errMsg);
+        return { ok: false, error: errMsg };
+      }
+      if (!snap.exists()) {
+        const errMsg = `Le projet (${projectId}) est absent du serveur Firestore après sauvegarde.`;
+        setCloudSyncError(errMsg);
+        return { ok: false, error: errMsg };
+      }
+      if (requireSentToSecretariat && snap.data()?.sentToSecretariat !== true) {
+        const errMsg = `La transmission au Secrétariat (${projectId}) n’a pas été validée sur le serveur.`;
+        setCloudSyncError(errMsg);
+        return { ok: false, error: errMsg };
+      }
+      setCloudSyncError(null);
+      return { ok: true };
+    } catch (err: any) {
+      const errMsg = formatFirestoreErrorMessage(err);
+      setCloudSyncError(errMsg);
+      return { ok: false, error: errMsg };
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  };
+
   // Projets AGR
-  const createProject = (project: Omit<AgrProject, 'id' | 'status' | 'tresorierFeasibility' | 'currentReturn'> & { status?: AgrProject['status'] }) => {
+  const createProject = async (
+    project: Omit<AgrProject, 'id' | 'status' | 'tresorierFeasibility' | 'currentReturn'> & { status?: AgrProject['status'] }
+  ): Promise<{ ok: boolean; error?: string }> => {
     // Vérification stricte des droits : Responsable Projets (PROJET), Payor ou Super Admin
     if (currentUser?.type === 'ADMIN') {
       const allowedRoles = ['PROJET', 'PAYOR', 'SUPER_ADMIN'];
       if (!allowedRoles.includes(currentUser.adminRole || '')) {
-        alert(`Action non autorisée : Seul le Responsable Projets (AGR) est habilité à initier des projets AGR / investissements.`);
-        return;
+        return {
+          ok: false,
+          error: 'Action non autorisée : Seul le Responsable Projets (AGR) est habilité à initier des projets AGR / investissements.',
+        };
       }
     }
 
     const realDate = project.dateRealisation || project.eventDate || '';
+    const currentProjects = projectsRef.current;
 
-    // Numérotation séquentielle automatique basée sur le dernier document existant (PROJ-001, PROJ-002, ...)
+    // Numérotation séquentielle sans collision (en évitant les IDs existants et les IDs purgés/supprimés)
     let maxProjSeq = 0;
-    projects.forEach(p => {
+    currentProjects.forEach(p => {
       if (!p.id) return;
       const m = p.id.match(/^PROJ-(\d+)$/);
       if (m) {
@@ -5818,9 +6039,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         if (!isNaN(num) && num > maxProjSeq) maxProjSeq = num;
       }
     });
-    const nextProjSeq = maxProjSeq > 0 ? maxProjSeq + 1 : (projects.length + 1);
-    const seqProjId = `PROJ-${String(nextProjSeq).padStart(3, '0')}`;
+    let nextProjSeq = maxProjSeq > 0 ? maxProjSeq + 1 : (currentProjects.length + 1);
+    let seqProjId = `PROJ-${String(nextProjSeq).padStart(3, '0')}`;
+    while (
+      currentProjects.some(p => p.id === seqProjId) ||
+      deletedRecordIdsRef.current.has(seqProjId) ||
+      seqProjId === 'PROJ-001' ||
+      seqProjId === 'PROJ-002'
+    ) {
+      nextProjSeq++;
+      seqProjId = `PROJ-${String(nextProjSeq).padStart(3, '0')}`;
+    }
 
+    const nowMs = Date.now();
     const newProj: AgrProject = {
       ...project,
       id: seqProjId,
@@ -5835,9 +6066,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       sentToCom: false,
       ackByCom: false,
       archivedBySecretariat: false,
+      createdAtMs: nowMs,
+      updatedAtMs: nowMs,
     };
-    setDoc(doc(db, 'projects', newProj.id), sanitizeFirestore(newProj)).catch(console.warn);
-    setProjects(prev => [newProj, ...prev]);
+
+    const persisted = await persistFirestoreDoc('projects', newProj.id, newProj, false, `createProject:${newProj.id}`);
+    if (!persisted.ok) {
+      return persisted;
+    }
+    const verified = await verifyProjectOnServer(newProj.id, false);
+    if (!verified.ok) {
+      return verified;
+    }
+
+    setProjectsSynced(prev => sortProjectsList([newProj, ...prev.filter(p => p.id !== newProj.id)]));
 
     if (newProj.status === 'PUBLISHED' || newProj.status === 'active') {
       // Notification Push FCM : TOUS LES MEMBRES
@@ -5855,21 +6097,61 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         url: '/',
       }).catch(console.warn);
     }
+    return { ok: true };
   };
 
-  const updateProject = (projectId: string, updates: Partial<AgrProject>) => {
-    const sanitized = sanitizeFirestore(updates);
-    setDoc(doc(db, 'projects', projectId), sanitized, { merge: true }).catch(console.warn);
-    setProjects(prev =>
-      prev.map(p => (p.id === projectId ? { ...p, ...updates } : p))
+  const updateProject = async (
+    projectId: string,
+    updates: Partial<AgrProject>
+  ): Promise<{ ok: boolean; error?: string }> => {
+    const existing = projectsRef.current.find(p => p.id === projectId);
+    const nowMs = Date.now();
+    const mergedPayload = {
+      ...(existing || {}),
+      ...updates,
+      id: projectId,
+      updatedAtMs: nowMs,
+    };
+    const persisted = await persistFirestoreDoc('projects', projectId, mergedPayload, true, `updateProject:${projectId}`);
+    if (!persisted.ok) {
+      return persisted;
+    }
+    const verified = await verifyProjectOnServer(projectId, false);
+    if (!verified.ok) {
+      return verified;
+    }
+    setProjectsSynced(prev =>
+      prev.map(p => (p.id === projectId ? { ...p, ...updates, updatedAtMs: nowMs } : p))
     );
+    return { ok: true };
   };
 
-  const sendProjectToSecretariat = (projectId: string) => {
-    const proj = projects.find(p => p.id === projectId);
-    const updates = { status: 'SENT_TO_SECRETARIAT' as const, sentToSecretariat: true, sentToSuivi: false };
-    setDoc(doc(db, 'projects', projectId), updates, { merge: true }).catch(console.warn);
-    setProjects(prev => prev.map(p => (p.id === projectId ? { ...p, ...updates } : p)));
+  const sendProjectToSecretariat = async (projectId: string): Promise<{ ok: boolean; error?: string }> => {
+    const proj = projectsRef.current.find(p => p.id === projectId);
+    const nowMs = Date.now();
+    const updates = {
+      status: 'SENT_TO_SECRETARIAT' as const,
+      sentToSecretariat: true,
+      sentToSuivi: false,
+      updatedAtMs: nowMs,
+    };
+    const fullPayload = {
+      ...(proj || {}),
+      id: projectId,
+      ...updates,
+    };
+    const persisted = await persistFirestoreDoc('projects', projectId, fullPayload, true, `sendProjectToSecretariat:${projectId}`);
+    if (!persisted.ok) {
+      return persisted;
+    }
+    const verified = await verifyProjectOnServer(projectId, true);
+    if (!verified.ok) {
+      return verified;
+    }
+    if (deletedRecordIdsRef.current.has(projectId)) {
+      unblockDeletedRecordIds([projectId]).catch(() => {});
+    }
+    setProjectsSynced(prev => prev.map(p => (p.id === projectId ? { ...p, ...updates } : p)));
 
     dispatchPushNotification({
       title: 'E-ROUAMA • Commission Projets 🚀',
@@ -5881,16 +6163,62 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       type: 'INFO_REQUEST',
       url: '/',
     }).catch(console.warn);
+    return { ok: true };
   };
 
-  const sendProjectsBatchToSecretariat = (projectIds: string[]) => {
-    const batchId = 'BATCH-PROJ-' + Date.now();
-    projectIds.forEach(id => {
-      const updates = { status: 'SENT_TO_SECRETARIAT' as const, sentToSecretariat: true, sentToSuivi: false, batchId, isConsolidated: true };
-      setDoc(doc(db, 'projects', id), updates, { merge: true }).catch(console.warn);
-    });
-    setProjects(prev =>
-      prev.map(p => (projectIds.includes(p.id) ? { ...p, status: 'SENT_TO_SECRETARIAT', sentToSecretariat: true, sentToSuivi: false, batchId, isConsolidated: true } : p))
+  const sendProjectsBatchToSecretariat = async (projectIds: string[]): Promise<{ ok: boolean; error?: string }> => {
+    const nowMs = Date.now();
+    const batchId = 'BATCH-PROJ-' + nowMs;
+    const results = await Promise.all(
+      projectIds.map(id => {
+        const proj = projectsRef.current.find(p => p.id === id);
+        const updates = {
+          status: 'SENT_TO_SECRETARIAT' as const,
+          sentToSecretariat: true,
+          sentToSuivi: false,
+          batchId,
+          isConsolidated: true,
+          updatedAtMs: nowMs,
+        };
+        return persistFirestoreDoc(
+          'projects',
+          id,
+          { ...(proj || {}), id, ...updates },
+          true,
+          `sendProjectsBatchToSecretariat:${id}`
+        );
+      })
+    );
+    const failedWrite = results.find(r => !r.ok);
+    if (failedWrite) {
+      return failedWrite;
+    }
+    const verifications = await Promise.all(
+      projectIds.map(id => verifyProjectOnServer(id, true))
+    );
+    const failedVerify = verifications.find(v => !v.ok);
+    if (failedVerify) {
+      return failedVerify;
+    }
+
+    const blockedIds = projectIds.filter(id => deletedRecordIdsRef.current.has(id));
+    if (blockedIds.length > 0) {
+      unblockDeletedRecordIds(blockedIds).catch(() => {});
+    }
+    setProjectsSynced(prev =>
+      prev.map(p =>
+        projectIds.includes(p.id)
+          ? {
+              ...p,
+              status: 'SENT_TO_SECRETARIAT',
+              sentToSecretariat: true,
+              sentToSuivi: false,
+              batchId,
+              isConsolidated: true,
+              updatedAtMs: nowMs,
+            }
+          : p
+      )
     );
 
     dispatchPushNotification({
@@ -5903,13 +6231,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       type: 'INFO_REQUEST',
       url: '/',
     }).catch(console.warn);
+    return { ok: true };
   };
 
   const sendProjectFromSecretariatToSuivi = (projectId: string) => {
-    const proj = projects.find(p => p.id === projectId);
-    const updates = { status: 'SENT_TO_SUIVI' as const, sentToSecretariat: true, sentToSuivi: true };
-    setDoc(doc(db, 'projects', projectId), updates, { merge: true }).catch(console.warn);
-    setProjects(prev => prev.map(p => (p.id === projectId ? { ...p, ...updates } : p)));
+    const proj = projectsRef.current.find(p => p.id === projectId);
+    const updates = { status: 'SENT_TO_SUIVI' as const, sentToSecretariat: true, sentToSuivi: true, updatedAtMs: Date.now() };
+    setDoc(doc(db, 'projects', projectId), sanitizeFirestore({ ...(proj || {}), id: projectId, ...updates }), { merge: true }).catch(err => {
+      setCloudSyncError(formatFirestoreErrorMessage(err));
+    });
+    setProjectsSynced(prev => prev.map(p => (p.id === projectId ? { ...p, ...updates } : p)));
 
     dispatchPushNotification({
       title: 'E-ROUAMA • Instruction Chargé de Suivi 🕵️',
@@ -5924,12 +6255,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const sendProjectsBatchFromSecretariatToSuivi = (projectIds: string[]) => {
+    const nowMs = Date.now();
     projectIds.forEach(id => {
-      const updates = { status: 'SENT_TO_SUIVI' as const, sentToSecretariat: true, sentToSuivi: true };
-      setDoc(doc(db, 'projects', id), updates, { merge: true }).catch(console.warn);
+      const proj = projectsRef.current.find(p => p.id === id);
+      const updates = { status: 'SENT_TO_SUIVI' as const, sentToSecretariat: true, sentToSuivi: true, updatedAtMs: nowMs };
+      setDoc(doc(db, 'projects', id), sanitizeFirestore({ ...(proj || {}), id, ...updates }), { merge: true }).catch(err => {
+        setCloudSyncError(formatFirestoreErrorMessage(err));
+      });
     });
-    setProjects(prev =>
-      prev.map(p => (projectIds.includes(p.id) ? { ...p, status: 'SENT_TO_SUIVI', sentToSecretariat: true, sentToSuivi: true } : p))
+    setProjectsSynced(prev =>
+      prev.map(p => (projectIds.includes(p.id) ? { ...p, status: 'SENT_TO_SUIVI', sentToSecretariat: true, sentToSuivi: true, updatedAtMs: nowMs } : p))
     );
 
     dispatchPushNotification({
@@ -5945,10 +6280,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const sendProjectFromSecretariatToPayor = (projectId: string) => {
-    const proj = projects.find(p => p.id === projectId);
-    const updates = { status: 'PENDING_PAYOR' as const, sentToPayor: true, sentToSuivi: false, suiviReviewed: true };
-    setDoc(doc(db, 'projects', projectId), updates, { merge: true }).catch(console.warn);
-    setProjects(prev => prev.map(p => (p.id === projectId ? { ...p, ...updates } : p)));
+    const proj = projectsRef.current.find(p => p.id === projectId);
+    const updates = { status: 'PENDING_PAYOR' as const, sentToPayor: true, sentToSuivi: false, suiviReviewed: true, updatedAtMs: Date.now() };
+    setDoc(doc(db, 'projects', projectId), sanitizeFirestore({ ...(proj || {}), id: projectId, ...updates }), { merge: true }).catch(err => {
+      setCloudSyncError(formatFirestoreErrorMessage(err));
+    });
+    setProjectsSynced(prev => prev.map(p => (p.id === projectId ? { ...p, ...updates } : p)));
 
     dispatchPushNotification({
       title: 'E-ROUAMA • Transmission Payor ⚖️',
@@ -5963,12 +6300,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const sendProjectsBatchFromSecretariatToPayor = (projectIds: string[]) => {
+    const nowMs = Date.now();
     projectIds.forEach(id => {
-      const updates = { status: 'PENDING_PAYOR' as const, sentToPayor: true, sentToSuivi: false, suiviReviewed: true };
-      setDoc(doc(db, 'projects', id), updates, { merge: true }).catch(console.warn);
+      const proj = projectsRef.current.find(p => p.id === id);
+      const updates = { status: 'PENDING_PAYOR' as const, sentToPayor: true, sentToSuivi: false, suiviReviewed: true, updatedAtMs: nowMs };
+      setDoc(doc(db, 'projects', id), sanitizeFirestore({ ...(proj || {}), id, ...updates }), { merge: true }).catch(err => {
+        setCloudSyncError(formatFirestoreErrorMessage(err));
+      });
     });
-    setProjects(prev =>
-      prev.map(p => (projectIds.includes(p.id) ? { ...p, status: 'PENDING_PAYOR', sentToPayor: true, sentToSuivi: false, suiviReviewed: true } : p))
+    setProjectsSynced(prev =>
+      prev.map(p => (projectIds.includes(p.id) ? { ...p, status: 'PENDING_PAYOR', sentToPayor: true, sentToSuivi: false, suiviReviewed: true, updatedAtMs: nowMs } : p))
     );
 
     dispatchPushNotification({
@@ -5984,7 +6325,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const approveProjectPayor = (projectId: string) => {
-    const proj = projects.find(p => p.id === projectId);
+    const proj = projectsRef.current.find(p => p.id === projectId);
     const signedAt = new Date().toLocaleDateString('fr-FR', {
       day: '2-digit',
       month: '2-digit',
@@ -5998,19 +6339,23 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       stampUrl: '/SS.png',
       role: 'PAYOR',
     };
+    const nowMs = Date.now();
 
     setDoc(
       doc(db, 'projects', projectId),
-      {
+      sanitizeFirestore({
+        ...(proj || {}),
+        id: projectId,
         status: 'approved_by_payor',
         payorSignature,
         payorFeedback: '',
         sentToSecretariat: true,
-      },
+        updatedAtMs: nowMs,
+      }),
       { merge: true }
     ).catch(console.warn);
 
-    setProjects(prev =>
+    setProjectsSynced(prev =>
       prev.map(p =>
         p.id === projectId
           ? {
@@ -6019,6 +6364,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               payorSignature,
               payorFeedback: '',
               sentToSecretariat: true,
+              updatedAtMs: nowMs,
             }
           : p
       )
@@ -6049,21 +6395,26 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       stampUrl: '/SS.png',
       role: 'PAYOR',
     };
+    const nowMs = Date.now();
 
     projectIds.forEach(id => {
+      const proj = projectsRef.current.find(p => p.id === id);
       setDoc(
         doc(db, 'projects', id),
-        {
+        sanitizeFirestore({
+          ...(proj || {}),
+          id,
           status: 'approved_by_payor',
           payorSignature,
           payorFeedback: '',
           sentToSecretariat: true,
-        },
+          updatedAtMs: nowMs,
+        }),
         { merge: true }
       ).catch(console.warn);
     });
 
-    setProjects(prev =>
+    setProjectsSynced(prev =>
       prev.map(p =>
         projectIds.includes(p.id)
           ? {
@@ -6072,6 +6423,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               payorSignature,
               payorFeedback: '',
               sentToSecretariat: true,
+              updatedAtMs: nowMs,
             }
           : p
       )
@@ -6089,21 +6441,25 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const returnProjectForCorrectionPayor = (projectId: string, feedback: string) => {
-    const proj = projects.find(p => p.id === projectId);
+    const proj = projectsRef.current.find(p => p.id === projectId);
+    const nowMs = Date.now();
     setDoc(
       doc(db, 'projects', projectId),
-      {
+      sanitizeFirestore({
+        ...(proj || {}),
+        id: projectId,
         status: 'returned_for_correction',
         payorFeedback: feedback,
         sentToSecretariat: true,
         sentToSuivi: false,
         suiviReviewed: true,
         isPostMeetingRevision: true,
-      },
+        updatedAtMs: nowMs,
+      }),
       { merge: true }
     ).catch(console.warn);
 
-    setProjects(prev =>
+    setProjectsSynced(prev =>
       prev.map(p =>
         p.id === projectId
           ? {
@@ -6114,6 +6470,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               sentToSuivi: false,
               suiviReviewed: true,
               isPostMeetingRevision: true,
+              updatedAtMs: nowMs,
             }
           : p
       )
@@ -6132,21 +6489,26 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const returnProjectsBatchForCorrectionPayor = (projectIds: string[], feedback: string) => {
+    const nowMs = Date.now();
     projectIds.forEach(id => {
+      const proj = projectsRef.current.find(p => p.id === id);
       setDoc(
         doc(db, 'projects', id),
-        {
+        sanitizeFirestore({
+          ...(proj || {}),
+          id,
           status: 'returned_for_correction',
           payorFeedback: feedback,
           sentToSecretariat: true,
           sentToSuivi: false,
           suiviReviewed: true,
           isPostMeetingRevision: true,
-        },
+          updatedAtMs: nowMs,
+        }),
         { merge: true }
       ).catch(console.warn);
     });
-    setProjects(prev =>
+    setProjectsSynced(prev =>
       prev.map(p =>
         projectIds.includes(p.id)
           ? {
@@ -6157,6 +6519,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
               sentToSuivi: false,
               suiviReviewed: true,
               isPostMeetingRevision: true,
+              updatedAtMs: nowMs,
             }
           : p
       )
@@ -6174,6 +6537,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const splitProjectsBatchToIndividual = (projectIds: string[]) => {
+    const nowMs = Date.now();
     projectIds.forEach(id => {
       setDoc(
         doc(db, 'projects', id),
@@ -6181,42 +6545,44 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           isConsolidated: false,
           batchId: deleteField(),
           batchTitle: deleteField(),
+          updatedAtMs: nowMs,
         },
         { merge: true }
       ).catch(console.warn);
     });
-    setProjects(prev =>
+    setProjectsSynced(prev =>
       prev.map(p =>
         projectIds.includes(p.id)
-          ? { ...p, isConsolidated: false, batchId: undefined, batchTitle: undefined }
+          ? { ...p, isConsolidated: false, batchId: undefined, batchTitle: undefined, updatedAtMs: nowMs }
           : p
       )
     );
   };
 
   const sendProjectNoteToCom = (projectId: string) => {
-    const updates = { sentToCom: true };
+    const updates = { sentToCom: true, updatedAtMs: Date.now() };
     setDoc(doc(db, 'projects', projectId), updates, { merge: true }).catch(console.warn);
-    setProjects(prev => prev.map(p => (p.id === projectId ? { ...p, ...updates } : p)));
+    setProjectsSynced(prev => prev.map(p => (p.id === projectId ? { ...p, ...updates } : p)));
   };
 
   const ackProjectCOM = (projectId: string) => {
-    const updates = { ackByCom: true };
+    const updates = { ackByCom: true, updatedAtMs: Date.now() };
     setDoc(doc(db, 'projects', projectId), updates, { merge: true }).catch(console.warn);
-    setProjects(prev => prev.map(p => (p.id === projectId ? { ...p, ...updates } : p)));
+    setProjectsSynced(prev => prev.map(p => (p.id === projectId ? { ...p, ...updates } : p)));
   };
 
   const archiveProjectSecretariat = (projectId: string) => {
-    const updates = { archivedBySecretariat: true, status: 'archived' as const };
+    const updates = { archivedBySecretariat: true, status: 'archived' as const, updatedAtMs: Date.now() };
     setDoc(doc(db, 'projects', projectId), updates, { merge: true }).catch(console.warn);
-    setProjects(prev => prev.map(p => (p.id === projectId ? { ...p, ...updates } : p)));
+    setProjectsSynced(prev => prev.map(p => (p.id === projectId ? { ...p, ...updates } : p)));
   };
 
   const assessProjectTresorier = (projectId: string, feasible: boolean) => {
     const status = feasible ? 'APPROVED' : 'REJECTED';
-    setDoc(doc(db, 'projects', projectId), { tresorierFeasibility: status }, { merge: true }).catch(console.warn);
-    setProjects(prev =>
-      prev.map(p => (p.id === projectId ? { ...p, tresorierFeasibility: status } : p))
+    const nowMs = Date.now();
+    setDoc(doc(db, 'projects', projectId), { tresorierFeasibility: status, updatedAtMs: nowMs }, { merge: true }).catch(console.warn);
+    setProjectsSynced(prev =>
+      prev.map(p => (p.id === projectId ? { ...p, tresorierFeasibility: status, updatedAtMs: nowMs } : p))
     );
   };
 
@@ -6230,7 +6596,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
     }
 
-    const proj = projects.find(p => p.id === projectId);
+    const proj = projectsRef.current.find(p => p.id === projectId);
     if (!proj) return;
     const isPayorSigned =
       proj.status === 'approved_by_payor' ||
@@ -6254,10 +6620,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       publishedByDeptAt: new Date().toISOString(),
       sentToCom: true,
       gbairaiAlertSentByCom: false,
+      updatedAtMs: Date.now(),
     };
 
-    setDoc(doc(db, 'projects', projectId), updates, { merge: true }).catch(console.warn);
-    setProjects(prev =>
+    setDoc(doc(db, 'projects', projectId), sanitizeFirestore({ ...proj, ...updates }), { merge: true }).catch(console.warn);
+    setProjectsSynced(prev =>
       prev.map(p => (p.id === projectId ? { ...p, ...updates } : p))
     );
 
@@ -6278,15 +6645,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const archiveProject = (projectId: string) => {
-    setDoc(doc(db, 'projects', projectId), { status: 'archived' }, { merge: true }).catch(console.warn);
-    setProjects(prev =>
-      prev.map(p => (p.id === projectId ? { ...p, status: 'archived' } : p))
+    const updates = { status: 'archived' as const, updatedAtMs: Date.now() };
+    setDoc(doc(db, 'projects', projectId), updates, { merge: true }).catch(console.warn);
+    setProjectsSynced(prev =>
+      prev.map(p => (p.id === projectId ? { ...p, ...updates } : p))
     );
   };
 
   const deleteProject = async (projectId: string) => {
     if (!projectId) return;
-    setProjects(prev => prev.filter(p => p.id !== projectId));
+    setProjectsSynced(prev => prev.filter(p => p.id !== projectId));
     await Promise.allSettled([
       persistDeletedRecordIds([projectId]),
       cleanupLinkedActivityReferences(projectId),
@@ -6315,11 +6683,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
     });
 
-    const nextSeq = maxSeq > 0 ? maxSeq + 1 : (pvs.length + 1);
+    let nextSeq = maxSeq > 0 ? maxSeq + 1 : (pvs.length + 1);
     let candidateId = `PV-${String(nextSeq).padStart(3, '0')}`;
-    while (pvs.some(p => p.id === candidateId)) {
-      maxSeq++;
-      candidateId = `PV-${String(maxSeq).padStart(3, '0')}`;
+    while (pvs.some(p => p.id === candidateId) || deletedRecordIdsRef.current.has(candidateId)) {
+      nextSeq++;
+      candidateId = `PV-${String(nextSeq).padStart(3, '0')}`;
     }
     return candidateId;
   };
@@ -7371,8 +7739,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         if (!isNaN(num) && num > maxSpiSeq) maxSpiSeq = num;
       }
     });
-    const nextSpiSeq = maxSpiSeq > 0 ? maxSpiSeq + 1 : (religiousEvents.length + 1);
-    const seqSpiId = `SPI-${String(nextSpiSeq).padStart(3, '0')}`;
+    let nextSpiSeq = maxSpiSeq > 0 ? maxSpiSeq + 1 : (religiousEvents.length + 1);
+    let seqSpiId = `SPI-${String(nextSpiSeq).padStart(3, '0')}`;
+    while (religiousEvents.some(e => e.id === seqSpiId) || deletedRecordIdsRef.current.has(seqSpiId)) {
+      nextSpiSeq++;
+      seqSpiId = `SPI-${String(nextSpiSeq).padStart(3, '0')}`;
+    }
 
     const newEvt: ReligiousEvent = {
       ...eventData,
@@ -7380,6 +7752,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       status: 'DRAFT',
       publishedToGbairai: false,
       createdAt: new Date().toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }),
+      createdAtMs: Date.now(),
+      updatedAtMs: Date.now(),
     };
     await setDoc(doc(db, 'religious_events', newEvt.id), sanitizeFirestore(newEvt)).catch(console.warn);
     setReligiousEvents(prev => [newEvt, ...prev.filter(e => e.id !== newEvt.id)]);
@@ -7578,8 +7952,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         if (!isNaN(num) && num > maxSpiSeq) maxSpiSeq = num;
       }
     });
-    const nextSpiSeq = maxSpiSeq > 0 ? maxSpiSeq + 1 : (religiousEvents.length + 1);
-    const seqSpiId = `SPI-${String(nextSpiSeq).padStart(3, '0')}`;
+    let nextSpiSeq = maxSpiSeq > 0 ? maxSpiSeq + 1 : (religiousEvents.length + 1);
+    let seqSpiId = `SPI-${String(nextSpiSeq).padStart(3, '0')}`;
+    while (religiousEvents.some(e => e.id === seqSpiId) || deletedRecordIdsRef.current.has(seqSpiId)) {
+      nextSpiSeq++;
+      seqSpiId = `SPI-${String(nextSpiSeq).padStart(3, '0')}`;
+    }
 
     const newEvt: ReligiousEvent = {
       ...eventData,
@@ -7592,6 +7970,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       sentToCom: false,
       ackByCom: false,
       createdAt: new Date().toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }),
+      createdAtMs: Date.now(),
+      updatedAtMs: Date.now(),
       dispatchChannel,
     };
     setDoc(doc(db, 'religious_events', newEvt.id), sanitizeFirestore(newEvt)).catch(console.warn);
@@ -7948,6 +8328,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         pvs,
         bilans,
         isFirebaseConnected,
+        cloudSyncError,
+        clearCloudSyncError,
+        treasuryRegularizations,
         programmeTasks,
         programmeAlerts,
         adminLogs,
@@ -8103,6 +8486,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         resetAllData,
         refreshTreasury,
         refreshNavette,
+        refreshProjects,
         isRefreshingData,
       }}
     >

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { collection, onSnapshot, doc, updateDoc, setDoc } from 'firebase/firestore';
+import { doc, updateDoc, setDoc } from 'firebase/firestore';
 import { db } from '../../firebase';
 import { useApp } from '../../context/AppContext';
 import { INITIAL_ROUAMA_MEMBERS, getRegisteredMembersCount, isMemberActive } from '../../data/membersData';
@@ -46,52 +46,6 @@ export const CerveauMembersCredentialsViewer: React.FC<CerveauMembersCredentials
 
   const { members, activateMemberAccount, resetMemberPin } = useApp();
 
-  // Écoute directe en temps réel des collections 'users' et 'members' dans Firestore
-  const [firestoreUsers, setFirestoreUsers] = useState<any[]>([]);
-
-  useEffect(() => {
-    let isMounted = true;
-    const usersDocs = new Map<string, any>();
-    const membersDocs = new Map<string, any>();
-
-    const updateCombined = () => {
-      if (!isMounted) return;
-      const mergedMap = new Map<string, any>();
-      usersDocs.forEach((v, k) => mergedMap.set(k, v));
-      membersDocs.forEach((v, k) => {
-        const prev = mergedMap.get(k) || {};
-        mergedMap.set(k, { ...prev, ...v });
-      });
-      setFirestoreUsers(Array.from(mergedMap.values()));
-    };
-
-    const unsubUsers = onSnapshot(collection(db, 'users'), (snap) => {
-      usersDocs.clear();
-      snap.docs.forEach((d) => {
-        usersDocs.set(d.id, { _docId: d.id, id: d.id, ...d.data() });
-      });
-      updateCombined();
-    }, (err) => {
-      console.warn('Écouteur temps réel users (CERVEAU):', err);
-    });
-
-    const unsubMembers = onSnapshot(collection(db, 'members'), (snap) => {
-      membersDocs.clear();
-      snap.docs.forEach((d) => {
-        membersDocs.set(d.id, { _docId: d.id, id: d.id, ...d.data() });
-      });
-      updateCombined();
-    }, (err) => {
-      console.warn('Écouteur temps réel members (CERVEAU):', err);
-    });
-
-    return () => {
-      isMounted = false;
-      unsubUsers();
-      unsubMembers();
-    };
-  }, []);
-
   const [searchQuery, setSearchQuery] = useState('');
   const [showAllPins, setShowAllPins] = useState(false);
   const [revealedPins, setRevealedPins] = useState<Record<string, boolean>>({});
@@ -110,22 +64,11 @@ export const CerveauMembersCredentialsViewer: React.FC<CerveauMembersCredentials
   const [pinActionSuccess, setPinActionSuccess] = useState<string | null>(null);
   const [pinActionError, setPinActionError] = useState<string | null>(null);
 
-  // 2. SYNCHRONISATION EN TEMPS RÉEL UNIFIÉE AVEC AppContext & FIRESTORE ('users' et 'members')
+  // 2. SYNCHRONISATION EN TEMPS RÉEL UNIFIÉE AVEC AppContext (source unique temps réel)
   const registeredMembers = useMemo(() => {
     return INITIAL_ROUAMA_MEMBERS.map((official) => {
       const ctxMember = (members || []).find((m) => m.id === official.id);
-      const fsDoc = (firestoreUsers || []).find((u) => {
-        if (u.id === official.id || u._docId === official.id) return true;
-        const uFirst = normalizeRoster(u.firstName);
-        const oFirst = normalizeRoster(official.firstName);
-        if (uFirst && oFirst && uFirst === oFirst) return true;
-        const uNick = normalizeRoster(u.nickname);
-        const oNick = normalizeRoster(official.nickname);
-        if (uNick && oNick && uNick === oNick) return true;
-        return false;
-      }) || {};
-
-      const uDoc = { ...fsDoc, ...(ctxMember || {}) };
+      const uDoc: any = ctxMember || {};
       const rawPin = uDoc.pinCode !== undefined ? uDoc.pinCode : (uDoc.pin !== undefined ? uDoc.pin : (official.pinCode || official.pin || ''));
       const cleanPin = rawPin && String(rawPin).trim() !== '' && String(rawPin).trim() !== 'Non défini' ? String(rawPin).trim() : '';
 
@@ -169,7 +112,7 @@ export const CerveauMembersCredentialsViewer: React.FC<CerveauMembersCredentials
         statut: isActif ? 'Activé' : "En attente d'activation",
       };
     });
-  }, [firestoreUsers, members]);
+  }, [members]);
 
   // Filtrage par recherche
   const filteredMembers = useMemo(() => {
