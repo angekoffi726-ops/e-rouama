@@ -3,7 +3,7 @@ import emailjs from '@emailjs/browser';
 import { doc, deleteDoc, updateDoc, setDoc, collection, getDocs, getDoc, onSnapshot } from 'firebase/firestore';
 import { db } from '../../firebase';
 import { useApp } from '../../context/AppContext';
-import { AdminRole, FundType, FUND_LABELS, TargetAudience, Committee, AgrProject, FinancialBilan, SecretaryPV, NewsItem, AdHocCommitteeRoles, EventActivity, RouamaMember, PaymentDeclaration, WithdrawalRequest, ReligiousEvent } from '../../types';
+import { AdminRole, FundType, FUND_LABELS, TargetAudience, Committee, AgrProject, FinancialBilan, SecretaryPV, NewsItem, AdHocCommitteeRoles, EventActivity, RouamaMember, PaymentDeclaration, WithdrawalRequest, ReligiousEvent, ArchiveDoc } from '../../types';
 import { ADMIN_USERS } from '../../data/membersData';
 import { getDefaultRolesForMember } from '../../data/departmentMapping';
 import { sendEmailBroadcastAsync } from '../../utils/emailService';
@@ -70,6 +70,7 @@ import {
   Layers,
   CheckSquare,
   Square,
+  Search,
 } from 'lucide-react';
 
 // Configuration des métadonnées de consoles RBAC
@@ -423,6 +424,7 @@ export const AdminPortal: React.FC = () => {
     sendPVNoteToCom,
     ackPVCOM,
     publishPVCOM,
+    archiveDocs = [],
     activities,
     createActivity,
     updateActivity,
@@ -602,6 +604,31 @@ export const AdminPortal: React.FC = () => {
       setSelectedRole(allowedConsoles[0] || 'TRESORIER');
     }
   }, [allowedConsoles, selectedRole]);
+
+  // Navigation directe depuis le Centre de Notifications ou un Toast temps réel
+  useEffect(() => {
+    const handleNavigateAdmin = (e: Event) => {
+      const detail = (e as CustomEvent<{ role?: AdminRole; section?: string }>).detail;
+      if (!detail) return;
+      const targetRole = detail.role && allowedConsoles.includes(detail.role)
+        ? detail.role
+        : allowedConsoles[0];
+      if (targetRole) {
+        setSelectedRole(targetRole);
+        if (detail.section === 'navette') {
+          setNavetteExpandedByRole(prev => ({ ...prev, [targetRole]: true }));
+          setTimeout(() => {
+            const el = document.getElementById(`canal-navette-interne-${targetRole}`);
+            if (el) {
+              el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            }
+          }, 180);
+        }
+      }
+    };
+    window.addEventListener('erouama-navigate-admin', handleNavigateAdmin);
+    return () => window.removeEventListener('erouama-navigate-admin', handleNavigateAdmin);
+  }, [allowedConsoles]);
 
   // Console active effective (garantie absolue anti-écran vide)
   const activeRole: AdminRole = allowedConsoles.includes(selectedRole)
@@ -2164,6 +2191,10 @@ export const AdminPortal: React.FC = () => {
   const [pvAttendeesCount, setPvAttendeesCount] = useState<string>('');
   const [pvContent, setPvContent] = useState<string>('');
   const [editingPvId, setEditingPvId] = useState<string | null>(null);
+  const [secretariatSubTab, setSecretariatSubTab] = useState<'WORKSPACE' | 'GRENIER'>('WORKSPACE');
+  const [grenierSearch, setGrenierSearch] = useState<string>('');
+  const [grenierCategoryFilter, setGrenierCategoryFilter] = useState<'ALL' | 'PV' | 'PROJECT' | 'ACTIVITY' | 'RELIGIOUS_EVENT' | 'BILAN'>('ALL');
+  const [grenierDateFilter, setGrenierDateFilter] = useState<string>('');
 
   // 3. COM Broadcast Form
   const [newsTitle, setNewsTitle] = useState<string>('');
@@ -2379,6 +2410,7 @@ export const AdminPortal: React.FC = () => {
     | { type: 'CONSOLIDATED_PROJECTS'; data: { id: string; title: string; status: string; date?: string; items: AgrProject[]; isConsolidated?: boolean } }
     | { type: 'CONSOLIDATED_ACTIVITIES'; data: { id: string; title: string; status: string; date?: string; items: EventActivity[]; isConsolidated?: boolean } }
     | { type: 'CONSOLIDATED_RELIGIOUS_EVENTS'; data: { id: string; title: string; status: string; date?: string; items: ReligiousEvent[]; isConsolidated?: boolean } }
+    | { type: 'ARCHIVE_DOC'; data: ArchiveDoc }
     | null
   >(null);
   const [payorReturnDocModal, setPayorReturnDocModal] = useState<{
@@ -2521,28 +2553,15 @@ export const AdminPortal: React.FC = () => {
     content: string,
     channel: 'APP' | 'MAIL' | 'GENERAL'
   ) => {
-    // Notification Push FCM : TOUS LES MEMBRES (ou membre ciblé)
-    if (channel === 'APP' || channel === 'GENERAL') {
-      const pushTargetRole = spiritualRecipientMode === 'SPECIFIC' && spiritualSelectedMemberId ? undefined : 'ALL';
-      const pushTargetUserId = spiritualRecipientMode === 'SPECIFIC' && spiritualSelectedMemberId ? spiritualSelectedMemberId : undefined;
-      dispatchPushNotification({
-        title: '📢 Nouveauté Spiritualité',
-        body: title,
-        senderRole: 'SPIRITUALITE',
-        senderName: 'Département Spiritualité',
-        targetRole: pushTargetRole,
-        targetUserId: pushTargetUserId,
-        type: 'GENERAL',
-        rawTitle: true,
-        priority: 'high',
-        sound: 'default',
-        requireInteraction: true,
-        url: '/',
-      }).catch(console.warn);
-    }
+    const targetedIds =
+      spiritualRecipientMode === 'SPECIFIC' && spiritualSelectedMemberId
+        ? [spiritualSelectedMemberId]
+        : undefined;
 
     if (channel === 'APP') {
-      publishNews(title, content, 'ANNONCE', 'TOUS', 'SPIRITUALITÉ', 'APP');
+      publishNews(title, content, 'ANNONCE', 'TOUS', 'SPIRITUALITÉ', 'APP', 'PRIERE_ROUAMA', undefined, {
+        targetMemberIds: targetedIds,
+      });
       setToastMessage("✝️ Publié avec succès sur l'Application E-ROUAMA !");
       setTimeout(() => setToastMessage(null), 4000);
       return;
@@ -2554,7 +2573,9 @@ export const AdminPortal: React.FC = () => {
       setEmailError(null);
 
       if (channel === 'GENERAL') {
-        publishNews(title, content, 'ANNONCE', 'TOUS', 'SPIRITUALITÉ', 'APP');
+        publishNews(title, content, 'ANNONCE', 'TOUS', 'SPIRITUALITÉ', 'APP', 'PRIERE_ROUAMA', undefined, {
+          targetMemberIds: targetedIds,
+        });
       }
 
       const res = await sendEmailBroadcastAsync(
@@ -3499,6 +3520,8 @@ export const AdminPortal: React.FC = () => {
     const isPayorApproved =
       act.status === 'APPROVED' ||
       act.status === 'PUBLISHED' ||
+      act.status === 'ARCHIVED' ||
+      Boolean(act.archivedBySecretariat) ||
       Boolean(act.payorSignature);
 
     let statusText = "EN ATTENTE D'INSTRUCTION";
@@ -3687,6 +3710,8 @@ export const AdminPortal: React.FC = () => {
       evt.status === 'APPROVED' ||
       evt.status === 'APPROVED_PAYOR' ||
       evt.status === 'PUBLISHED' ||
+      evt.status === 'ARCHIVED' ||
+      Boolean(evt.archivedBySecretariat) ||
       Boolean(evt.payorSignature);
 
     let statusText = "EN ATTENTE D'INSTRUCTION";
@@ -3860,6 +3885,9 @@ export const AdminPortal: React.FC = () => {
         p.status === 'APPROVED_PAYOR' ||
         p.status === 'active' ||
         p.status === 'PUBLISHED' ||
+        p.status === 'archived' ||
+        p.status === 'ARCHIVED' ||
+        Boolean(p.archivedBySecretariat) ||
         Boolean(p.payorSignature)
     );
 
@@ -4005,7 +4033,7 @@ export const AdminPortal: React.FC = () => {
     }
 
     const allApproved = acts.every(
-      a => a.status === 'APPROVED' || a.status === 'PUBLISHED' || Boolean(a.payorSignature)
+      a => a.status === 'APPROVED' || a.status === 'PUBLISHED' || a.status === 'ARCHIVED' || Boolean(a.archivedBySecretariat) || Boolean(a.payorSignature)
     );
 
     const totalBudget = acts.reduce((sum, a) => sum + (Number(a.budget) || 0), 0);
@@ -4149,7 +4177,7 @@ export const AdminPortal: React.FC = () => {
     }
 
     const allApproved = evts.every(
-      e => e.status === 'APPROVED' || e.status === 'APPROVED_PAYOR' || e.status === 'PUBLISHED' || Boolean(e.payorSignature)
+      e => e.status === 'APPROVED' || e.status === 'APPROVED_PAYOR' || e.status === 'PUBLISHED' || e.status === 'ARCHIVED' || Boolean(e.archivedBySecretariat) || Boolean(e.payorSignature)
     );
 
     const dateEmission = new Date().toLocaleDateString('fr-FR');
@@ -4462,7 +4490,12 @@ export const AdminPortal: React.FC = () => {
       return;
     }
 
-    const isApprovedByPayor = bilan.status === 'APPROVED_PAYOR';
+    const isApprovedByPayor =
+      bilan.status === 'APPROVED_PAYOR' ||
+      bilan.status === 'ARCHIVED' ||
+      bilan.status === 'ACK_COM_RECU' ||
+      Boolean(bilan.archivedBySecretariat) ||
+      Boolean(bilan.payorSignatureDate);
 
     // Extraction dynamique de la période (GLOBAL ou PERIODIC) et calcul rigoureux de 100% des transactions
     const periodParams = extractBilanPeriodParams(bilan);
@@ -4700,6 +4733,510 @@ export const AdminPortal: React.FC = () => {
     printWin.document.close();
   };
 
+  // Générateur PDF pour un document standalone d'archive (Règlement / Historique archive_docs)
+  const handleGeneratePDFArchiveDoc = (docItem: ArchiveDoc) => {
+    const printWin = window.open('', '_blank');
+    if (!printWin) {
+      alert('Veuillez autoriser les fenêtres surgissantes pour imprimer ce document archivé.');
+      return;
+    }
+
+    const typeLabel =
+      docItem.type === 'PV'
+        ? 'PROCÈS-VERBAL DE SÉANCE'
+        : docItem.type === 'BILAN_FINANCIER'
+        ? 'BILAN FINANCIER OFFICIEL'
+        : docItem.type === 'PROJET_AGR'
+        ? 'DOSSIER DE PROJET AGR'
+        : 'RÈGLEMENT & ACTE OFFICIEL';
+
+    const safeContent = String(docItem.content || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const htmlContent = `
+      <!DOCTYPE html>
+      <html lang="fr">
+      <head>
+        <meta charset="UTF-8">
+        <title>${docItem.title} - E-ROUAMA</title>
+        <style>
+          @page { size: A4; margin: 15mm; }
+          body { font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; color: #1e293b; line-height: 1.5; margin: 0; padding: 20px; background: #fff; }
+          .header { text-align: center; border-bottom: 3px double #065f46; padding-bottom: 15px; margin-bottom: 25px; }
+          .header h1 { font-size: 16pt; color: #065f46; margin: 0 0 4px 0; text-transform: uppercase; font-weight: 900; }
+          .header h2 { font-size: 11pt; color: #d97706; margin: 0 0 4px 0; font-weight: 800; text-transform: uppercase; }
+          .header p { font-size: 9pt; color: #64748b; margin: 0; }
+          .title-box { background: #f8fafc; border: 1.5px solid #cbd5e1; border-radius: 8px; padding: 15px; text-align: center; margin-bottom: 20px; }
+          .title-box h3 { margin: 0; font-size: 13pt; color: #0f172a; font-weight: 900; }
+          .content-body { font-size: 10pt; color: #334155; white-space: pre-wrap; background: #fafafa; border: 1px solid #e2e8f0; padding: 16px; border-radius: 8px; min-height: 220px; }
+          .sig-box { margin: 30px auto 0; text-align: center; width: 60%; border: 1.5px solid #cbd5e1; border-radius: 10px; padding: 15px; background: #fafafa; }
+          .footer { margin-top: 30px; text-align: center; font-size: 8pt; color: #94a3b8; border-top: 1px solid #e2e8f0; padding-top: 8px; }
+        </style>
+      </head>
+      <body>
+        <div class="header">
+          <img src="/LOGOPRO.png" alt="Logo E-ROUAMA" style="height:55px; margin-bottom:8px; object-fit:contain;" />
+          <h1>FAMILLE ROUAMA</h1>
+          <h2>SECRÉTARIAT GÉNÉRAL • LE GRENIER DES ARCHIVES</h2>
+          <p>${typeLabel}</p>
+        </div>
+        <div class="title-box">
+          <h3>${docItem.title}</h3>
+          <p style="margin:6px 0 0; font-size:9pt; color:#475569;">Réf : ${docItem.id} • Auteur : ${docItem.author} • Date : ${docItem.date || 'N/A'}</p>
+        </div>
+        <div class="content-body">${safeContent}</div>
+        <div class="sig-box">
+          <div style="font-size:9.5pt; font-weight:900; color:#0f172a; text-transform:uppercase; margin-bottom:8px;">APPROBATION : LE PAYOR / DIRECTION</div>
+          <img src="/SS.png" alt="Visa Payor - WOYA SYLAS" style="height:70px; object-fit:contain; margin-bottom:5px;" />
+          <div style="font-size:9pt; font-weight:800; color:#166534;">ARCHIVE OFFICIELLE CERTIFIÉE (LECTURE SEULE)</div>
+        </div>
+        <div class="footer">Archive officielle E-ROUAMA extraite du Grenier le ${new Date().toLocaleString('fr-FR')}</div>
+        <script>window.onload = function() { window.print(); }</script>
+      </body>
+      </html>
+    `;
+    printWin.document.open();
+    printWin.document.write(htmlContent);
+    printWin.document.close();
+  };
+
+  type GrenierCategory = 'PV' | 'PROJECT' | 'ACTIVITY' | 'RELIGIOUS_EVENT' | 'BILAN';
+  interface SecretariatGrenierItem {
+    uid: string;
+    refCode: string;
+    title: string;
+    category: GrenierCategory;
+    categoryLabel: string;
+    docDate: string;
+    archivedDate: string;
+    sortTimestamp: number;
+    dateTokens: string;
+    searchableText: string;
+    subtitle: string;
+    hasPayorVisa: boolean;
+    isConsolidated: boolean;
+    authorLabel: string;
+    openPreview: () => void;
+    generatePdf: () => void;
+  }
+
+  const parseGrenierDateToMs = (val?: string | number | null): number => {
+    if (!val) return 0;
+    if (typeof val === 'number') return val;
+    const str = String(val).trim();
+    if (!str) return 0;
+    const isoDirect = Date.parse(str);
+    if (!Number.isNaN(isoDirect)) return isoDirect;
+    const frMatch = str.match(/(\d{2})\/(\d{2})\/(\d{4})(?:[^\d]+(\d{2}):(\d{2}))?/);
+    if (frMatch) {
+      const [, dd, mm, yyyy, hh = '00', min = '00'] = frMatch;
+      const parsed = Date.parse(`${yyyy}-${mm}-${dd}T${hh}:${min}:00`);
+      if (!Number.isNaN(parsed)) return parsed;
+    }
+    return 0;
+  };
+
+  const buildDateFilterTokens = (...values: Array<string | number | undefined | null>): string => {
+    const tokens: string[] = [];
+    values.forEach(v => {
+      if (!v) return;
+      if (typeof v === 'number') {
+        const d = new Date(v);
+        if (!Number.isNaN(d.getTime())) {
+          tokens.push(d.toISOString().split('T')[0]);
+          tokens.push(d.toLocaleDateString('fr-FR'));
+        }
+        return;
+      }
+      const str = String(v).trim();
+      tokens.push(str);
+      if (/^\d{4}-\d{2}-\d{2}/.test(str)) {
+        const isoDay = str.slice(0, 10);
+        const [y, m, d] = isoDay.split('-');
+        tokens.push(isoDay, `${d}/${m}/${y}`);
+      }
+      const frMatch = str.match(/(\d{2})\/(\d{2})\/(\d{4})/);
+      if (frMatch) {
+        tokens.push(`${frMatch[3]}-${frMatch[2]}-${frMatch[1]}`);
+      }
+    });
+    return tokens.join(' ').toLowerCase();
+  };
+
+  const secretariatGrenierItems: SecretariatGrenierItem[] = useMemo(() => {
+    const items: SecretariatGrenierItem[] = [];
+    const coveredArchiveIds = new Set<string>();
+
+    // 1. PV de réunion archivés
+    (pvs || []).forEach((pv, idx) => {
+      if (!(pv.archivedBySecretariat || pv.status === 'ARCHIVED')) return;
+      coveredArchiveIds.add(pv.id);
+      coveredArchiveIds.add(`ARCH-PV-${pv.id}`);
+      const refCode = formatDocRef(pv.id, 'PV', idx);
+      const docDate = pv.meetingDate || getDocCreationDate(pv);
+      const archivedDate = pv.archivedAt || docDate;
+      const sortTimestamp = Math.max(
+        parseGrenierDateToMs(pv.archivedAtIso),
+        parseGrenierDateToMs(pv.archivedAt),
+        parseGrenierDateToMs(pv.updatedAtMs),
+        parseGrenierDateToMs(pv.meetingDate),
+        parseGrenierDateToMs(pv.createdAt)
+      );
+      items.push({
+        uid: `GRENIER-PV-${pv.id}`,
+        refCode,
+        title: pv.title || `Procès-Verbal ${refCode}`,
+        category: 'PV',
+        categoryLabel: 'PV de réunion',
+        docDate,
+        archivedDate,
+        sortTimestamp,
+        dateTokens: buildDateFilterTokens(pv.meetingDate, pv.archivedAt, pv.archivedAtIso, pv.createdAt),
+        searchableText: `${pv.title} ${refCode} ${pv.id} ${pv.content} ${pv.meetingDate} Secrétariat PV`.toLowerCase(),
+        subtitle: `Séance du ${docDate}${pv.attendeesCount !== undefined ? ` • ${pv.attendeesCount} participants` : ''}${pv.ackByCom ? ' • Diffusé COM (ACK)' : ''}`,
+        hasPayorVisa: true,
+        isConsolidated: false,
+        authorLabel: 'Secrétariat Général',
+        openPreview: () => setPayorViewingOfficialDoc({ type: 'PV', data: pv }),
+        generatePdf: () => handleGeneratePDFPV(pv),
+      });
+    });
+
+    // 2. Bilans financiers archivés
+    (bilans || []).forEach(b => {
+      if (!(b.archivedBySecretariat || b.status === 'ARCHIVED')) return;
+      coveredArchiveIds.add(b.id);
+      coveredArchiveIds.add(`ARCH-BILAN-${b.id}`);
+      const docDate = b.date || getDocCreationDate(b);
+      const archivedDate = b.archivedAt || docDate;
+      const sortTimestamp = Math.max(
+        parseGrenierDateToMs(b.archivedAtIso),
+        parseGrenierDateToMs(b.archivedAt),
+        parseGrenierDateToMs(b.date)
+      );
+      items.push({
+        uid: `GRENIER-BILAN-${b.id}`,
+        refCode: b.id,
+        title: b.title || `Bilan Financier (${b.period})`,
+        category: 'BILAN',
+        categoryLabel: 'Bilan financier',
+        docDate,
+        archivedDate,
+        sortTimestamp,
+        dateTokens: buildDateFilterTokens(b.date, b.archivedAt, b.archivedAtIso, b.startDate, b.endDate),
+        searchableText: `${b.title} ${b.id} ${b.period} ${b.summary || ''} Trésorerie Bilan`.toLowerCase(),
+        subtitle: `Période : ${b.period} • Entrées : ${(b.totalIn || 0).toLocaleString('fr-FR')} F • Sorties : ${(b.totalOut || 0).toLocaleString('fr-FR')} F`,
+        hasPayorVisa: true,
+        isConsolidated: false,
+        authorLabel: 'Trésorerie Générale',
+        openPreview: () => setPayorViewingOfficialDoc({ type: 'BILAN', data: b }),
+        generatePdf: () => renderAndPrintBilanPDF(b),
+      });
+    });
+
+    // 3. Projets AGR archivés (consolidés par lot + individuels)
+    const archivedProjs = (projects || []).filter(
+      p => p.archivedBySecretariat || p.status === 'archived' || p.status === 'ARCHIVED'
+    );
+    const archivedProjBatches = new Map<string, AgrProject[]>();
+    const archivedSingleProjs: AgrProject[] = [];
+    archivedProjs.forEach(p => {
+      if (p.isConsolidated && p.batchId) {
+        const list = archivedProjBatches.get(p.batchId) || [];
+        list.push(p);
+        archivedProjBatches.set(p.batchId, list);
+      } else {
+        archivedSingleProjs.push(p);
+      }
+    });
+
+    archivedProjBatches.forEach((batchProjs, batchId) => {
+      const first = batchProjs[0];
+      const totalCost = batchProjs.reduce((sum, p) => sum + (Number(p.estimatedCost) || 0), 0);
+      const batchDisplayTitle = first.batchTitle || `Dossier Global de Projets AGR (${batchProjs.length} projets)`;
+      const docDate = getDocCreationDate(first);
+      const archivedDate = first.archivedAt || docDate;
+      const sortTimestamp = Math.max(
+        ...batchProjs.map(p => Math.max(parseGrenierDateToMs(p.archivedAtIso), parseGrenierDateToMs(p.archivedAt), parseGrenierDateToMs(p.updatedAtMs), parseGrenierDateToMs(p.date)))
+      );
+      items.push({
+        uid: `GRENIER-PROJ-BATCH-${batchId}`,
+        refCode: batchId,
+        title: batchDisplayTitle,
+        category: 'PROJECT',
+        categoryLabel: 'Projet AGR (Lot Global)',
+        docDate,
+        archivedDate,
+        sortTimestamp,
+        dateTokens: buildDateFilterTokens(...batchProjs.flatMap(p => [p.date, p.archivedAt, p.archivedAtIso, p.createdAtMs, p.updatedAtMs])),
+        searchableText: `${batchDisplayTitle} ${batchId} ${batchProjs.map(p => `${p.title} ${p.id} ${p.category} ${p.description}`).join(' ')}`.toLowerCase(),
+        subtitle: `${batchProjs.length} projets consolidés • Budget cumulé : ${totalCost.toLocaleString('fr-FR')} F CFA`,
+        hasPayorVisa: true,
+        isConsolidated: true,
+        authorLabel: 'Commission Projets (AGR)',
+        openPreview: () =>
+          setPayorViewingOfficialDoc({
+            type: 'CONSOLIDATED_PROJECTS',
+            data: {
+              id: batchId,
+              title: batchDisplayTitle,
+              status: 'ARCHIVED',
+              date: docDate,
+              items: batchProjs,
+              isConsolidated: true,
+            },
+          }),
+        generatePdf: () => handleGeneratePDFConsolidatedProjects(batchProjs),
+      });
+    });
+
+    archivedSingleProjs.forEach((p, idx) => {
+      coveredArchiveIds.add(p.id);
+      const refCode = formatDocRef(p.id, 'PROJ', idx);
+      const docDate = p.dateRealisation || p.eventDate || getDocCreationDate(p);
+      const archivedDate = p.archivedAt || getDocCreationDate(p);
+      const sortTimestamp = Math.max(
+        parseGrenierDateToMs(p.archivedAtIso),
+        parseGrenierDateToMs(p.archivedAt),
+        parseGrenierDateToMs(p.updatedAtMs),
+        parseGrenierDateToMs(p.createdAtMs),
+        parseGrenierDateToMs(p.date)
+      );
+      items.push({
+        uid: `GRENIER-PROJ-${p.id}`,
+        refCode,
+        title: p.title,
+        category: 'PROJECT',
+        categoryLabel: 'Projet AGR',
+        docDate,
+        archivedDate,
+        sortTimestamp,
+        dateTokens: buildDateFilterTokens(p.date, p.dateRealisation, p.eventDate, p.archivedAt, p.archivedAtIso, p.createdAtMs, p.updatedAtMs),
+        searchableText: `${p.title} ${refCode} ${p.id} ${p.category} ${p.description} ${p.createdBy}`.toLowerCase(),
+        subtitle: `Catégorie : ${p.category || 'AGR'} • Coût : ${(p.estimatedCost || 0).toLocaleString('fr-FR')} F CFA`,
+        hasPayorVisa: true,
+        isConsolidated: false,
+        authorLabel: 'Commission Projets (AGR)',
+        openPreview: () => setPayorViewingOfficialDoc({ type: 'PROJECT', data: p }),
+        generatePdf: () => handleGeneratePDFProject(p, idx),
+      });
+    });
+
+    // 4. Programmes d'Activités Organisation archivés
+    const archivedActs = (activities || []).filter(
+      a => a.archivedBySecretariat || a.status === 'ARCHIVED'
+    );
+    const archivedActBatches = new Map<string, EventActivity[]>();
+    const archivedSingleActs: EventActivity[] = [];
+    archivedActs.forEach(a => {
+      if (a.isConsolidated && a.batchId) {
+        const list = archivedActBatches.get(a.batchId) || [];
+        list.push(a);
+        archivedActBatches.set(a.batchId, list);
+      } else {
+        archivedSingleActs.push(a);
+      }
+    });
+
+    archivedActBatches.forEach((batchActs, batchId) => {
+      const first = batchActs[0];
+      const batchDisplayTitle = first.batchTitle || `Programme Global d'Activités (${batchActs.length} activités)`;
+      const docDate = getDocCreationDate(first);
+      const archivedDate = first.archivedAt || docDate;
+      const sortTimestamp = Math.max(
+        ...batchActs.map(a => Math.max(parseGrenierDateToMs(a.archivedAtIso), parseGrenierDateToMs(a.archivedAt), parseGrenierDateToMs(a.updatedAtMs), parseGrenierDateToMs(a.createdAt)))
+      );
+      items.push({
+        uid: `GRENIER-ACT-BATCH-${batchId}`,
+        refCode: batchId,
+        title: batchDisplayTitle,
+        category: 'ACTIVITY',
+        categoryLabel: 'Programme Organisation (Global)',
+        docDate,
+        archivedDate,
+        sortTimestamp,
+        dateTokens: buildDateFilterTokens(...batchActs.flatMap(a => [a.eventDate, a.archivedAt, a.archivedAtIso, a.createdAt])),
+        searchableText: `${batchDisplayTitle} ${batchId} ${batchActs.map(a => `${a.title} ${a.id} ${a.location || ''} ${a.description} ${a.program}`).join(' ')}`.toLowerCase(),
+        subtitle: `${batchActs.length} activités consolidées • Organisation`,
+        hasPayorVisa: true,
+        isConsolidated: true,
+        authorLabel: 'Commission Organisation',
+        openPreview: () =>
+          setPayorViewingOfficialDoc({
+            type: 'CONSOLIDATED_ACTIVITIES',
+            data: {
+              id: batchId,
+              title: batchDisplayTitle,
+              status: 'ARCHIVED',
+              date: docDate,
+              items: batchActs,
+              isConsolidated: true,
+            },
+          }),
+        generatePdf: () => handleGeneratePDFConsolidatedActivities(batchActs),
+      });
+    });
+
+    archivedSingleActs.forEach((a, idx) => {
+      const refCode = formatDocRef(a.id, 'ORG', idx);
+      const docDate = a.eventDate || getDocCreationDate(a);
+      const archivedDate = a.archivedAt || getDocCreationDate(a);
+      const sortTimestamp = Math.max(
+        parseGrenierDateToMs(a.archivedAtIso),
+        parseGrenierDateToMs(a.archivedAt),
+        parseGrenierDateToMs(a.updatedAtMs),
+        parseGrenierDateToMs(a.createdAtMs),
+        parseGrenierDateToMs(a.createdAt)
+      );
+      items.push({
+        uid: `GRENIER-ACT-${a.id}`,
+        refCode,
+        title: a.title,
+        category: 'ACTIVITY',
+        categoryLabel: 'Programme Organisation',
+        docDate,
+        archivedDate,
+        sortTimestamp,
+        dateTokens: buildDateFilterTokens(a.eventDate, a.archivedAt, a.archivedAtIso, a.createdAt),
+        searchableText: `${a.title} ${refCode} ${a.id} ${a.location || ''} ${a.description} ${a.program}`.toLowerCase(),
+        subtitle: `Date : ${docDate}${a.location ? ` • Lieu : ${a.location}` : ''}${a.budget ? ` • Budget : ${a.budget.toLocaleString('fr-FR')} F` : ''}`,
+        hasPayorVisa: true,
+        isConsolidated: false,
+        authorLabel: 'Commission Organisation',
+        openPreview: () => setPayorViewingOfficialDoc({ type: 'ACTIVITY', data: a }),
+        generatePdf: () => handleGeneratePDFActivity(a, idx),
+      });
+    });
+
+    // 5. Programmes Spiritualité archivés
+    const archivedEvts = (religiousEvents || []).filter(
+      e => e.archivedBySecretariat || e.status === 'ARCHIVED'
+    );
+    const archivedEvtBatches = new Map<string, ReligiousEvent[]>();
+    const archivedSingleEvts: ReligiousEvent[] = [];
+    archivedEvts.forEach(e => {
+      if (e.isConsolidated && e.batchId) {
+        const list = archivedEvtBatches.get(e.batchId) || [];
+        list.push(e);
+        archivedEvtBatches.set(e.batchId, list);
+      } else {
+        archivedSingleEvts.push(e);
+      }
+    });
+
+    archivedEvtBatches.forEach((batchEvts, batchId) => {
+      const first = batchEvts[0];
+      const batchDisplayTitle = first.batchTitle || `Programme Global Spirituel (${batchEvts.length} rassemblements)`;
+      const docDate = getDocCreationDate(first);
+      const archivedDate = first.archivedAt || docDate;
+      const sortTimestamp = Math.max(
+        ...batchEvts.map(e => Math.max(parseGrenierDateToMs(e.archivedAtIso), parseGrenierDateToMs(e.archivedAt), parseGrenierDateToMs(e.updatedAtMs), parseGrenierDateToMs(e.createdAt)))
+      );
+      items.push({
+        uid: `GRENIER-SPI-BATCH-${batchId}`,
+        refCode: batchId,
+        title: batchDisplayTitle,
+        category: 'RELIGIOUS_EVENT',
+        categoryLabel: 'Programme Spiritualité (Global)',
+        docDate,
+        archivedDate,
+        sortTimestamp,
+        dateTokens: buildDateFilterTokens(...batchEvts.flatMap(e => [e.eventDate, e.archivedAt, e.archivedAtIso, e.createdAt])),
+        searchableText: `${batchDisplayTitle} ${batchId} ${batchEvts.map(e => `${e.title} ${e.id} ${e.location} ${e.theme || ''}`).join(' ')}`.toLowerCase(),
+        subtitle: `${batchEvts.length} événements spirituels consolidés`,
+        hasPayorVisa: true,
+        isConsolidated: true,
+        authorLabel: 'Commission Spiritualité',
+        openPreview: () =>
+          setPayorViewingOfficialDoc({
+            type: 'CONSOLIDATED_RELIGIOUS_EVENTS',
+            data: {
+              id: batchId,
+              title: batchDisplayTitle,
+              status: 'ARCHIVED',
+              date: docDate,
+              items: batchEvts,
+              isConsolidated: true,
+            },
+          }),
+        generatePdf: () => handleGeneratePDFConsolidatedReligiousEvents(batchEvts),
+      });
+    });
+
+    archivedSingleEvts.forEach((e, idx) => {
+      const refCode = formatDocRef(e.id, 'SPI', idx);
+      const docDate = e.eventDate || getDocCreationDate(e);
+      const archivedDate = e.archivedAt || getDocCreationDate(e);
+      const sortTimestamp = Math.max(
+        parseGrenierDateToMs(e.archivedAtIso),
+        parseGrenierDateToMs(e.archivedAt),
+        parseGrenierDateToMs(e.updatedAtMs),
+        parseGrenierDateToMs(e.createdAtMs),
+        parseGrenierDateToMs(e.createdAt)
+      );
+      items.push({
+        uid: `GRENIER-SPI-${e.id}`,
+        refCode,
+        title: e.title,
+        category: 'RELIGIOUS_EVENT',
+        categoryLabel: 'Programme Spiritualité',
+        docDate,
+        archivedDate,
+        sortTimestamp,
+        dateTokens: buildDateFilterTokens(e.eventDate, e.archivedAt, e.archivedAtIso, e.createdAt),
+        searchableText: `${e.title} ${refCode} ${e.id} ${e.location} ${e.theme || ''}`.toLowerCase(),
+        subtitle: `Date : ${docDate}${e.eventTime ? ` à ${e.eventTime}` : ''}${e.location ? ` • ${e.location}` : ''}`,
+        hasPayorVisa: true,
+        isConsolidated: false,
+        authorLabel: 'Commission Spiritualité',
+        openPreview: () => setPayorViewingOfficialDoc({ type: 'RELIGIOUS_EVENT', data: e }),
+        generatePdf: () => handleGeneratePDFReligiousEvent(e, idx),
+      });
+    });
+
+    // 6. Archives historiques / standalone issues directement de archive_docs (sans doublons)
+    (archiveDocs || []).forEach(arch => {
+      const metaPvId = typeof arch.metadata?.pvId === 'string' ? arch.metadata.pvId : '';
+      if (coveredArchiveIds.has(arch.id) || (metaPvId && coveredArchiveIds.has(metaPvId))) return;
+      if (!(arch.archivedBySecretariat || arch.status === 'ARCHIVED' || arch.status === 'PUBLISHED_BY_COM' || arch.ackByCom)) return;
+
+      const cat: GrenierCategory =
+        arch.type === 'BILAN_FINANCIER'
+          ? 'BILAN'
+          : arch.type === 'PROJET_AGR'
+          ? 'PROJECT'
+          : 'PV';
+      const catLabel =
+        arch.type === 'BILAN_FINANCIER'
+          ? 'Bilan financier'
+          : arch.type === 'PROJET_AGR'
+          ? 'Projet AGR'
+          : arch.type === 'REGLEMENT'
+          ? 'Règlement / Acte Officiel'
+          : 'PV de réunion';
+      const docDate = arch.date || '';
+      const archivedDate = arch.archivedAt || docDate;
+      items.push({
+        uid: `GRENIER-ARCH-${arch.id}`,
+        refCode: arch.id,
+        title: arch.title,
+        category: cat,
+        categoryLabel: catLabel,
+        docDate,
+        archivedDate,
+        sortTimestamp: Math.max(parseGrenierDateToMs(arch.archivedAtIso), parseGrenierDateToMs(arch.archivedAt), parseGrenierDateToMs(arch.date)),
+        dateTokens: buildDateFilterTokens(arch.date, arch.archivedAt, arch.archivedAtIso),
+        searchableText: `${arch.title} ${arch.id} ${arch.author} ${arch.content} ${catLabel}`.toLowerCase(),
+        subtitle: `Auteur : ${arch.author || 'Secrétariat'}${docDate ? ` • Date : ${docDate}` : ''}`,
+        hasPayorVisa: true,
+        isConsolidated: false,
+        authorLabel: arch.author || 'Secrétariat Général',
+        openPreview: () => setPayorViewingOfficialDoc({ type: 'ARCHIVE_DOC', data: arch }),
+        generatePdf: () => handleGeneratePDFArchiveDoc(arch),
+      });
+    });
+
+    return items.sort((a, b) => b.sortTimestamp - a.sortTimestamp);
+  }, [pvs, bilans, projects, activities, religiousEvents, archiveDocs]);
+
   // Étape 1 : Prévisualisation sans signature ni transmission (Contrôle préalable Trésorier)
   const handlePreviewBilan = () => {
     if (bilanPeriodMode === 'PERIODIC') {
@@ -4855,24 +5392,18 @@ export const AdminPortal: React.FC = () => {
     // - N'exécute AUCUN envoi d'email via EmailJS
     // =========================================================================
     if (comDispatchChannel === 'APP') {
-      publishNews(exactSubject, exactMessage, newsCategory, newsTarget, 'COM', 'APP');
+      if (comRecipientMode === 'SPECIFIC' && !comSelectedMemberId) {
+        setEmailError("Veuillez sélectionner un membre destinataire dans la liste déroulante.");
+        return;
+      }
+      const targetedIds =
+        comRecipientMode === 'SPECIFIC' && comSelectedMemberId ? [comSelectedMemberId] : undefined;
+
+      publishNews(exactSubject, exactMessage, newsCategory, newsTarget, 'COM', 'APP', 'NOUVELLES', undefined, {
+        targetMemberIds: targetedIds,
+      });
       setToastMessage("📲 Communiqué publié dans l'application avec succès !");
       setTimeout(() => setToastMessage(null), 4000);
-      
-      dispatchPushNotification({
-        title: '📢 Nouveauté Communication',
-        body: exactSubject,
-        senderRole: 'COMMUNICATION',
-        senderName: 'Commission Communication',
-        targetRole: comRecipientMode === 'SPECIFIC' ? undefined : 'ALL',
-        targetUserId: comRecipientMode === 'SPECIFIC' ? comSelectedMemberId : undefined,
-        type: 'GENERAL',
-        rawTitle: true,
-        priority: 'high',
-        sound: 'default',
-        requireInteraction: true,
-        url: '/',
-      }).catch(console.warn);
 
       // 2. NETTOYAGE DU FORMULAIRE APRÈS SUCCÈS
       setNewsTitle('');
@@ -4933,20 +5464,9 @@ export const AdminPortal: React.FC = () => {
 
         // CAS 3 UNIQUEMENT : Enregistrement dans Firestore si canal GENERAL (NE PAS enregistrer si canal MAIL)
         if (comDispatchChannel === 'GENERAL') {
-          publishNews(exactSubject, exactMessage, newsCategory, newsTarget, 'COM', 'APP');
-          dispatchPushNotification({
-            title: '📢 Nouveauté Communication',
-            body: exactSubject,
-            senderRole: 'COMMUNICATION',
-            senderName: 'Commission Communication',
-            targetUserId: comSelectedMemberId || undefined,
-            type: 'GENERAL',
-            rawTitle: true,
-            priority: 'high',
-            sound: 'default',
-            requireInteraction: true,
-            url: '/',
-          }).catch(console.warn);
+          publishNews(exactSubject, exactMessage, newsCategory, newsTarget, 'COM', 'APP', 'NOUVELLES', undefined, {
+            targetMemberIds: comSelectedMemberId ? [comSelectedMemberId] : undefined,
+          });
         }
 
         // 3. BILAN : Confirmation visuelle
@@ -5029,20 +5549,7 @@ export const AdminPortal: React.FC = () => {
 
         // CAS 3 UNIQUEMENT : Enregistrement dans Firestore si canal GENERAL (NE PAS enregistrer si canal MAIL)
         if (comDispatchChannel === 'GENERAL') {
-          publishNews(exactSubject, exactMessage, newsCategory, newsTarget, 'COM', 'APP');
-          dispatchPushNotification({
-            title: '📢 Nouveauté Communication',
-            body: exactSubject,
-            senderRole: 'COMMUNICATION',
-            senderName: 'Commission Communication',
-            targetRole: 'ALL',
-            type: 'GENERAL',
-            rawTitle: true,
-            priority: 'high',
-            sound: 'default',
-            requireInteraction: true,
-            url: '/',
-          }).catch(console.warn);
+          publishNews(exactSubject, exactMessage, newsCategory, newsTarget, 'COM', 'APP', 'NOUVELLES');
         }
 
         // 3. BILAN :
@@ -5394,6 +5901,12 @@ export const AdminPortal: React.FC = () => {
             {allowedConsoles.map(r => {
               const tabDef = DEPARTMENT_TAB_CONFIG[r] || { label: CONSOLE_CONFIG[r]?.label || r, icon: '🛡️' };
               const isSelected = activeRole === r;
+              const normKey = normalizeToEligibleDeptKey(r);
+              const unreadForConsole = isRoleEligibleForInfoModule(r)
+                ? (infoRequests || []).filter(
+                    req => (isDeptMatch(req.recipientRole, normKey) || isDeptMatch(req.recipientRoleLabel, normKey)) && !req.isRead
+                  ).length
+                : 0;
               return (
                 <button
                   key={r}
@@ -5407,6 +5920,11 @@ export const AdminPortal: React.FC = () => {
                 >
                   <span className="text-base">{tabDef.icon}</span>
                   <span>[ {tabDef.icon} {tabDef.label} ]</span>
+                  {unreadForConsole > 0 && (
+                    <span className="min-w-[18px] h-[18px] px-1.5 rounded-full bg-rose-600 text-white text-[10px] font-black flex items-center justify-center animate-pulse border border-white/30">
+                      {unreadForConsole}
+                    </span>
+                  )}
                 </button>
               );
             })}
@@ -9762,9 +10280,258 @@ export const AdminPortal: React.FC = () => {
       {/* ========================================================= */}
       {activeRole === 'SECRETARIAT' && (
         <div className="space-y-8">
+          {/* Barre de Navigation Secrétariat : Espace de Travail vs Archives / Le Grenier */}
+          <div className="bg-slate-900 rounded-[2rem] p-3 sm:p-4 border border-slate-800 shadow-xl flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setSecretariatSubTab('WORKSPACE')}
+                className={`px-4 py-2.5 rounded-2xl text-xs sm:text-sm font-black flex items-center gap-2 transition-all cursor-pointer ${
+                  secretariatSubTab === 'WORKSPACE'
+                    ? 'bg-[#E67E22] text-white shadow-lg'
+                    : 'bg-slate-950 text-slate-300 hover:bg-slate-800 border border-slate-800'
+                }`}
+              >
+                <FileText className="w-4 h-4" />
+                <span>📝 Rédaction PV &amp; Centralisation</span>
+              </button>
 
-          {/* Draft PV Form */}
-          <div className="bg-slate-900 rounded-[2.5rem] p-6 sm:p-8 border border-slate-800 shadow-xl space-y-6">
+              <button
+                type="button"
+                onClick={() => setSecretariatSubTab('GRENIER')}
+                className={`px-4 py-2.5 rounded-2xl text-xs sm:text-sm font-black flex items-center gap-2 transition-all cursor-pointer ${
+                  secretariatSubTab === 'GRENIER'
+                    ? 'bg-purple-600 text-white shadow-lg border border-purple-400/50'
+                    : 'bg-slate-950 text-purple-300 hover:bg-slate-800 border border-purple-500/30'
+                }`}
+              >
+                <Archive className="w-4 h-4" />
+                <span>🗄️ Archives / Le Grenier</span>
+                <span className={`px-2 py-0.5 rounded-full text-[11px] font-black ${
+                  secretariatSubTab === 'GRENIER'
+                    ? 'bg-white/20 text-white'
+                    : 'bg-purple-500/20 text-purple-200 border border-purple-500/40'
+                }`}>
+                  {secretariatGrenierItems.length}
+                </span>
+              </button>
+            </div>
+
+            <div className="flex items-center gap-2 text-[11px] font-bold text-slate-400 px-2">
+              <Lock className="w-3.5 h-3.5 text-purple-400 shrink-0" />
+              <span>Coffre-fort persistant • {secretariatGrenierItems.length} document{secretariatGrenierItems.length > 1 ? 's' : ''} archivé{secretariatGrenierItems.length > 1 ? 's' : ''}</span>
+            </div>
+          </div>
+
+          {secretariatSubTab === 'GRENIER' ? (
+            <div className="bg-slate-900 rounded-[2.5rem] p-6 sm:p-8 border border-purple-500/35 shadow-xl space-y-6">
+              {/* Header Grenier */}
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-800 pb-5">
+                <div className="space-y-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h2 className="text-xl sm:text-2xl font-black text-white flex items-center gap-2.5">
+                      <Archive className="w-6 h-6 text-purple-400" />
+                      <span>Archives Officielles / Le Grenier du Secrétariat</span>
+                    </h2>
+                    <span className="bg-purple-500/20 text-purple-200 border border-purple-500/40 px-3 py-0.5 rounded-full text-xs font-black">
+                      {secretariatGrenierItems.length} archive{secretariatGrenierItems.length > 1 ? 's' : ''}
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-400">
+                    Consultation permanente et sécurisée de tous les documents officiels archivés (PV, Projets AGR, Programmes Organisation, Spiritualité et Bilans Financiers).
+                  </p>
+                </div>
+
+                <div className="inline-flex items-center gap-2 px-3.5 py-2 rounded-2xl bg-emerald-950/60 border border-emerald-500/40 text-emerald-300 text-xs font-black shrink-0 self-start md:self-center">
+                  <Lock className="w-4 h-4 text-emerald-400" />
+                  <span>Lecture Seule • Archives Verrouillées</span>
+                </div>
+              </div>
+
+              {/* Barre de recherche & Filtre par Date */}
+              <div className="grid grid-cols-1 md:grid-cols-12 gap-3">
+                <div className="md:col-span-7 relative">
+                  <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-3.5" />
+                  <input
+                    type="text"
+                    placeholder="Rechercher par titre, référence (PV-001, PROJ-001...), mot-clé ou auteur..."
+                    value={grenierSearch}
+                    onChange={e => setGrenierSearch(e.target.value)}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-2xl pl-10 pr-4 py-3 text-xs sm:text-sm font-semibold text-white focus:outline-none focus:border-purple-500"
+                  />
+                </div>
+
+                <div className="md:col-span-3 relative flex items-center">
+                  <Calendar className="w-4 h-4 text-slate-400 absolute left-3.5 pointer-events-none" />
+                  <input
+                    type="date"
+                    value={grenierDateFilter}
+                    onChange={e => setGrenierDateFilter(e.target.value)}
+                    title="Filtrer par date"
+                    className="w-full bg-slate-950 border border-slate-800 rounded-2xl pl-10 pr-3 py-3 text-xs sm:text-sm font-bold text-white focus:outline-none focus:border-purple-500"
+                  />
+                </div>
+
+                <div className="md:col-span-2 flex items-center">
+                  <button
+                    type="button"
+                    disabled={!grenierSearch && !grenierDateFilter && grenierCategoryFilter === 'ALL'}
+                    onClick={() => {
+                      setGrenierSearch('');
+                      setGrenierDateFilter('');
+                      setGrenierCategoryFilter('ALL');
+                    }}
+                    className="w-full bg-slate-950 hover:bg-slate-800 disabled:opacity-40 text-slate-300 font-bold py-3 px-3 rounded-2xl border border-slate-800 text-xs transition-all cursor-pointer disabled:cursor-default"
+                  >
+                    Réinitialiser
+                  </button>
+                </div>
+              </div>
+
+              {/* Filtres par catégorie avec compteurs */}
+              {(() => {
+                const counts = {
+                  ALL: secretariatGrenierItems.length,
+                  PV: secretariatGrenierItems.filter(i => i.category === 'PV').length,
+                  PROJECT: secretariatGrenierItems.filter(i => i.category === 'PROJECT').length,
+                  ACTIVITY: secretariatGrenierItems.filter(i => i.category === 'ACTIVITY').length,
+                  RELIGIOUS_EVENT: secretariatGrenierItems.filter(i => i.category === 'RELIGIOUS_EVENT').length,
+                  BILAN: secretariatGrenierItems.filter(i => i.category === 'BILAN').length,
+                };
+                const categories: Array<{ id: typeof grenierCategoryFilter; label: string; count: number }> = [
+                  { id: 'ALL', label: 'Tous les documents', count: counts.ALL },
+                  { id: 'PV', label: '📄 PV de réunion', count: counts.PV },
+                  { id: 'PROJECT', label: '💼 Projets AGR', count: counts.PROJECT },
+                  { id: 'ACTIVITY', label: '🎪 Programmes Organisation', count: counts.ACTIVITY },
+                  { id: 'RELIGIOUS_EVENT', label: '🕊️ Programmes Spiritualité', count: counts.RELIGIOUS_EVENT },
+                  { id: 'BILAN', label: '💰 Bilans financiers', count: counts.BILAN },
+                ];
+
+                const query = grenierSearch.trim().toLowerCase();
+                const filteredItems = secretariatGrenierItems.filter(item => {
+                  if (grenierCategoryFilter !== 'ALL' && item.category !== grenierCategoryFilter) return false;
+                  if (grenierDateFilter && !item.dateTokens.includes(grenierDateFilter.toLowerCase())) return false;
+                  if (query && !item.searchableText.includes(query)) return false;
+                  return true;
+                });
+
+                return (
+                  <div className="space-y-5">
+                    <div className="flex flex-wrap gap-2">
+                      {categories.map(cat => {
+                        const active = grenierCategoryFilter === cat.id;
+                        return (
+                          <button
+                            key={cat.id}
+                            type="button"
+                            onClick={() => setGrenierCategoryFilter(cat.id)}
+                            className={`px-3 py-1.5 rounded-xl text-xs font-black flex items-center gap-1.5 border transition-all cursor-pointer ${
+                              active
+                                ? 'bg-purple-600 text-white border-purple-400 shadow'
+                                : 'bg-slate-950 text-slate-300 border-slate-800 hover:bg-slate-800'
+                            }`}
+                          >
+                            <span>{cat.label}</span>
+                            <span className={`px-1.5 py-0.5 rounded-md text-[10px] ${
+                              active ? 'bg-white/20 text-white' : 'bg-slate-800 text-slate-400'
+                            }`}>
+                              {cat.count}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    {filteredItems.length === 0 ? (
+                      <div className="text-center py-12 bg-slate-950 rounded-3xl border border-dashed border-slate-800 space-y-2">
+                        <Archive className="w-8 h-8 text-slate-600 mx-auto" />
+                        <p className="text-sm font-bold text-slate-400">
+                          {secretariatGrenierItems.length === 0
+                            ? 'Aucun document archivé au Grenier pour le moment.'
+                            : 'Aucune archive ne correspond à vos critères de recherche.'}
+                        </p>
+                      </div>
+                    ) : (
+                      <div className="space-y-3">
+                        {filteredItems.map(item => {
+                          const catBadgeStyle =
+                            item.category === 'PV'
+                              ? 'bg-amber-500/15 text-amber-300 border-amber-500/30'
+                              : item.category === 'PROJECT'
+                              ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
+                              : item.category === 'ACTIVITY'
+                              ? 'bg-sky-500/15 text-sky-300 border-sky-500/30'
+                              : item.category === 'RELIGIOUS_EVENT'
+                              ? 'bg-purple-500/15 text-purple-300 border-purple-500/30'
+                              : 'bg-yellow-500/15 text-yellow-300 border-yellow-500/30';
+
+                          return (
+                            <div
+                              key={item.uid}
+                              className="bg-slate-950 p-4 sm:p-5 rounded-2xl border border-slate-800 hover:border-purple-500/40 transition-all flex flex-col md:flex-row items-start md:items-center justify-between gap-4 text-xs shadow-md"
+                            >
+                              <div className="space-y-1.5 flex-1 min-w-0">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-black border ${catBadgeStyle}`}>
+                                    {item.categoryLabel}
+                                  </span>
+                                  <span className="font-mono text-purple-300 text-[10px] bg-purple-500/10 px-2 py-0.5 rounded-md border border-purple-500/25 font-bold">
+                                    {item.refCode}
+                                  </span>
+                                  {item.hasPayorVisa && (
+                                    <span className="bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 px-2 py-0.5 rounded-full text-[10px] font-black">
+                                      🟢 Visé Payor
+                                    </span>
+                                  )}
+                                  <span className="bg-slate-900 text-slate-300 border border-slate-700 px-2 py-0.5 rounded-full text-[10px] font-bold inline-flex items-center gap-1">
+                                    <Lock className="w-3 h-3 text-purple-400" />
+                                    <span>Lecture seule</span>
+                                  </span>
+                                </div>
+
+                                <h4 className="font-black text-white text-sm sm:text-base break-words">{item.title}</h4>
+                                <p className="text-slate-400">{item.subtitle}</p>
+                                <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-slate-500 pt-0.5">
+                                  <span>🏛️ Émetteur : <strong className="text-slate-300">{item.authorLabel}</strong></span>
+                                  {item.docDate && <span>📅 Date doc. : <strong className="text-slate-300">{item.docDate}</strong></span>}
+                                  {item.archivedDate && <span>🗄️ Archivé : <strong className="text-purple-300">{item.archivedDate}</strong></span>}
+                                </div>
+                              </div>
+
+                              <div className="flex flex-wrap items-center gap-2 shrink-0 self-end md:self-center">
+                                <button
+                                  type="button"
+                                  onClick={item.openPreview}
+                                  className="bg-slate-800 hover:bg-slate-700 text-amber-300 font-black px-3.5 py-2 rounded-xl border border-slate-700 flex items-center gap-1.5 text-xs active:scale-95 transition-all cursor-pointer shadow-sm"
+                                  title="Visualiser le document archivé complet"
+                                >
+                                  <Eye className="w-3.5 h-3.5 text-amber-400" />
+                                  <span>👁️ Visualiser</span>
+                                </button>
+
+                                <button
+                                  type="button"
+                                  onClick={item.generatePdf}
+                                  className="bg-purple-600 hover:bg-purple-500 text-white font-black px-3.5 py-2 rounded-xl flex items-center gap-1.5 text-xs active:scale-95 transition-all cursor-pointer shadow"
+                                  title="Télécharger / Imprimer le PDF officiel"
+                                >
+                                  <Printer className="w-3.5 h-3.5" />
+                                  <span>PDF</span>
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+            </div>
+          ) : (
+            <>
+              {/* Draft PV Form */}
+              <div className="bg-slate-900 rounded-[2.5rem] p-6 sm:p-8 border border-slate-800 shadow-xl space-y-6">
             <div className="flex items-center justify-between">
               <h2 className="text-xl font-black text-white flex items-center gap-2">
                 <FileText className="w-5 h-5 text-amber-500" />
@@ -10079,27 +10846,34 @@ export const AdminPortal: React.FC = () => {
                               </button>
                             )}
 
-                            {/* 5. Bouton Supprimer */}
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setDeleteConfirmModal({
-                                  title: "Supprimer ce Procès-Verbal",
-                                  itemTitle: p.title,
-                                  itemId: p.id,
-                                  description: `Voulez-vous vraiment supprimer définitivement le PV "${p.title}" (${displayRef}) ? Cette action est irréversible.`,
-                                  onConfirm: () => {
-                                    deleteSecretaryPV(p.id);
-                                    setToastMessage(`🗑️ Procès-Verbal "${p.title}" supprimé.`);
-                                  },
-                                });
-                              }}
-                              className="bg-rose-950/60 hover:bg-rose-900 text-rose-300 border border-rose-800/60 font-bold px-2.5 py-1.5 rounded-xl flex items-center gap-1 transition-all text-xs cursor-pointer"
-                              title="Supprimer définitivement ce PV"
-                            >
-                              <Trash2 className="w-3.5 h-3.5 text-rose-400" />
-                              <span>Supprimer</span>
-                            </button>
+                            {/* 5. Bouton Supprimer (verrouillé si archivé au Grenier) */}
+                            {!(p.archivedBySecretariat || p.status === 'ARCHIVED') ? (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setDeleteConfirmModal({
+                                    title: "Supprimer ce Procès-Verbal",
+                                    itemTitle: p.title,
+                                    itemId: p.id,
+                                    description: `Voulez-vous vraiment supprimer définitivement le PV "${p.title}" (${displayRef}) ? Cette action est irréversible.`,
+                                    onConfirm: () => {
+                                      deleteSecretaryPV(p.id);
+                                      setToastMessage(`🗑️ Procès-Verbal "${p.title}" supprimé.`);
+                                    },
+                                  });
+                                }}
+                                className="bg-rose-950/60 hover:bg-rose-900 text-rose-300 border border-rose-800/60 font-bold px-2.5 py-1.5 rounded-xl flex items-center gap-1 transition-all text-xs cursor-pointer"
+                                title="Supprimer définitivement ce PV"
+                              >
+                                <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+                                <span>Supprimer</span>
+                              </button>
+                            ) : (
+                              <span className="bg-slate-900 text-purple-300 border border-purple-500/30 font-bold px-2.5 py-1.5 rounded-xl flex items-center gap-1 text-[11px]" title="Document archivé au Grenier — non modifiable et non supprimable">
+                                <Lock className="w-3 h-3 text-purple-400" />
+                                <span>Verrouillé</span>
+                              </span>
+                            )}
                           </div>
                         </div>
 
@@ -10245,7 +11019,7 @@ export const AdminPortal: React.FC = () => {
                   {bilans
                     .filter(b => b.sentToSecretariat)
                     .map(b => {
-                      const isApproved = b.status === 'APPROVED_PAYOR';
+                      const isApproved = b.status === 'APPROVED_PAYOR' || b.status === 'ARCHIVED' || Boolean(b.archivedBySecretariat);
                       const isReturned = b.status === 'returned_for_correction';
                       return (
                         <div
@@ -10384,6 +11158,7 @@ export const AdminPortal: React.FC = () => {
               const secProjs = projects.filter(
                 p =>
                   p.sentToSecretariat ||
+                  p.archivedBySecretariat ||
                   [
                     'SENT_TO_SECRETARIAT',
                     'SENT_TO_SUIVI',
@@ -10394,6 +11169,8 @@ export const AdminPortal: React.FC = () => {
                     'returned_for_correction',
                     'PUBLISHED',
                     'active',
+                    'archived',
+                    'ARCHIVED',
                   ].includes(p.status || '')
               );
               const projBatches = new Map<string, AgrProject[]>();
@@ -10448,7 +11225,7 @@ export const AdminPortal: React.FC = () => {
                       {Array.from(projBatches.entries()).map(([batchId, batchProjs]) => {
                         const first = batchProjs[0];
                         const batchIds = batchProjs.map(x => x.id);
-                        const allApproved = batchProjs.every(p => p.status === 'APPROVED_PAYOR' || p.status === 'approved_by_payor' || p.status === 'active' || p.status === 'PUBLISHED' || p.status === 'archived');
+                        const allApproved = batchProjs.every(p => p.status === 'APPROVED_PAYOR' || p.status === 'approved_by_payor' || p.status === 'active' || p.status === 'PUBLISHED' || p.status === 'archived' || p.status === 'ARCHIVED' || Boolean(p.archivedBySecretariat));
                         const anyReturned = batchProjs.some(p => p.status === 'returned_for_correction');
                         const anySentToSuivi = batchProjs.some(p => p.status === 'SENT_TO_SUIVI');
                         const anyPendingPayor = batchProjs.some(p => p.status === 'PENDING_PAYOR' || p.status === 'pending_payor_approval');
@@ -10622,7 +11399,7 @@ export const AdminPortal: React.FC = () => {
                       })}
 
                       {singleProjs.map(p => {
-                        const isApproved = p.status === 'APPROVED_PAYOR' || p.status === 'approved_by_payor' || p.status === 'active' || p.status === 'PUBLISHED' || p.status === 'archived';
+                        const isApproved = p.status === 'APPROVED_PAYOR' || p.status === 'approved_by_payor' || p.status === 'active' || p.status === 'PUBLISHED' || p.status === 'archived' || p.status === 'ARCHIVED' || Boolean(p.archivedBySecretariat);
                         const isReturned = p.status === 'returned_for_correction';
                         const isSentToSuivi = p.status === 'SENT_TO_SUIVI';
                         const isPostRevision = Boolean(p.isPostMeetingRevision || p.suiviReviewed);
@@ -10790,7 +11567,7 @@ export const AdminPortal: React.FC = () => {
                       {Array.from(actBatches.entries()).map(([batchId, batchActs]) => {
                         const first = batchActs[0];
                         const batchIds = batchActs.map(x => x.id);
-                        const allApproved = batchActs.every(a => a.status === 'APPROVED' || a.status === 'PUBLISHED');
+                        const allApproved = batchActs.every(a => a.status === 'APPROVED' || a.status === 'PUBLISHED' || a.status === 'ARCHIVED' || Boolean(a.archivedBySecretariat));
                         const anyReturned = batchActs.some(a => a.status === 'returned_for_correction');
                         const anySentToSuivi = batchActs.some(a => a.status === 'SENT_TO_SUIVI');
                         const anyPendingPayor = batchActs.some(a => a.status === 'PENDING_PAYOR');
@@ -10960,7 +11737,7 @@ export const AdminPortal: React.FC = () => {
                       })}
 
                       {singleActs.map(a => {
-                        const isApproved = a.status === 'APPROVED' || a.status === 'PUBLISHED';
+                        const isApproved = a.status === 'APPROVED' || a.status === 'PUBLISHED' || a.status === 'ARCHIVED' || Boolean(a.archivedBySecretariat);
                         const isReturned = a.status === 'returned_for_correction';
                         const isSentToSuivi = a.status === 'SENT_TO_SUIVI';
                         const isPostRevision = Boolean(a.isPostMeetingRevision || a.suiviReviewed);
@@ -11119,7 +11896,7 @@ export const AdminPortal: React.FC = () => {
                       {Array.from(evtBatches.entries()).map(([batchId, batchEvts]) => {
                         const first = batchEvts[0];
                         const batchIds = batchEvts.map(x => x.id);
-                        const allApproved = batchEvts.every(e => e.status === 'APPROVED' || e.status === 'APPROVED_PAYOR' || e.status === 'PUBLISHED');
+                        const allApproved = batchEvts.every(e => e.status === 'APPROVED' || e.status === 'APPROVED_PAYOR' || e.status === 'PUBLISHED' || e.status === 'ARCHIVED' || Boolean(e.archivedBySecretariat));
                         const anyReturned = batchEvts.some(e => e.status === 'returned_for_correction');
                         const anySentToSuivi = batchEvts.some(e => e.status === 'SENT_TO_SUIVI');
                         const anyPendingPayor = batchEvts.some(e => e.status === 'PENDING_PAYOR');
@@ -11289,7 +12066,7 @@ export const AdminPortal: React.FC = () => {
                       })}
 
                       {singleEvts.map(e => {
-                        const isApproved = e.status === 'APPROVED' || e.status === 'APPROVED_PAYOR' || e.status === 'PUBLISHED';
+                        const isApproved = e.status === 'APPROVED' || e.status === 'APPROVED_PAYOR' || e.status === 'PUBLISHED' || e.status === 'ARCHIVED' || Boolean(e.archivedBySecretariat);
                         const isReturned = e.status === 'returned_for_correction';
                         const isSentToSuivi = e.status === 'SENT_TO_SUIVI';
                         const isPostRevision = Boolean(e.isPostMeetingRevision || e.suiviReviewed);
@@ -11412,6 +12189,8 @@ export const AdminPortal: React.FC = () => {
               );
             })()}
           </div>
+            </>
+          )}
 
           {renderInternalNavetteBlock('SECRETARIAT')}
         </div>
@@ -18601,13 +19380,24 @@ export const AdminPortal: React.FC = () => {
           docType === 'CONSOLIDATED_RELIGIOUS_EVENTS';
 
         const rawData = payorViewingOfficialDoc.data as any;
-        const statusVal = rawData.status || (isConsolidated ? (rawData.items?.every((i: any) => i.status === 'APPROVED' || i.status === 'APPROVED_PAYOR' || i.status === 'approved_by_payor') ? 'APPROVED' : 'PENDING_PAYOR') : 'DRAFT');
+        const statusVal = rawData.status || (isConsolidated ? (rawData.items?.every((i: any) => i.status === 'APPROVED' || i.status === 'APPROVED_PAYOR' || i.status === 'approved_by_payor' || i.status === 'ARCHIVED' || i.status === 'archived' || i.archivedBySecretariat) ? 'APPROVED' : 'PENDING_PAYOR') : 'DRAFT');
+
+        const isArchivedLocked = Boolean(
+          docType === 'ARCHIVE_DOC' ||
+          rawData.archivedBySecretariat ||
+          statusVal === 'ARCHIVED' ||
+          statusVal === 'archived' ||
+          (Array.isArray(rawData.items) && rawData.items.length > 0 && rawData.items.every((i: any) => i.archivedBySecretariat || i.status === 'ARCHIVED' || i.status === 'archived'))
+        );
 
         const isApproved =
           statusVal === 'APPROVED_PAYOR' ||
           statusVal === 'approved_by_payor' ||
           statusVal === 'APPROVED' ||
           statusVal === 'PUBLISHED' ||
+          statusVal === 'ARCHIVED' ||
+          statusVal === 'archived' ||
+          isArchivedLocked ||
           Boolean(rawData.payorSignature);
 
         const dateEmission = getDocCreationDate(rawData);
@@ -18644,6 +19434,9 @@ export const AdminPortal: React.FC = () => {
         } else if (docType === 'CONSOLIDATED_RELIGIOUS_EVENTS') {
           deptHeader = 'DÉPARTEMENT SPIRITUALITÉ & VIE FRATERNELLE';
           officialDocTitle = 'PROGRAMME GLOBAL DES ÉVÉNEMENTS RELIGIEUX';
+        } else if (docType === 'ARCHIVE_DOC') {
+          deptHeader = 'SECRÉTARIAT GÉNÉRAL • LE GRENIER DES ARCHIVES';
+          officialDocTitle = rawData.title || 'DOCUMENT OFFICIEL ARCHIVÉ';
         }
 
         return (
@@ -18655,6 +19448,8 @@ export const AdminPortal: React.FC = () => {
                   <div className="w-10 h-10 rounded-2xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center text-amber-400 font-bold">
                     {docType === 'PV'
                       ? '📄'
+                      : docType === 'ARCHIVE_DOC'
+                      ? '🗄️'
                       : docType === 'PROJECT' || docType === 'CONSOLIDATED_PROJECTS'
                       ? '🚀'
                       : docType === 'BILAN'
@@ -18670,7 +19465,7 @@ export const AdminPortal: React.FC = () => {
                     <p className="text-xs text-slate-400 font-mono">
                       Réf : {displayRef} • Statut :{' '}
                       <span className="text-amber-400 font-bold uppercase">
-                        {isApproved ? '🟢 Validé Payor' : '⏳ En attente'}
+                        {isArchivedLocked ? '🔒 Archivé (Lecture seule)' : isApproved ? '🟢 Validé Payor' : '⏳ En attente'}
                       </span>
                     </p>
                   </div>
@@ -18696,6 +19491,8 @@ export const AdminPortal: React.FC = () => {
                         handleGeneratePDFReligiousEvent(rawData as ReligiousEvent);
                       } else if (docType === 'CONSOLIDATED_RELIGIOUS_EVENTS') {
                         handleGeneratePDFConsolidatedReligiousEvents(rawData.items as ReligiousEvent[]);
+                      } else if (docType === 'ARCHIVE_DOC') {
+                        handleGeneratePDFArchiveDoc(rawData as ArchiveDoc);
                       } else {
                         window.print();
                       }
@@ -19116,6 +19913,37 @@ export const AdminPortal: React.FC = () => {
                               )}
                             </div>
                           ))}
+                        </div>
+                      </div>
+                    );
+                  })()}
+
+                  {docType === 'ARCHIVE_DOC' && (() => {
+                    const arch = rawData as ArchiveDoc;
+                    return (
+                      <div className="space-y-5 text-xs text-slate-800">
+                        <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 flex flex-wrap justify-between gap-3 font-medium">
+                          <div>
+                            <span className="text-slate-500 font-bold block">Intitulé :</span>
+                            <span className="font-black text-slate-900 text-sm">{arch.title}</span>
+                          </div>
+                          <div>
+                            <span className="text-slate-500 font-bold block">Émetteur / Auteur :</span>
+                            <span className="font-bold text-slate-900">{arch.author || 'Secrétariat Général'}</span>
+                          </div>
+                          <div>
+                            <span className="text-slate-500 font-bold block">Date du document :</span>
+                            <span className="font-bold text-slate-900">{arch.date || 'N/A'}</span>
+                          </div>
+                        </div>
+
+                        <div>
+                          <h5 className="font-black text-slate-900 uppercase tracking-wide border-b border-slate-200 pb-1.5 mb-2">
+                            Contenu Officiel Archivé :
+                          </h5>
+                          <div className="whitespace-pre-line text-slate-700 leading-relaxed font-sans text-xs bg-slate-50/50 p-4 rounded-xl border border-slate-100 min-h-[160px]">
+                            {arch.content}
+                          </div>
                         </div>
                       </div>
                     );
@@ -19630,8 +20458,8 @@ export const AdminPortal: React.FC = () => {
                         </>
                       )}
 
-                      {/* Bouton Supprimer : accessible pour le Payor, le Secrétariat, ou le département tant que non transmis */}
-                      {(activeRole === 'PAYOR' || activeRole === 'SECRETARIAT' || !rawData.sentToSecretariat || rawData.status === 'DRAFT') && (
+                      {/* Bouton Supprimer : strictement désactivé sur toute archive verrouillée */}
+                      {!isArchivedLocked && (activeRole === 'PAYOR' || activeRole === 'SECRETARIAT' || !rawData.sentToSecretariat || rawData.status === 'DRAFT') && (
                         <button
                           type="button"
                           onClick={() => {
@@ -19664,6 +20492,13 @@ export const AdminPortal: React.FC = () => {
                           <Trash2 className="w-3.5 h-3.5 text-rose-400" />
                           <span>Supprimer</span>
                         </button>
+                      )}
+
+                      {isArchivedLocked && (
+                        <span className="bg-purple-500/15 text-purple-200 border border-purple-500/40 px-3.5 py-2 rounded-xl text-xs font-black flex items-center gap-1.5 shadow">
+                          <Lock className="w-3.5 h-3.5 text-purple-300" />
+                          <span>Archive Verrouillée (Lecture Seule)</span>
+                        </span>
                       )}
 
                       {/* Mention document officiel déjà approuvé */}

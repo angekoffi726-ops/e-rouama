@@ -86,6 +86,8 @@ export interface ReligiousEvent {
   sentToCom?: boolean;
   ackByCom?: boolean;
   archivedBySecretariat?: boolean;
+  archivedAt?: string;
+  archivedAtIso?: string;
   batchId?: string;
   batchTitle?: string;
   isConsolidated?: boolean;
@@ -382,6 +384,8 @@ export interface EventActivity {
   ackByCom?: boolean;
   gbairaiAlertSentByCom?: boolean;
   archivedBySecretariat?: boolean;
+  archivedAt?: string;
+  archivedAtIso?: string;
   batchId?: string;
   batchTitle?: string;
   isConsolidated?: boolean;
@@ -532,6 +536,8 @@ export interface AgrProject {
   publishedAt?: string;
   publishedByDeptAt?: string;
   archivedBySecretariat?: boolean;
+  archivedAt?: string;
+  archivedAtIso?: string;
   batchId?: string;
   batchTitle?: string;
   isConsolidated?: boolean;
@@ -550,6 +556,8 @@ export interface ArchiveDoc {
   ackByCom: boolean;
   sentToComBySecretariat: boolean;
   archivedBySecretariat: boolean;
+  archivedAt?: string;
+  archivedAtIso?: string;
   metadata?: Record<string, unknown>;
 }
 
@@ -583,6 +591,7 @@ export interface SecretaryPV {
   };
   archivedBySecretariat?: boolean;
   archivedAt?: string;
+  archivedAtIso?: string;
   sentToCom?: boolean;
   sentToComAt?: string;
   ackByCom?: boolean;
@@ -614,6 +623,8 @@ export interface FinancialBilan {
   sentToCom: boolean;
   ackByCom: boolean;
   archivedBySecretariat: boolean;
+  archivedAt?: string;
+  archivedAtIso?: string;
   publishedByCom?: boolean;
 }
 

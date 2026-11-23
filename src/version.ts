@@ -4,8 +4,8 @@
  * Utilisé pour invalider automatiquement le cache PWA / Vercel
  * et forcer le rechargement des derniers bundles JS/CSS et données Firestore.
  */
-export const APP_VERSION = '2026.11.18.17';
-export const APP_BUILD_TIMESTAMP = '2026.11.21T07:35:00Z';
+export const APP_VERSION = '2026.11.18.20';
+export const APP_BUILD_TIMESTAMP = '2026.11.23T12:00:00Z';
 
 if (typeof window !== 'undefined') {
   (window as any).__APP_VERSION__ = APP_VERSION;

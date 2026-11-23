@@ -243,13 +243,18 @@ export const getDefaultRolesForMember = (memberId: string | number, firstName?: 
  */
 export const normalizeDepartmentKey = (rawDept?: string): string => {
   if (!rawDept) return '';
-  const clean = rawDept.toLowerCase().trim().replace(/[\s-]/g, '_');
+  const clean = rawDept
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim()
+    .replace(/[\s-]+/g, '_');
   if (clean.includes('com') || clean.includes('bic')) return 'communication';
-  if (clean.includes('projet')) return 'projet';
-  if (clean.includes('tresor') || clean.includes('caisse')) return 'tresorerie';
-  if (clean.includes('secret')) return 'secretariat';
-  if (clean.includes('spirit')) return 'spiritualite';
-  if (clean.includes('organi')) return 'organisation';
+  if (clean.includes('projet') || clean === 'agr' || clean.endsWith('_agr') || clean.startsWith('agr_')) return 'projet';
+  if (clean.includes('tresor') || clean.includes('caisse') || clean.includes('finance')) return 'tresorerie';
+  if (clean.includes('secret') || clean === 'sg') return 'secretariat';
+  if (clean.includes('spirit') || clean.includes('priere')) return 'spiritualite';
+  if (clean.includes('organi') || clean === 'pco') return 'organisation';
   if (clean.includes('payor')) return 'payor';
   if (clean.includes('cerveau') || clean.includes('president')) return 'cerveau';
   if (clean.includes('programme') || clean.includes('sdp') || clean.includes('suivi')) return 'suivi_programme';

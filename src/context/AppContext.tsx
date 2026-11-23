@@ -33,7 +33,7 @@ import {
   InfoRequestMessage,
 } from '../types';
 import { INITIAL_ROUAMA_MEMBERS, ADMIN_USERS, isMemberActive, getRegisteredMembersCount } from '../data/membersData';
-import { getDefaultRolesForMember } from '../data/departmentMapping';
+import { getDefaultRolesForMember, normalizeDepartmentKey } from '../data/departmentMapping';
 import { sendEmailBroadcastAsync } from '../utils/emailService';
 import { computeBilanData, extractBilanPeriodParams } from '../utils/bilanCalculator';
 import {
@@ -258,7 +258,8 @@ interface AppContextType {
     authorRole: string,
     dispatchChannel?: 'APP' | 'MAIL' | 'GENERAL',
     linkTab?: TabType,
-    targetDocId?: string
+    targetDocId?: string,
+    options?: { targetMemberIds?: string[]; skipPush?: boolean }
   ) => void;
   markNewsAsRead: (newsId: string, specificMemberId?: string) => void;
 
@@ -5247,12 +5248,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     authorRole: string,
     dispatchChannel: 'APP' | 'MAIL' | 'GENERAL' = 'APP',
     linkTab?: TabType,
-    targetDocId?: string
+    targetDocId?: string,
+    options?: { targetMemberIds?: string[]; skipPush?: boolean }
   ) => {
     // SÉPARATION STRICTE : Si le canal est uniquement MAIL, NE PAS enregistrer dans Firestore ('announcements' ou 'news') ni dans le fil public de l'application
     if (dispatchChannel === 'MAIL') {
       return;
     }
+
+    const targetedMemberIds = Array.isArray(options?.targetMemberIds)
+      ? options!.targetMemberIds.filter(Boolean).map(String)
+      : undefined;
 
     const item: NewsItem = {
       id: 'NEWS-' + Date.now(),
@@ -5268,18 +5274,34 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       dispatchChannel,
       linkTab,
       targetDocId,
+      ...(targetedMemberIds && targetedMemberIds.length > 0 ? { targetMemberIds: targetedMemberIds } : {}),
     };
     setDoc(doc(db, 'news', item.id), sanitizeFirestore(item)).catch(console.warn);
     setDoc(doc(db, 'announcements', item.id), sanitizeFirestore(item)).catch(console.warn);
     setNewsItems(prev => [item, ...prev]);
 
-    // Déclenchement automatique de la notification push FCM / Web Push pour toute publication sur le Gbaïraï
+    if (options?.skipPush) {
+      return;
+    }
+
+    const senderMemberId = currentUserRef.current?.member?.id || currentUserRef.current?.id;
+    const isDuesFilter = ['RETARD', 'A_JOUR', 'EN_AVANCE'].includes(String(targetAudience || '').toUpperCase());
+
+    // Déclenchement automatique de la notification push temps réel pour toute publication sur le Gbaïraï
     dispatchPushNotification({
-      title: `E-ROUAMA • Gbaïraï : ${title}`,
+      title: `E-ROUAMA • ${title}`,
       body: content.length > 140 ? content.substring(0, 137) + '...' : content,
       senderRole: authorRole || 'COM',
       senderName: authorRole || 'Communication E-ROUAMA',
-      targetRole: targetAudience === 'TOUS' ? 'ALL' : targetAudience,
+      targetRole: targetedMemberIds && targetedMemberIds.length > 0
+        ? 'DIRECT_USER'
+        : targetAudience === 'TOUS'
+        ? 'ALL'
+        : targetAudience,
+      ...(targetedMemberIds && targetedMemberIds.length > 0 ? { targetUserIds: targetedMemberIds } : {}),
+      ...(isDuesFilter && (!targetedMemberIds || targetedMemberIds.length === 0)
+        ? { targetDuesStatus: String(targetAudience).toUpperCase() }
+        : {}),
       type: 'GENERAL',
       rawTitle: true,
       priority: 'high',
@@ -5290,6 +5312,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         newsId: item.id,
         linkTab,
         targetDocId,
+        excludedUserId: senderMemberId,
       },
     }).catch(console.warn);
   };
@@ -5719,9 +5742,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       body: `Le Payor (WOYA SYLAS) a validé et visé l'activité "${act?.title || activityId}".`,
       senderRole: 'PAYOR',
       senderName: 'WOYA SYLAS (LE PAYOR)',
-      targetRole: 'ALL',
-      type: 'GENERAL',
-      url: '/',
+      targetRole: 'ORGANISATION',
+      targetDepartment: 'organisation',
+      targetDepartments: ['secretariat', 'organisation'],
+      type: 'APPROVAL',
+      rawTitle: true,
+      url: '/#admin-console',
     }).catch(console.warn);
   };
 
@@ -5757,9 +5783,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       body: `Le Payor (WOYA SYLAS) a validé et visé le Programme Global (${activityIds.length} activités).`,
       senderRole: 'PAYOR',
       senderName: 'WOYA SYLAS (LE PAYOR)',
-      targetRole: 'ALL',
-      type: 'GENERAL',
-      url: '/',
+      targetRole: 'ORGANISATION',
+      targetDepartment: 'organisation',
+      targetDepartments: ['secretariat', 'organisation'],
+      type: 'APPROVAL',
+      rawTitle: true,
+      url: '/#admin-console',
     }).catch(console.warn);
   };
 
@@ -5849,19 +5878,48 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const sendActivityNoteToCom = (activityId: string) => {
+    const act = activities.find(a => a.id === activityId);
     const updates = { sentToCom: true };
     setDoc(doc(db, 'activities', activityId), updates, { merge: true }).catch(console.warn);
     setActivities(prev => prev.map(a => a.id === activityId ? { ...a, ...updates } : a));
+
+    dispatchPushNotification({
+      title: 'E-ROUAMA • Note Activité Transmise à la COM 📢',
+      body: `Le Secrétariat Général a transmis la note de l'activité "${act?.title || activityId}" à la Commission Communication.`,
+      senderRole: 'SECRETAIRE',
+      senderName: 'Secrétariat Général',
+      targetRole: 'COM',
+      targetDepartment: 'communication',
+      type: 'DOCUMENT_TRANSMITTED',
+      rawTitle: true,
+      url: '/#admin-com',
+    }).catch(console.warn);
   };
 
   const ackActivityCOM = (activityId: string) => {
+    const act = activities.find(a => a.id === activityId);
     const updates = { ackByCom: true };
     setDoc(doc(db, 'activities', activityId), updates, { merge: true }).catch(console.warn);
     setActivities(prev => prev.map(a => a.id === activityId ? { ...a, ...updates } : a));
+
+    dispatchPushNotification({
+      title: 'E-ROUAMA • Accusé de Réception COM (Activité) ✅',
+      body: `La Commission Communication a accusé réception de la note pour "${act?.title || activityId}".`,
+      senderRole: 'COM',
+      senderName: 'Commission Communication (BIC)',
+      targetRole: 'SECRETAIRE',
+      targetDepartment: 'secretariat',
+      targetDepartments: ['secretariat', 'organisation'],
+      type: 'APPROVAL',
+      rawTitle: true,
+      url: '/#admin-console',
+    }).catch(console.warn);
   };
 
   const archiveActivitySecretariat = (activityId: string) => {
-    const updates = { archivedBySecretariat: true, status: 'ARCHIVED' as const };
+    const nowStr = `${new Date().toLocaleDateString('fr-FR')} à ${new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}`;
+    const nowIso = new Date().toISOString();
+    const updates = { archivedBySecretariat: true, status: 'ARCHIVED' as const, archivedAt: nowStr, archivedAtIso: nowIso };
     setDoc(doc(db, 'activities', activityId), updates, { merge: true }).catch(console.warn);
     setActivities(prev => prev.map(a => a.id === activityId ? { ...a, ...updates } : a));
   };
@@ -5889,10 +5947,24 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const approveActivityBudgetTresorier = (activityId: string) => {
+    const act = activities.find(a => a.id === activityId);
     setDoc(doc(db, 'activities', activityId), { budgetStatus: 'APPROVED_TRESORIER' }, { merge: true }).catch(console.warn);
     setActivities(prev =>
       prev.map(a => (a.id === activityId ? { ...a, budgetStatus: 'APPROVED_TRESORIER' } : a))
     );
+
+    dispatchPushNotification({
+      title: 'E-ROUAMA • Budget Activité Validé (Trésorerie) 💰',
+      body: `Le Trésorier Général a validé la faisabilité budgétaire de l'activité "${act?.title || activityId}".`,
+      senderRole: 'TRESORIER',
+      senderName: 'Trésorier Général',
+      targetRole: 'ORGANISATION',
+      targetDepartment: 'organisation',
+      targetDepartments: ['organisation', 'secretariat'],
+      type: 'APPROVAL',
+      rawTitle: true,
+      url: '/#admin-console',
+    }).catch(console.warn);
   };
 
   // Événements Financiers (Loisirs, Cas Sociaux)
@@ -5935,21 +6007,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       'APP',
       'FINANCES'
     );
-
-    // Notification Push FCM : TOUS LES MEMBRES
-    dispatchPushNotification({
-      title: '📢 Nouveauté Trésorerie',
-      body: newEvent.title,
-      senderRole: 'TRESORIER',
-      senderName: 'Trésorier Général',
-      targetRole: 'ALL',
-      type: 'GENERAL',
-      rawTitle: true,
-      priority: 'high',
-      sound: 'default',
-      requireInteraction: true,
-      url: '/',
-    }).catch(console.warn);
   };
 
   const archiveFinancialEvent = (eventId: string) => {
@@ -6375,9 +6432,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       body: `Le Payor (WOYA SYLAS) a validé et visé le projet "${proj?.title || projectId}".`,
       senderRole: 'PAYOR',
       senderName: 'WOYA SYLAS (LE PAYOR)',
-      targetRole: 'ALL',
-      type: 'GENERAL',
-      url: '/',
+      targetRole: 'PROJET',
+      targetDepartment: 'projet',
+      targetDepartments: ['secretariat', 'projet'],
+      type: 'APPROVAL',
+      rawTitle: true,
+      url: '/#admin-console',
     }).catch(console.warn);
   };
 
@@ -6434,9 +6494,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       body: `Le Payor (WOYA SYLAS) a validé et visé le Dossier Global (${projectIds.length} projets).`,
       senderRole: 'PAYOR',
       senderName: 'WOYA SYLAS (LE PAYOR)',
-      targetRole: 'ALL',
-      type: 'GENERAL',
-      url: '/',
+      targetRole: 'PROJET',
+      targetDepartment: 'projet',
+      targetDepartments: ['secretariat', 'projet'],
+      type: 'APPROVAL',
+      rawTitle: true,
+      url: '/#admin-console',
     }).catch(console.warn);
   };
 
@@ -6560,30 +6623,75 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const sendProjectNoteToCom = (projectId: string) => {
+    const proj = projectsRef.current.find(p => p.id === projectId);
     const updates = { sentToCom: true, updatedAtMs: Date.now() };
     setDoc(doc(db, 'projects', projectId), updates, { merge: true }).catch(console.warn);
     setProjectsSynced(prev => prev.map(p => (p.id === projectId ? { ...p, ...updates } : p)));
+
+    dispatchPushNotification({
+      title: 'E-ROUAMA • Note Projet AGR Transmise à la COM 📢',
+      body: `Le Secrétariat Général a transmis la note du projet "${proj?.title || projectId}" à la Commission Communication.`,
+      senderRole: 'SECRETAIRE',
+      senderName: 'Secrétariat Général',
+      targetRole: 'COM',
+      targetDepartment: 'communication',
+      type: 'DOCUMENT_TRANSMITTED',
+      rawTitle: true,
+      url: '/#admin-com',
+    }).catch(console.warn);
   };
 
   const ackProjectCOM = (projectId: string) => {
+    const proj = projectsRef.current.find(p => p.id === projectId);
     const updates = { ackByCom: true, updatedAtMs: Date.now() };
     setDoc(doc(db, 'projects', projectId), updates, { merge: true }).catch(console.warn);
     setProjectsSynced(prev => prev.map(p => (p.id === projectId ? { ...p, ...updates } : p)));
+
+    dispatchPushNotification({
+      title: 'E-ROUAMA • Accusé de Réception COM (Projet AGR) ✅',
+      body: `La Commission Communication a accusé réception du projet "${proj?.title || projectId}".`,
+      senderRole: 'COM',
+      senderName: 'Commission Communication (BIC)',
+      targetRole: 'SECRETAIRE',
+      targetDepartment: 'secretariat',
+      targetDepartments: ['secretariat', 'projet'],
+      type: 'APPROVAL',
+      rawTitle: true,
+      url: '/#admin-console',
+    }).catch(console.warn);
   };
 
   const archiveProjectSecretariat = (projectId: string) => {
-    const updates = { archivedBySecretariat: true, status: 'archived' as const, updatedAtMs: Date.now() };
+    const nowStr = `${new Date().toLocaleDateString('fr-FR')} à ${new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}`;
+    const nowIso = new Date().toISOString();
+    const updates = { archivedBySecretariat: true, status: 'archived' as const, archivedAt: nowStr, archivedAtIso: nowIso, updatedAtMs: Date.now() };
     setDoc(doc(db, 'projects', projectId), updates, { merge: true }).catch(console.warn);
     setProjectsSynced(prev => prev.map(p => (p.id === projectId ? { ...p, ...updates } : p)));
   };
 
   const assessProjectTresorier = (projectId: string, feasible: boolean) => {
+    const proj = projectsRef.current.find(p => p.id === projectId);
     const status = feasible ? 'APPROVED' : 'REJECTED';
     const nowMs = Date.now();
     setDoc(doc(db, 'projects', projectId), { tresorierFeasibility: status, updatedAtMs: nowMs }, { merge: true }).catch(console.warn);
     setProjectsSynced(prev =>
       prev.map(p => (p.id === projectId ? { ...p, tresorierFeasibility: status, updatedAtMs: nowMs } : p))
     );
+
+    dispatchPushNotification({
+      title: feasible
+        ? 'E-ROUAMA • Faisabilité Financière Validée (Trésorerie) 💰'
+        : 'E-ROUAMA • Avis Défavorable Trésorerie sur Projet ⚠️',
+      body: `Le Trésorier Général a rendu son avis (${feasible ? 'Faisable' : 'Non faisable'}) sur le projet "${proj?.title || projectId}".`,
+      senderRole: 'TRESORIER',
+      senderName: 'Trésorier Général',
+      targetRole: 'PROJET',
+      targetDepartment: 'projet',
+      targetDepartments: ['projet', 'secretariat'],
+      type: 'APPROVAL',
+      rawTitle: true,
+      url: '/#admin-console',
+    }).catch(console.warn);
   };
 
   const publishProject = (projectId: string) => {
@@ -6772,9 +6880,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const pv = pvs.find(p => p.id === pvId);
     if (!pv) return;
     const nowStr = `${new Date().toLocaleDateString('fr-FR')} à ${new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}`;
+    const nowIso = new Date().toISOString();
     const updates = {
       archivedBySecretariat: true,
       archivedAt: nowStr,
+      archivedAtIso: nowIso,
     };
     setDoc(doc(db, 'secretary_pvs', pvId), updates, { merge: true }).catch(console.warn);
     setPvs(prev => prev.map(p => (p.id === pvId ? { ...p, ...updates } : p)));
@@ -6800,6 +6910,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       ackByCom: false,
       sentToComBySecretariat: false,
       archivedBySecretariat: true,
+      archivedAt: nowStr,
+      archivedAtIso: nowIso,
       metadata: {
         pvId: pv.id,
         refNumber: pv.refNumber,
@@ -6877,18 +6989,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         `Le Procès-Verbal officiel de séance « ${pv.title} » (${pv.refNumber || pv.id}) du ${pv.meetingDate} est désormais disponible en consultation intégrale au Grenier des Archives.`,
         'ANNONCE',
         'TOUS',
-        'COMMISSION COMMUNICATION (BIC)'
+        'COMMISSION COMMUNICATION (BIC)',
+        'APP',
+        'ARCHIVES',
+        pv.id
       );
-
-      dispatchPushNotification({
-        title: 'E-ROUAMA : Flash Communication',
-        body: `Nouveau PV consultable au Grenier : "${pv.title}".`,
-        senderRole: 'COM',
-        senderName: 'Commission Communication',
-        targetRole: 'ALL',
-        type: 'PV_PUBLISHED',
-        url: '/archives',
-      }).catch(console.warn);
     }
   };
 
@@ -6898,12 +7003,25 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const returnPVForCorrectionPayor = (pvId: string, feedback: string) => {
+    const pv = pvs.find(p => p.id === pvId);
     const updates = {
       status: 'returned_for_correction' as const,
       payorFeedback: feedback,
     };
     setDoc(doc(db, 'secretary_pvs', pvId), updates, { merge: true }).catch(console.warn);
     setPvs(prev => prev.map(p => (p.id === pvId ? { ...p, ...updates } : p)));
+
+    dispatchPushNotification({
+      title: 'E-ROUAMA • PV Retourné pour Correction ⚠️',
+      body: `Le Payor a retourné le PV "${pv?.title || pvId}" avec observations : ${feedback.substring(0, 100)}`,
+      senderRole: 'PAYOR',
+      senderName: 'Espace Payor',
+      targetRole: 'SECRETARIAT',
+      targetDepartment: 'secretariat',
+      type: 'INFO_REQUEST',
+      rawTitle: true,
+      url: '/#admin-secretariat',
+    }).catch(console.warn);
   };
 
   const deleteSecretaryPV = async (pvId: string) => {
@@ -7094,13 +7212,40 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const sendBilanFromSecretariatToCom = (bilanId: string) => {
+    const targetBilan = bilans.find(b => b.id === bilanId);
     setDoc(doc(db, 'secretary_bilans', bilanId), { sentToCom: true }, { merge: true }).catch(console.warn);
     setBilans(prev => prev.map(b => (b.id === bilanId ? { ...b, sentToCom: true } : b)));
+
+    dispatchPushNotification({
+      title: 'E-ROUAMA • Bilan Financier Transmis à la COM 📢',
+      body: `Le Secrétariat Général a transmis le bilan "${targetBilan?.period || bilanId}" à la Commission Communication pour publication.`,
+      senderRole: 'SECRETAIRE',
+      senderName: 'Secrétariat Général',
+      targetRole: 'COM',
+      targetDepartment: 'communication',
+      type: 'DOCUMENT_TRANSMITTED',
+      rawTitle: true,
+      url: '/#admin-com',
+    }).catch(console.warn);
   };
 
   const ackBilanCOM = (bilanId: string) => {
+    const targetBilan = bilans.find(b => b.id === bilanId);
     setDoc(doc(db, 'secretary_bilans', bilanId), { ackByCom: true, status: 'ACK_COM_RECU' }, { merge: true }).catch(console.warn);
     setBilans(prev => prev.map(b => (b.id === bilanId ? { ...b, ackByCom: true, status: 'ACK_COM_RECU' as const } : b)));
+
+    dispatchPushNotification({
+      title: 'E-ROUAMA • Accusé de Réception COM (Bilan) ✅',
+      body: `La Commission Communication a accusé réception du bilan "${targetBilan?.period || bilanId}".`,
+      senderRole: 'COM',
+      senderName: 'Commission Communication (BIC)',
+      targetRole: 'SECRETAIRE',
+      targetDepartment: 'secretariat',
+      targetDepartments: ['secretariat', 'tresorerie'],
+      type: 'APPROVAL',
+      rawTitle: true,
+      url: '/#admin-console',
+    }).catch(console.warn);
   };
 
   const publishBilanNewsCOM = (bilanId: string) => {
@@ -7127,13 +7272,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const archiveBilanSecretariat = (bilanId: string) => {
-    setDoc(doc(db, 'secretary_bilans', bilanId), { archivedBySecretariat: true, status: 'ARCHIVED' }, { merge: true }).catch(console.warn);
-    setBilans(prev => prev.map(b => (b.id === bilanId ? { ...b, archivedBySecretariat: true, status: 'ARCHIVED' as const } : b)));
+    const nowStr = `${new Date().toLocaleDateString('fr-FR')} à ${new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}`;
+    const nowIso = new Date().toISOString();
+    setDoc(doc(db, 'secretary_bilans', bilanId), { archivedBySecretariat: true, status: 'ARCHIVED', archivedAt: nowStr, archivedAtIso: nowIso }, { merge: true }).catch(console.warn);
+    setBilans(prev => prev.map(b => (b.id === bilanId ? { ...b, archivedBySecretariat: true, status: 'ARCHIVED' as const, archivedAt: nowStr, archivedAtIso: nowIso } : b)));
     const targetBilan = bilans.find(b => b.id === bilanId);
     if (targetBilan) {
       const arch: ArchiveDoc = {
         id: 'ARCH-BILAN-' + targetBilan.id,
-        title: 'Bilan Financier (Global (Intégralité des données))',
+        title: targetBilan.title || 'Bilan Financier (Global (Intégralité des données))',
         type: 'BILAN_FINANCIER',
         content: `Document Officiel Bi-Signé • Archivé\n\nSynthèse financière certifiée par le Trésorier Général et le Payor.`,
         author: 'TRÉSORIER & PAYOR',
@@ -7142,6 +7289,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         ackByCom: true,
         sentToComBySecretariat: true,
         archivedBySecretariat: true,
+        archivedAt: nowStr,
+        archivedAtIso: nowIso,
       };
       setDoc(doc(db, 'archive_docs', arch.id), sanitizeFirestore(arch)).catch(console.warn);
       setArchiveDocs(prev => [...prev.filter(a => a.id !== arch.id), arch]);
@@ -7395,6 +7544,25 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           setProgrammeTasks(prev => prev.map(t => (t.id === alertData.taskId ? { ...t, ...taskUpdates } : t)));
         }
       }
+      dispatchPushNotification({
+        title: `⚠️ Alerte Suivi Programme (SDP) • ${alertData.targetDepartmentName || alertData.targetDepartment}`,
+        body: alertData.message?.length > 130 ? alertData.message.substring(0, 127) + '...' : (alertData.message || 'Rappel de suivi envoyé par le SDP.'),
+        senderRole: 'SDP',
+        senderName: 'Chargé du Suivi du Programme (SDP)',
+        targetRole: alertData.targetDepartment,
+        targetDepartment: alertData.targetDepartment,
+        type: 'INFO_REQUEST',
+        rawTitle: true,
+        priority: 'high',
+        sound: 'default',
+        requireInteraction: true,
+        url: '/#admin-console',
+        metadata: {
+          alertId: id,
+          excludedUserId: currentUserRef.current?.member?.id || currentUserRef.current?.id,
+        },
+      }).catch(console.warn);
+
       return { success: true, id };
     } catch (err) {
       console.warn('Erreur createProgrammeAlert:', err);
@@ -7452,19 +7620,25 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setInfoRequests(prev => [newReq, ...prev.filter(r => r.id !== id)]);
       dismissDemoInfoRequests([], true).catch(() => {});
 
-      // Notification Push FCM envoyée au rôle / département destinataire
+      // Notification Push temps réel envoyée au rôle / département destinataire
       dispatchPushNotification({
-        title: `Navette d'Échange : ${req.senderRoleLabel || req.senderRole}`,
-        body: `Nouvelle demande : "${req.subject}"\n${req.message.substring(0, 100)}...`,
+        title: `📩 Navette • ${req.senderRoleLabel || req.senderRole} → ${req.recipientRoleLabel || req.recipientRole}`,
+        body: `${req.subject} : ${req.message.substring(0, 110)}${req.message.length > 110 ? '...' : ''}`,
         senderRole: req.senderRole,
         senderName: req.senderName,
         targetRole: req.recipientRole,
         targetDepartment: req.recipientRole,
         type: 'INFO_REQUEST',
+        rawTitle: true,
         priority: 'high',
         sound: 'default',
         requireInteraction: true,
-        url: '/',
+        url: '/#admin-navette',
+        metadata: {
+          requestId: id,
+          targetDeptKey: normalizeDepartmentKey(req.recipientRole),
+          excludedUserId: currentUserRef.current?.member?.id || currentUserRef.current?.id,
+        },
       }).catch(console.warn);
 
       return { success: true, id, message: "Navette d'échange initiée avec succès." };
@@ -7483,7 +7657,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   ): Promise<{ success: boolean; message: string }> => {
     try {
       const nowIso = new Date().toISOString();
-      const targetReq = infoRequests.find(r => r.id === id);
+      const targetReq =
+        infoRequestsMapRef.current.get(id) ||
+        navettesMapRef.current.get(id) ||
+        infoRequests.find(r => r.id === id);
 
       // Reconstituer le fil chronologique existant
       const existingMessages: InfoRequestMessage[] = [];
@@ -7524,14 +7701,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
       const updatedMessages = [...existingMessages, newMsg];
 
-      // Dynamisme de statut :
-      // - Si le dernier message vient de l'émetteur initial -> "En attente" (en attente du destinataire)
-      // - Si le dernier message vient de l'autre département -> "Répondu" (ou "Répondu / En cours d'échange")
-      const isFromOriginalSender = !!(targetReq && (
-        roleKey === targetReq.senderRole.toUpperCase().trim() ||
-        roleKey.includes(targetReq.senderRole.toUpperCase().trim()) ||
-        targetReq.senderRole.toUpperCase().trim().includes(roleKey)
-      ));
+      // Dynamisme de statut avec normalisation canonique (SECRETAIRE === SECRETARIAT, etc.)
+      const normReplierDept = normalizeDepartmentKey(roleKey);
+      const normOriginalSenderDept = targetReq ? normalizeDepartmentKey(targetReq.senderRole) : '';
+      const isFromOriginalSender = Boolean(
+        targetReq &&
+          ((normReplierDept && normOriginalSenderDept && normReplierDept === normOriginalSenderDept) ||
+            roleKey === targetReq.senderRole.toUpperCase().trim())
+      );
 
       const newStatus = isFromOriginalSender ? 'En attente' : 'Répondu';
 
@@ -7563,23 +7740,29 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         prev.map(r => (r.id === id ? { ...r, ...updates } : r))
       );
 
-      // Notification Push FCM envoyée à l'autre partie
+      // Notification Push temps réel envoyée au département destinataire de la réplique
       const targetRole = isFromOriginalSender
         ? (targetReq ? targetReq.recipientRole : 'ALL')
         : (targetReq ? targetReq.senderRole : 'ALL');
 
       dispatchPushNotification({
-        title: `Navette d'Échange : ${replierName}`,
-        body: `Nouveau message sur "${targetReq?.subject || 'Échange'}" : ${replyMessage.substring(0, 100)}...`,
-        senderRole: replierName,
+        title: `💬 Réponse Navette • ${roleLabel}`,
+        body: `Sur "${targetReq?.subject || 'Échange'}" : ${replyMessage.substring(0, 110)}${replyMessage.length > 110 ? '...' : ''}`,
+        senderRole: roleKey || replierName,
         senderName: replierName,
         targetRole,
         targetDepartment: targetRole,
         type: 'INFO_REQUEST',
+        rawTitle: true,
         priority: 'high',
         sound: 'default',
         requireInteraction: true,
-        url: '/',
+        url: '/#admin-navette',
+        metadata: {
+          requestId: id,
+          targetDeptKey: normalizeDepartmentKey(targetRole),
+          excludedUserId: currentUserRef.current?.member?.id || currentUserRef.current?.id,
+        },
       }).catch(console.warn);
 
       return { success: true, message: "Réplique transmise avec succès dans le fil d'échange." };
@@ -7715,15 +7898,32 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const addPrayerIntention = (intention: string, memberNickname?: string, isChain: boolean = false) => {
+    const authorNick = memberNickname || (currentUser?.member?.nickname || 'Membre Rouama');
     const newIntention: PrayerIntention = {
       id: 'PRAYER-' + Date.now(),
-      memberNickname: memberNickname || (currentUser?.member?.nickname || 'Membre Rouama'),
+      memberNickname: authorNick,
       intention,
       date: new Date().toLocaleDateString('fr-FR'),
       isChain,
     };
     setDoc(doc(db, 'prayer_intentions', newIntention.id), sanitizeFirestore(newIntention)).catch(console.warn);
     setPrayerIntentions(prev => [newIntention, ...prev]);
+
+    const senderMemberId = currentUserRef.current?.member?.id || currentUserRef.current?.id;
+    dispatchPushNotification({
+      title: isChain
+        ? '🙏 Chaîne de Prière E-ROUAMA'
+        : `🙏 Nouvelle Intention de Prière (${authorNick})`,
+      body: intention.length > 130 ? intention.substring(0, 127) + '...' : intention,
+      senderRole: isChain ? 'MEMBRE' : authorNick,
+      senderName: authorNick,
+      targetRole: isChain ? 'ALL' : 'SPIRITUALITE',
+      targetDepartment: isChain ? 'all' : 'spiritualite',
+      type: 'GENERAL',
+      rawTitle: true,
+      url: isChain ? '/#tab=PRIERE_ROUAMA' : '/#admin-console',
+      metadata: { excludedUserId: senderMemberId },
+    }).catch(console.warn);
   };
 
   const saveReligiousEventDraft = async (
@@ -7827,19 +8027,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         'ACTIVITES',
         act.id
       );
-      dispatchPushNotification({
-        title: '📢 Alerte Officielle • SHOW & DJAI',
-        body: `${act.title} (${act.eventDate}) est officiellement publié !`,
-        senderRole: 'COM',
-        senderName: 'Communication (BIC)',
-        targetRole: 'ALL',
-        type: 'GENERAL',
-        rawTitle: true,
-        priority: 'high',
-        sound: 'default',
-        requireInteraction: true,
-        url: '/',
-      }).catch(console.warn);
       setDoc(doc(db, 'activities', id), { gbairaiAlertSentByCom: true }, { merge: true }).catch(console.warn);
       setActivities(prev => prev.map(a => (a.id === id ? { ...a, gbairaiAlertSentByCom: true } : a)));
       return;
@@ -7858,19 +8045,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         'FINANCES',
         proj.id
       );
-      dispatchPushNotification({
-        title: '📢 Alerte Officielle • Projet AGR & DJAI',
-        body: `Le projet "${proj.title}" est publié et ouvert aux cotisations !`,
-        senderRole: 'COM',
-        senderName: 'Communication (BIC)',
-        targetRole: 'ALL',
-        type: 'GENERAL',
-        rawTitle: true,
-        priority: 'high',
-        sound: 'default',
-        requireInteraction: true,
-        url: '/',
-      }).catch(console.warn);
       setDoc(doc(db, 'projects', id), { gbairaiAlertSentByCom: true }, { merge: true }).catch(console.warn);
       setProjects(prev => prev.map(p => (p.id === id ? { ...p, gbairaiAlertSentByCom: true } : p)));
       return;
@@ -7891,19 +8065,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         'PRIERE_ROUAMA',
         evt.id
       );
-      dispatchPushNotification({
-        title: '📢 Alerte Officielle • Prière Rouama',
-        body: `${evt.title} — ${evt.eventDate} à ${evt.location}`,
-        senderRole: 'COM',
-        senderName: 'Communication (BIC)',
-        targetRole: 'ALL',
-        type: 'GENERAL',
-        rawTitle: true,
-        priority: 'high',
-        sound: 'default',
-        requireInteraction: true,
-        url: '/',
-      }).catch(console.warn);
       setDoc(doc(db, 'religious_events', id), { gbairaiAlertSentByCom: true }, { merge: true }).catch(console.warn);
       setReligiousEvents(prev => prev.map(e => (e.id === id ? { ...e, gbairaiAlertSentByCom: true } : e)));
     }
@@ -8285,25 +8446,56 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const sendReligiousEventNoteToCom = (eventId: string) => {
+    const evt = religiousEvents.find(e => e.id === eventId);
     const updates = {
       sentToCom: true,
     };
     setDoc(doc(db, 'religious_events', eventId), updates, { merge: true }).catch(console.warn);
     setReligiousEvents(prev => prev.map(e => e.id === eventId ? { ...e, ...updates } : e));
+
+    dispatchPushNotification({
+      title: 'E-ROUAMA • Note Événement Religieux Transmise à la COM 📢',
+      body: `Le Secrétariat Général a transmis la note de l'événement spirituel "${evt?.title || eventId}" à la Communication.`,
+      senderRole: 'SECRETAIRE',
+      senderName: 'Secrétariat Général',
+      targetRole: 'COM',
+      targetDepartment: 'communication',
+      type: 'DOCUMENT_TRANSMITTED',
+      rawTitle: true,
+      url: '/#admin-com',
+    }).catch(console.warn);
   };
 
   const ackReligiousEventCOM = (eventId: string) => {
+    const evt = religiousEvents.find(e => e.id === eventId);
     const updates = {
       ackByCom: true,
     };
     setDoc(doc(db, 'religious_events', eventId), updates, { merge: true }).catch(console.warn);
     setReligiousEvents(prev => prev.map(e => e.id === eventId ? { ...e, ...updates } : e));
+
+    dispatchPushNotification({
+      title: 'E-ROUAMA • Accusé de Réception COM (Spiritualité) ✅',
+      body: `La Commission Communication a accusé réception de l'événement "${evt?.title || eventId}".`,
+      senderRole: 'COM',
+      senderName: 'Commission Communication (BIC)',
+      targetRole: 'SECRETAIRE',
+      targetDepartment: 'secretariat',
+      targetDepartments: ['secretariat', 'spiritualite'],
+      type: 'APPROVAL',
+      rawTitle: true,
+      url: '/#admin-console',
+    }).catch(console.warn);
   };
 
   const archiveReligiousEventSecretariat = (eventId: string) => {
+    const nowStr = `${new Date().toLocaleDateString('fr-FR')} à ${new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}`;
+    const nowIso = new Date().toISOString();
     const updates = {
       archivedBySecretariat: true,
       status: 'ARCHIVED' as const,
+      archivedAt: nowStr,
+      archivedAtIso: nowIso,
     };
     setDoc(doc(db, 'religious_events', eventId), updates, { merge: true }).catch(console.warn);
     setReligiousEvents(prev => prev.map(e => e.id === eventId ? { ...e, ...updates } : e));

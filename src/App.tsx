@@ -14,14 +14,24 @@ import { TabType } from './components/Navigation';
 import { AdminRole, RouamaMember } from './types';
 import { LayoutDashboard, Church, CreditCard, Newspaper, Tent, Rocket, FileText, Shield, LogOut, Download, User, Sparkles, KeyRound, Bell } from 'lucide-react';
 import { ADMIN_USERS, getRegisteredMembersCount } from './data/membersData';
-import { getDefaultRolesForMember } from './data/departmentMapping';
+import { getDefaultRolesForMember, normalizeDepartmentKey } from './data/departmentMapping';
 import { ChangePasswordModal } from './components/admin/ChangePasswordModal';
-import { registerPushServiceWorker, listenForIncomingPushNotifications, refreshFcmTokenOnStartup, setupForegroundFCMListener } from './utils/pushNotificationService';
+import {
+  registerPushServiceWorker,
+  subscribeToRealtimeNotifications,
+  refreshFcmTokenOnStartup,
+  setupForegroundFCMListener,
+  RealtimeNotificationItem,
+  getReadNotificationIds,
+  markNotificationIdAsRead,
+  markAllNotificationIdsAsRead,
+} from './utils/pushNotificationService';
 import { RoleWorkspaceToggle } from './components/RoleWorkspaceToggle';
 import { InstallPwaBanner } from './components/InstallPwaBanner';
 import { UpdatePrompt } from './components/UpdatePrompt';
 import { InAppNotificationToast, ForegroundNotification } from './components/InAppNotificationToast';
 import { PushNotificationPromptModal } from './components/common/PushNotificationPromptModal';
+import { NotificationBell } from './components/NotificationBell';
 
 interface AuthenticatedAppProps {
   currentUser: any;
@@ -29,15 +39,56 @@ interface AuthenticatedAppProps {
 }
 
 function AuthenticatedApp({ currentUser, rawMember }: AuthenticatedAppProps) {
-  const { logout, members, newsItems, gbairaiMessages, getMemberDuesStatus, markAllGbairaiAsRead } = useApp();
+  const { logout, switchWorkspace, members, newsItems, gbairaiMessages, getMemberDuesStatus, markAllGbairaiAsRead } = useApp();
   const [activeTab, setActiveTab] = useState<TabType>('DASHBOARD');
   const [targetDocId, setTargetDocId] = useState<string | undefined>(undefined);
   const [isAdminChangePasswordOpen, setIsAdminChangePasswordOpen] = useState(false);
   const [foregroundToast, setForegroundToast] = useState<ForegroundNotification | null>(null);
+  const [notificationsList, setNotificationsList] = useState<RealtimeNotificationItem[]>([]);
   const [isPushPromptOpen, setIsPushPromptOpen] = useState(false);
 
   const memberId = rawMember.id;
   const memberNickname = rawMember?.nickname || currentUser?.nickname || 'MEMBRE';
+  const [readNotifIds, setReadNotifIds] = useState<Set<string>>(() =>
+    getReadNotificationIds(memberId || currentUser?.id || 'guest')
+  );
+
+  useEffect(() => {
+    setReadNotifIds(getReadNotificationIds(memberId || currentUser?.id || 'guest'));
+  }, [memberId, currentUser?.id]);
+
+  // Privilèges administratifs et départements du membre authentifié (calculés avant l'écoute temps réel)
+  const defaultMeta = useMemo(
+    () =>
+      memberId
+        ? getDefaultRolesForMember(memberId, rawMember.firstName, rawMember.nickname)
+        : { roles: ['membre'], departments: [], adminRole: undefined },
+    [memberId, rawMember.firstName, rawMember.nickname]
+  );
+
+  const memberAdminRole =
+    currentUser?.adminRole ||
+    rawMember.assignedRole ||
+    (rawMember as any).adminRole ||
+    defaultMeta.adminRole;
+
+  const effectiveDepartments = useMemo(() => {
+    const combined = [
+      ...(currentUser?.departments || []),
+      ...(rawMember.departments || []),
+      ...(defaultMeta.departments || []),
+      ...(memberAdminRole ? [memberAdminRole] : []),
+    ].filter(Boolean);
+    return Array.from(new Set(combined));
+  }, [currentUser?.departments, rawMember.departments, defaultMeta.departments, memberAdminRole]);
+
+  const hasAdminPrivileges = Boolean(
+    memberAdminRole ||
+    (currentUser?.roles || rawMember.roles || defaultMeta.roles || []).some(r => r !== 'membre') ||
+    effectiveDepartments.length > 0
+  );
+
+  const memberDuesStatus = memberId && getMemberDuesStatus ? getMemberDuesStatus(memberId) : 'RETARD';
 
   // Demande l'autorisation d'affichage des notifications aux utilisateurs lors de leur première connexion à leur espace membre
   useEffect(() => {
@@ -67,24 +118,29 @@ function AuthenticatedApp({ currentUser, rawMember }: AuthenticatedAppProps) {
   const registeredCount = getRegisteredMembersCount(members);
   const totalMembers = members && members.length > 0 ? members.length : 12;
 
-  // Initialisation du Service Worker et écoute des Push Notifications en temps réel avec anti-doublon strict
+  const deptKeyString = effectiveDepartments.join(',');
+
+  // Initialisation du Service Worker et écoute des notifications temps réel par utilisateur, département et cotisation
   useEffect(() => {
     registerPushServiceWorker();
 
-    const storedLastUserId = localStorage.getItem('erouama_last_auth_user_id') || undefined;
-    const storedLastRole = localStorage.getItem('erouama_last_auth_role') || undefined;
-    let storedLastDepts: string[] = [];
+    const effectiveUserId =
+      (currentUser?.type === 'MEMBER' ? currentUser.member?.id : currentUser?.adminRole) ||
+      memberId ||
+      localStorage.getItem('erouama_last_auth_user_id') ||
+      undefined;
+    const effectiveRole = memberAdminRole || localStorage.getItem('erouama_last_auth_role') || undefined;
+
     try {
-      const raw = localStorage.getItem('erouama_last_auth_depts');
-      if (raw) storedLastDepts = JSON.parse(raw);
+      if (effectiveUserId) localStorage.setItem('erouama_last_auth_user_id', effectiveUserId);
+      if (effectiveRole) localStorage.setItem('erouama_last_auth_role', effectiveRole);
+      if (effectiveDepartments.length > 0) {
+        localStorage.setItem('erouama_last_auth_depts', JSON.stringify(effectiveDepartments));
+      }
     } catch {}
 
-    const userRole = (currentUser?.type === 'ADMIN' ? currentUser.adminRole : currentUser?.member?.assignedRole) || storedLastRole;
-    const userId = (currentUser?.type === 'MEMBER' ? currentUser.member?.id : currentUser?.adminRole) || storedLastUserId;
-    const userDepts = (currentUser?.departments || currentUser?.member?.departments || (storedLastDepts.length ? storedLastDepts : []));
-
-    // Reconstitution et rafraîchissement automatique du token FCM au démarrage (même si déconnecté)
-    refreshFcmTokenOnStartup(userId);
+    // Reconstitution et rafraîchissement automatique du token FCM au démarrage
+    refreshFcmTokenOnStartup(effectiveUserId);
 
     const handleReceivedPush = (notif: any) => {
       setForegroundToast({
@@ -96,14 +152,21 @@ function AuthenticatedApp({ currentUser, rawMember }: AuthenticatedAppProps) {
       });
     };
 
-    const unsubPush = listenForIncomingPushNotifications(userRole, userId, userDepts, handleReceivedPush);
+    const unsubPush = subscribeToRealtimeNotifications({
+      userRole: effectiveRole,
+      userId: effectiveUserId,
+      userDepartments: effectiveDepartments,
+      userDuesStatus: memberDuesStatus,
+      onReceived: handleReceivedPush,
+      onListUpdate: (items) => setNotificationsList(items),
+    });
     const unsubFcm = setupForegroundFCMListener(handleReceivedPush);
 
     return () => {
       unsubPush();
       unsubFcm();
     };
-  }, [currentUser?.id, currentUser?.type, currentUser?.adminRole]);
+  }, [memberId, currentUser?.id, currentUser?.type, memberAdminRole, deptKeyString, memberDuesStatus]);
 
   // Auto-marquage des messages Gbairai comme lus à l'ouverture de l'onglet
   useEffect(() => {
@@ -112,22 +175,81 @@ function AuthenticatedApp({ currentUser, rawMember }: AuthenticatedAppProps) {
     }
   }, [activeTab, memberId, markAllGbairaiAsRead]);
 
-  // Privilèges administratifs du membre authentifié
-  const defaultMeta = memberId
-    ? getDefaultRolesForMember(memberId, rawMember.firstName, rawMember.nickname)
-    : { roles: ['membre'], departments: [], adminRole: undefined };
+  const resolveAdminConsoleFromNotif = (notif?: RealtimeNotificationItem, url?: string): AdminRole => {
+    const candidate = normalizeDepartmentKey(
+      notif?.targetDepartment || notif?.targetRole || notif?.data?.metadata?.targetDeptKey || ''
+    );
+    const deptToAdminRole: Record<string, AdminRole> = {
+      tresorerie: 'TRESORIER',
+      payor: 'PAYOR',
+      secretariat: 'SECRETARIAT',
+      organisation: 'ORGANISATION',
+      communication: 'COM',
+      projet: 'PROJET',
+      spiritualite: 'SPIRITUALITE',
+      sdp: 'SDP',
+      cerveau: 'CERVEAU',
+    };
+    if (candidate && deptToAdminRole[candidate]) {
+      return deptToAdminRole[candidate];
+    }
+    if (url?.includes('admin-com')) return 'COM';
+    if (url?.includes('admin-secretariat')) return 'SECRETARIAT';
+    return (memberAdminRole as AdminRole) || 'SDP';
+  };
 
-  const memberAdminRole =
-    currentUser?.adminRole ||
-    rawMember.assignedRole ||
-    (rawMember as any).adminRole ||
-    defaultMeta.adminRole;
+  const handleMarkNotifRead = (notifId: string) => {
+    const uid = memberId || currentUser?.id || 'guest';
+    setReadNotifIds(markNotificationIdAsRead(uid, notifId));
+  };
 
-  const hasAdminPrivileges = Boolean(
-    memberAdminRole ||
-    (currentUser?.roles || rawMember.roles || defaultMeta.roles || []).some(r => r !== 'membre') ||
-    (currentUser?.departments || rawMember.departments || defaultMeta.departments || []).length > 0
-  );
+  const handleMarkAllNotifsRead = () => {
+    const uid = memberId || currentUser?.id || 'guest';
+    setReadNotifIds(markAllNotificationIdsAsRead(uid, notificationsList.map(n => n.id)));
+  };
+
+  const handleNotificationNavigate = (url: string, notif?: RealtimeNotificationItem) => {
+    const safeUrl = url || '/';
+    const isAdminLink =
+      safeUrl.includes('#admin') ||
+      (notif?.type && ['INFO_REQUEST', 'DOCUMENT_TRANSMITTED', 'APPROVAL', 'PV_ACK'].includes(notif.type));
+
+    if (isAdminLink && hasAdminPrivileges) {
+      const targetConsole = resolveAdminConsoleFromNotif(notif, safeUrl);
+      const section = safeUrl.includes('navette') || notif?.type === 'INFO_REQUEST' ? 'navette' : 'console';
+      switchWorkspace('ADMIN', targetConsole);
+      setTimeout(() => {
+        window.dispatchEvent(
+          new CustomEvent('erouama-navigate-admin', {
+            detail: { role: targetConsole, section },
+          })
+        );
+      }, 90);
+      return;
+    }
+
+    if (currentUser?.activeView === 'ADMIN') {
+      switchWorkspace('MEMBER');
+    }
+
+    if (safeUrl.includes('tab=NOUVELLES') || safeUrl.includes('news') || safeUrl.includes('gbairai') || safeUrl.includes('NOUVELLES')) {
+      setActiveTab('NOUVELLES');
+      if (memberId) markAllGbairaiAsRead(memberId);
+    } else if (safeUrl.includes('tab=FINANCES') || safeUrl.includes('finances') || safeUrl.includes('cotisation')) {
+      setActiveTab('FINANCES');
+    } else if (safeUrl.includes('tab=PRIERE_ROUAMA') || safeUrl.includes('priere') || safeUrl.includes('rouama')) {
+      setActiveTab('PRIERE_ROUAMA');
+    } else if (safeUrl.includes('tab=ACTIVITES')) {
+      setActiveTab('ACTIVITES');
+    } else if (safeUrl.includes('tab=PROJETS')) {
+      setActiveTab('PROJETS');
+    } else if (safeUrl.includes('tab=ARCHIVES') || safeUrl.includes('archives')) {
+      setActiveTab('ARCHIVES');
+    } else {
+      setActiveTab('NOUVELLES');
+      if (memberId) markAllGbairaiAsRead(memberId);
+    }
+  };
 
   // FLUX UNIQUE D'ACCÈS OBLIGATOIRE :
   // - Étape 1 : Le membre se connecte uniquement avec son Prénom et son Code PIN Membre.
@@ -166,6 +288,15 @@ function AuthenticatedApp({ currentUser, rawMember }: AuthenticatedAppProps) {
           </div>
 
           <div className="flex items-center gap-3 ml-auto flex-wrap justify-end">
+            <NotificationBell
+              notifications={notificationsList}
+              readIds={readNotifIds}
+              onMarkRead={handleMarkNotifRead}
+              onMarkAllRead={handleMarkAllNotifsRead}
+              onSelectNotification={(notif) => handleNotificationNavigate(notif.url, notif)}
+              variant="ADMIN"
+            />
+
             {/* In-App Workspace Switcher Toggle */}
             <RoleWorkspaceToggle />
 
@@ -224,6 +355,11 @@ function AuthenticatedApp({ currentUser, rawMember }: AuthenticatedAppProps) {
         <InAppNotificationToast
           notification={foregroundToast}
           onClose={() => setForegroundToast(null)}
+          onNavigate={(url) => {
+            const matched = notificationsList.find(n => n.id === foregroundToast?.id);
+            if (foregroundToast?.id) handleMarkNotifRead(foregroundToast.id);
+            handleNotificationNavigate(url, matched);
+          }}
         />
 
         {/* Modal d'autorisation des notifications push */}
@@ -243,8 +379,6 @@ function AuthenticatedApp({ currentUser, rawMember }: AuthenticatedAppProps) {
     (rawMember && (memberNickname.toUpperCase() === 'CAPELO' || memberFirstName.toUpperCase() === 'WILFRIED')
       ? '/PP-CAPELO.jpeg'
       : undefined);
-
-  const memberDuesStatus = memberId && getMemberDuesStatus ? getMemberDuesStatus(memberId) : 'RETARD';
 
   const messagesList = gbairaiMessages || newsItems || [];
   const activeGbairaiMessages = messagesList.filter(msg => {
@@ -423,7 +557,17 @@ function AuthenticatedApp({ currentUser, rawMember }: AuthenticatedAppProps) {
         </div>
 
         {/* Action Buttons */}
-        <div className="flex items-center space-x-3 ml-auto flex-wrap justify-end">
+        <div className="flex items-center space-x-2 sm:space-x-3 ml-auto flex-wrap justify-end">
+          {/* Centre de notifications temps réel */}
+          <NotificationBell
+            notifications={notificationsList}
+            readIds={readNotifIds}
+            onMarkRead={handleMarkNotifRead}
+            onMarkAllRead={handleMarkAllNotifsRead}
+            onSelectNotification={(notif) => handleNotificationNavigate(notif.url, notif)}
+            variant="MEMBER"
+          />
+
           {/* Bouton d'accès direct aux Notifications Push */}
           <button
             type="button"
@@ -432,7 +576,7 @@ function AuthenticatedApp({ currentUser, rawMember }: AuthenticatedAppProps) {
             className="relative flex items-center space-x-1.5 px-3 py-2 bg-white/15 hover:bg-white/25 text-white rounded-[2rem] text-xs font-bold transition-all border border-white/25 shadow-sm active:scale-95 cursor-pointer"
           >
             <Bell className="w-3.5 h-3.5 text-amber-300" />
-            <span className="hidden sm:inline">Notifications</span>
+            <span className="hidden sm:inline">Push OS</span>
             {typeof window !== 'undefined' && 'Notification' in window && Notification.permission !== 'granted' && (
               <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse ml-0.5" />
             )}
@@ -523,13 +667,9 @@ function AuthenticatedApp({ currentUser, rawMember }: AuthenticatedAppProps) {
         notification={foregroundToast}
         onClose={() => setForegroundToast(null)}
         onNavigate={(url) => {
-          if (url.includes('news') || url.includes('gbairai') || url.includes('NOUVELLES')) {
-            setActiveTab('NOUVELLES');
-          } else if (url.includes('finances') || url.includes('cotisation')) {
-            setActiveTab('FINANCES');
-          } else if (url.includes('priere') || url.includes('rouama')) {
-            setActiveTab('PRIERE_ROUAMA');
-          }
+          const matched = notificationsList.find(n => n.id === foregroundToast?.id);
+          if (foregroundToast?.id) handleMarkNotifRead(foregroundToast.id);
+          handleNotificationNavigate(url, matched);
         }}
       />
 

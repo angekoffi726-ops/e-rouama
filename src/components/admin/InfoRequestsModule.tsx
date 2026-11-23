@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useRef } from 'react';
 import {
   MessageSquare,
   Send,
@@ -25,6 +25,7 @@ import {
   Unlock,
   PhoneCall,
   ExternalLink,
+  Copy,
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { AdminRole, InfoRequest, InfoRequestMessage } from '../../types';
@@ -33,12 +34,9 @@ import { getDepartmentContact } from './SuiviProgrammeConsole';
 // Lien officiel du groupe WhatsApp de l'association E-ROUAMA
 export const OFFICIAL_WHATSAPP_GROUP_URL = 'https://chat.whatsapp.com/DxARjVEzV9xJgpxQOIwMGm';
 
-// Copie fiable dans le presse-papier (API Clipboard + repli compatible mobile WebView)
+// Copie fiable dans le presse-papier (API Clipboard + repli compatible mobile WebView/iOS avec conservation des retours à la ligne)
 export const copyToClipboardSafely = (text: string): void => {
   try {
-    if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
-      navigator.clipboard.writeText(text).catch(() => {});
-    }
     if (typeof document !== 'undefined') {
       const textarea = document.createElement('textarea');
       textarea.value = text;
@@ -48,10 +46,14 @@ export const copyToClipboardSafely = (text: string): void => {
       textarea.style.left = '-9999px';
       document.body.appendChild(textarea);
       textarea.select();
+      textarea.setSelectionRange(0, textarea.value.length);
       try {
         document.execCommand('copy');
       } catch {}
       document.body.removeChild(textarea);
+    }
+    if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(text).catch(() => {});
     }
   } catch {}
 };
@@ -384,6 +386,9 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [confirmPurgeClosed, setConfirmPurgeClosed] = useState(false);
   const [isPurgingClosed, setIsPurgingClosed] = useState(false);
+  const [copiedMessageKey, setCopiedMessageKey] = useState<string | null>(null);
+  const copyFeedbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const toastDismissTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Filtrage harmonisé des demandes pour ce département (Émis ET Reçus sans perte)
   // 1. Demandes Reçues (adressées à ce département ou ses alias)
@@ -742,6 +747,27 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
       type: 'success',
       message: `Message copié ! Ouverture du groupe WhatsApp...${subjectTitle ? ` (« ${subjectTitle} » prêt à coller)` : ''}`,
     });
+  };
+
+  // Copie intégrale d'un message individuel (avec retours à la ligne préservés) pour collage direct dans l'éditeur de PV
+  const handleCopyMessageText = (msgText: string, messageKey: string) => {
+    if (!msgText) return;
+    copyToClipboardSafely(msgText);
+    setCopiedMessageKey(messageKey);
+    if (copyFeedbackTimerRef.current) clearTimeout(copyFeedbackTimerRef.current);
+    copyFeedbackTimerRef.current = setTimeout(() => {
+      setCopiedMessageKey(prev => (prev === messageKey ? null : prev));
+    }, 2500);
+    setFeedbackToast({
+      type: 'success',
+      message: 'Message copié ! Vous pouvez le coller directement dans votre espace de rédaction de PV.',
+    });
+    if (toastDismissTimerRef.current) clearTimeout(toastDismissTimerRef.current);
+    toastDismissTimerRef.current = setTimeout(() => {
+      setFeedbackToast(prev =>
+        prev?.message?.startsWith('Message copié ! Vous pouvez le coller') ? null : prev
+      );
+    }, 3500);
   };
 
   // Suggestions rapides pour l'objet
@@ -1566,22 +1592,54 @@ export const InfoRequestsModule: React.FC<InfoRequestsModuleProps> = ({
                                     {msg.message}
                                   </p>
 
-                                  {/* Action directe Communication : Partager ce message/rapport sur WhatsApp */}
-                                  {isCommunicationDept && (() => {
-                                    const singleMsgText = formatNavetteWhatsAppText(req, msg);
+                                  {/* Barre d'actions du message : Copier (tous départements) + Partager WhatsApp (BIC) */}
+                                  {(() => {
+                                    const messageKey = `${req.id}__${msg.id || idx}`;
+                                    const isCopied = copiedMessageKey === messageKey;
                                     return (
                                       <div className="mt-3 pt-2.5 border-t border-slate-800/60 flex flex-wrap items-center justify-end gap-2">
-                                        <a
-                                          href={buildWhatsAppShareUrl(singleMsgText)}
-                                          target="_blank"
-                                          rel="noopener noreferrer"
-                                          onClick={() => handleShareWhatsAppFeedback(singleMsgText, req.subject)}
-                                          className="inline-flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-black px-3 py-1.5 rounded-xl text-[11px] shadow transition-all active:scale-95"
-                                          title="Copier ce message et ouvrir directement le groupe WhatsApp officiel E-ROUAMA"
+                                        <button
+                                          type="button"
+                                          onClick={e => {
+                                            e.stopPropagation();
+                                            handleCopyMessageText(msg.message || '', messageKey);
+                                          }}
+                                          className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-[11px] font-black border transition-all active:scale-95 cursor-pointer shadow-sm ${
+                                            isCopied
+                                              ? 'bg-emerald-600/25 text-emerald-300 border-emerald-500/50'
+                                              : 'bg-indigo-500/15 hover:bg-indigo-500/25 text-indigo-200 border-indigo-500/35 hover:border-indigo-400'
+                                          }`}
+                                          title="Copier intégralement le texte de ce message pour le coller dans un PV ou document"
                                         >
-                                          <span>📲 Partager dans le groupe WhatsApp</span>
-                                          <ExternalLink className="w-3 h-3 text-emerald-100" />
-                                        </a>
+                                          {isCopied ? (
+                                            <>
+                                              <Check className="w-3.5 h-3.5 text-emerald-400" />
+                                              <span>Copié !</span>
+                                            </>
+                                          ) : (
+                                            <>
+                                              <Copy className="w-3.5 h-3.5 text-indigo-300" />
+                                              <span>Copier</span>
+                                            </>
+                                          )}
+                                        </button>
+
+                                        {isCommunicationDept && (() => {
+                                          const singleMsgText = formatNavetteWhatsAppText(req, msg);
+                                          return (
+                                            <a
+                                              href={buildWhatsAppShareUrl(singleMsgText)}
+                                              target="_blank"
+                                              rel="noopener noreferrer"
+                                              onClick={() => handleShareWhatsAppFeedback(singleMsgText, req.subject)}
+                                              className="inline-flex items-center gap-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-black px-3 py-1.5 rounded-xl text-[11px] shadow transition-all active:scale-95"
+                                              title="Copier ce message et ouvrir directement le groupe WhatsApp officiel E-ROUAMA"
+                                            >
+                                              <span>📲 Partager dans le groupe WhatsApp</span>
+                                              <ExternalLink className="w-3 h-3 text-emerald-100" />
+                                            </a>
+                                          );
+                                        })()}
                                       </div>
                                     );
                                   })()}

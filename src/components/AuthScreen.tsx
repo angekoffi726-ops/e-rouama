@@ -6,7 +6,7 @@ import { ADMIN_USERS, INITIAL_ROUAMA_MEMBERS, getRegisteredMembersCount, isMembe
 import { getDefaultRolesForMember } from '../data/departmentMapping';
 import { AdminRole } from '../types';
 import { Shield, KeyRound, UserCheck, AlertCircle, Lock, ArrowRight, CheckCircle2, Loader2 } from 'lucide-react';
-import { requestPushPermissionAndSaveToken, dispatchPushNotification, refreshFcmTokenOnStartup } from '../utils/pushNotificationService';
+import { dispatchPushNotification, refreshFcmTokenOnStartup } from '../utils/pushNotificationService';
 
 const normalizeName = (str: string): string => {
   return (str || '')
@@ -227,7 +227,7 @@ export const AuthScreen: React.FC = () => {
             updatedAt: nowIso
           }, { merge: true }).catch(() => {});
 
-          requestPushPermissionAndSaveToken(member.id, 'MEMBER', member.id).catch(() => {});
+          refreshFcmTokenOnStartup(member.id).catch(() => {});
 
           dispatchPushNotification({
             title: 'E-ROUAMA : Nouveau Membre Activé',
@@ -398,7 +398,7 @@ export const AuthScreen: React.FC = () => {
               updatedAt: nowIso
             }, { merge: true }).catch(() => {});
 
-            requestPushPermissionAndSaveToken(member.id, 'MEMBER', member.id).catch(() => {});
+            refreshFcmTokenOnStartup(member.id).catch(() => {});
             dispatchPushNotification({
               title: 'E-ROUAMA : Nouveau Membre Activé',
               body: `Bienvenue à ${member.nickname || member.firstName} qui vient d'activer son compte !`,
@@ -506,7 +506,7 @@ export const AuthScreen: React.FC = () => {
             }).catch(() => {});
           }
 
-          requestPushPermissionAndSaveToken(member.id, 'MEMBER', member.id).catch(() => {});
+          refreshFcmTokenOnStartup(member.id).catch(() => {});
         } catch (syncErr) {
           console.warn('Note sync Firestore login:', syncErr);
         }
@@ -545,8 +545,8 @@ export const AuthScreen: React.FC = () => {
           dateString: now.toISOString().split('T')[0],
         });
 
-        // Demande de permission et enregistrement du token Push FCM dans Firestore (users/{adminId}/fcmToken)
-        requestPushPermissionAndSaveToken(cleanInput, 'ADMIN').catch((err) => {
+        // Rafraîchissement silencieux du token FCM dans Firestore sans popup générique
+        refreshFcmTokenOnStartup(cleanInput).catch((err) => {
           console.warn('Note enregistrement FCM token admin:', err);
         });
       } catch (err) {

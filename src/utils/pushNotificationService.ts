@@ -245,15 +245,6 @@ export const requestPushPermissionAndSaveToken = async (
       localStorage.setItem('erouama_last_auth_depts', JSON.stringify(memberRolesMeta.departments));
     }
 
-    // 5. Affiche une notification de bienvenue test style Wave
-    triggerDirectNotification({
-      title: 'E-ROUAMA : Notifications Push Activées 🔔',
-      body: 'Vous recevrez désormais les nouvelles demandes d’information et les PV en direct, même appli fermée !',
-      icon: '/LOGOPRO.png',
-    });
-
-    playWaveNotificationSound();
-
     return {
       success: true,
       token: fcmToken,
@@ -499,6 +490,8 @@ export interface PushDispatchOptions {
   targetUserId?: string;
   targetUserIds?: string[];
   targetDepartment?: string; // ex: "cerveau", "tresorerie", "communication", "projet", "organisation", "spiritualite", etc.
+  targetDepartments?: string[]; // Ciblage simultané de plusieurs départements (ex: ["secretariat", "organisation"])
+  targetDuesStatus?: string; // Ciblage optionnel par statut de cotisation ("RETARD" | "A_JOUR" | "EN_AVANCE")
   fcmToken?: string; // Jeton FCM direct du destinataire ciblé
   fcmTokens?: string[]; // Liste de jetons FCM directs
   type: 'INFO_REQUEST' | 'PV_PUBLISHED' | 'BILAN_PUBLISHED' | 'PAYMENT' | 'GENERAL' | 'APPROVAL' | 'DOCUMENT_TRANSMITTED' | (string & {});
@@ -510,6 +503,10 @@ export interface PushDispatchOptions {
   requireInteraction?: boolean;
 }
 
+// Cache mémoire court (5 min) des documents users/members pour éviter de multiplier les lectures Firestore à chaque notification
+let cachedTokenDocs: { fetchedAt: number; entries: Array<{ docId: string; data: any }> } | null = null;
+const TOKEN_CACHE_TTL_MS = 5 * 60 * 1000;
+
 /**
  * Extrait tous les jetons FCM actifs des destinataires concernés dans Firestore
  * (Prend en compte les rôles, départements, gestion partagée et diffusion globale)
@@ -517,6 +514,7 @@ export interface PushDispatchOptions {
 export const extractRecipientFcmTokens = async (options: {
   targetRole?: string;
   targetDepartment?: string;
+  targetDepartments?: string[];
   targetUserId?: string;
   targetUserIds?: string[];
   excludedUserId?: string;
@@ -524,13 +522,22 @@ export const extractRecipientFcmTokens = async (options: {
 }): Promise<string[]> => {
   const tokens: string[] = [];
   const targetRoleClean = (options.targetRole || '').toUpperCase().trim();
-  const normalizedDept = options.targetDepartment
-    ? normalizeDepartmentKey(options.targetDepartment)
-    : options.targetRole
-    ? normalizeDepartmentKey(options.targetRole)
-    : '';
+  const normalizedDepts = Array.from(
+    new Set(
+      [
+        options.targetDepartment ? normalizeDepartmentKey(options.targetDepartment) : '',
+        ...(Array.isArray(options.targetDepartments)
+          ? options.targetDepartments.map(d => normalizeDepartmentKey(d))
+          : []),
+        options.targetRole ? normalizeDepartmentKey(options.targetRole) : '',
+      ].filter(Boolean)
+    )
+  );
 
-  const isBroadcastAll = targetRoleClean === 'ALL' || targetRoleClean === 'TOUS' || normalizedDept === 'all';
+  const isBroadcastAll =
+    targetRoleClean === 'ALL' ||
+    targetRoleClean === 'TOUS' ||
+    normalizedDepts.includes('all');
 
   const excludedIds = new Set<string>();
   if (options.excludedUserId) excludedIds.add(String(options.excludedUserId).trim());
@@ -539,10 +546,6 @@ export const extractRecipientFcmTokens = async (options: {
   }
 
   try {
-    const usersRef = collection(db, 'users');
-    const membersRef = collection(db, 'members');
-
-    // Cas 2 : Utilisateur(s) ciblé(s) par ID
     const directUserIds = new Set<string>();
     if (options.targetUserId) {
       directUserIds.add(String(options.targetUserId).trim());
@@ -551,53 +554,48 @@ export const extractRecipientFcmTokens = async (options: {
       options.targetUserIds.forEach(id => id && directUserIds.add(String(id).trim()));
     }
 
-    // Cas 3 : Ciblage par Département / Rôle administratif
     const targetDeptManagers = new Set<string>();
-    if (normalizedDept && normalizedDept !== 'all') {
-      const deptConfig = OFFICIAL_DEPARTMENTS.find(d => 
-        d.key === normalizedDept || 
-        normalizeDepartmentKey(d.key) === normalizedDept ||
-        d.adminRole.toLowerCase() === normalizedDept
+    normalizedDepts.forEach((normDept) => {
+      if (!normDept || normDept === 'all') return;
+      const deptConfig = OFFICIAL_DEPARTMENTS.find(
+        d =>
+          d.key === normDept ||
+          normalizeDepartmentKey(d.key) === normDept ||
+          normalizeDepartmentKey(d.adminRole) === normDept
       );
       if (deptConfig) {
         deptConfig.managerMemberIds.forEach(id => targetDeptManagers.add(String(id).trim()));
       }
-    }
-
-    // Rôles spécifiques directs
-    if (normalizedDept === 'cerveau' || targetRoleClean === 'CERVEAU') {
-      targetDeptManagers.add('1'); // Wilfried (Cerveau)
-      targetDeptManagers.add('CERVEAU');
-      targetDeptManagers.add('cerveau');
-      targetDeptManagers.add('admin_cerveau');
-    }
-    if (normalizedDept === 'tresorerie' || targetRoleClean === 'TRESORIER' || targetRoleClean === 'TRESO') {
-      targetDeptManagers.add('11'); // Léger (Trésorier)
-      targetDeptManagers.add('TRESORIER');
-      targetDeptManagers.add('tresorerie');
-      targetDeptManagers.add('admin_tresorier');
-    }
+      if (normDept === 'cerveau') {
+        targetDeptManagers.add('1');
+        targetDeptManagers.add('CERVEAU');
+      }
+      if (normDept === 'tresorerie') {
+        targetDeptManagers.add('11');
+        targetDeptManagers.add('TRESORIER');
+      }
+    });
 
     const collectTokensFromDoc = (docId: string, u: any) => {
-      const uId = String(u.id || '').trim();
+      const uId = String(u?.id || '').trim();
 
-      // RÈGLE STRICTE BROADCAST / COMMUNAUTAIRE :
-      // Pour toute diffusion collective (ALL / TOUS / broadcast général), inclure ABSOLUMENT TOUS les jetons
-      // de la collection users/members sans exception, INDÉPENDAMMENT du statut de connexion en temps réel (isLoggedIn/Auth).
-      if (isBroadcastAll) {
-        if (Array.isArray(u.fcmTokens)) tokens.push(...u.fcmTokens.filter(Boolean));
-        if (u.fcmToken && typeof u.fcmToken === 'string' && u.fcmToken.trim()) tokens.push(u.fcmToken.trim());
-        return;
-      }
-
-      // Exclusion de l'expéditeur UNIQUEMENT pour les messages directs (tests unitaires ou chats 1-à-1)
       if (excludedIds.has(docId) || (uId && excludedIds.has(uId))) {
+        if (isBroadcastAll) {
+          // Ne pas exclure les autres comptes sur broadcast général; exclure uniquement l'émetteur exact si spécifié
+          return;
+        }
         return;
       }
 
-      const uDepts = Array.isArray(u.departments) ? u.departments.map(x => normalizeDepartmentKey(x)) : [];
-      const uRoles = Array.isArray(u.roles) ? u.roles.map(x => normalizeDepartmentKey(x)) : [];
-      const uRole = normalizeDepartmentKey(u.role || u.adminRole || '');
+      if (isBroadcastAll) {
+        if (Array.isArray(u?.fcmTokens)) tokens.push(...u.fcmTokens.filter(Boolean));
+        if (u?.fcmToken && typeof u.fcmToken === 'string' && u.fcmToken.trim()) tokens.push(u.fcmToken.trim());
+        return;
+      }
+
+      const uDepts = Array.isArray(u?.departments) ? u.departments.map((x: any) => normalizeDepartmentKey(x)) : [];
+      const uRoles = Array.isArray(u?.roles) ? u.roles.map((x: any) => normalizeDepartmentKey(x)) : [];
+      const uRole = normalizeDepartmentKey(u?.role || u?.adminRole || '');
 
       const isDirectTarget =
         directUserIds.has(docId) ||
@@ -611,34 +609,38 @@ export const extractRecipientFcmTokens = async (options: {
         targetDeptManagers.has(docId.toUpperCase()) ||
         (uId && targetDeptManagers.has(uId.toUpperCase()));
 
-      const isDeptMatch = normalizedDept && (
-        uDepts.includes(normalizedDept) ||
-        uRoles.includes(normalizedDept) ||
-        uRole === normalizedDept ||
-        (normalizedDept === 'cerveau' && (uRoles.includes('cerveau') || uRole.includes('cerveau'))) ||
-        (normalizedDept === 'tresorerie' && (uRoles.includes('tresorerie') || uRole.includes('treso')))
+      const isDeptMatch = normalizedDepts.some(
+        normDept =>
+          normDept &&
+          normDept !== 'all' &&
+          (uDepts.includes(normDept) || uRoles.includes(normDept) || uRole === normDept)
       );
 
-      // CIBLAGE SANS CONDITION DE CONNEXION :
-      // Les requêtes lisent les jetons FCM même si l'utilisateur s'est déconnecté (session inactive)
       if (isDirectTarget || isManagerTarget || isDeptMatch) {
-        if (Array.isArray(u.fcmTokens)) tokens.push(...u.fcmTokens.filter(Boolean));
-        if (u.fcmToken && typeof u.fcmToken === 'string' && u.fcmToken.trim()) tokens.push(u.fcmToken.trim());
+        if (Array.isArray(u?.fcmTokens)) tokens.push(...u.fcmTokens.filter(Boolean));
+        if (u?.fcmToken && typeof u.fcmToken === 'string' && u.fcmToken.trim()) tokens.push(u.fcmToken.trim());
       }
     };
 
-    // Extraction depuis 'users'
-    const [allUsersSnap, allMembersSnap] = await Promise.all([
-      getDocs(usersRef).catch(() => null),
-      getDocs(membersRef).catch(() => null),
-    ]);
+    const now = Date.now();
+    if (!cachedTokenDocs || now - cachedTokenDocs.fetchedAt > TOKEN_CACHE_TTL_MS) {
+      const usersRef = collection(db, 'users');
+      const membersRef = collection(db, 'members');
+      const [allUsersSnap, allMembersSnap] = await Promise.all([
+        getDocs(usersRef).catch(() => null),
+        getDocs(membersRef).catch(() => null),
+      ]);
+      const entries: Array<{ docId: string; data: any }> = [];
+      if (allUsersSnap) {
+        allUsersSnap.forEach(d => entries.push({ docId: d.id, data: d.data() }));
+      }
+      if (allMembersSnap) {
+        allMembersSnap.forEach(d => entries.push({ docId: d.id, data: d.data() }));
+      }
+      cachedTokenDocs = { fetchedAt: now, entries };
+    }
 
-    if (allUsersSnap) {
-      allUsersSnap.forEach(d => collectTokensFromDoc(d.id, d.data()));
-    }
-    if (allMembersSnap) {
-      allMembersSnap.forEach(d => collectTokensFromDoc(d.id, d.data()));
-    }
+    cachedTokenDocs.entries.forEach(entry => collectTokensFromDoc(entry.docId, entry.data));
   } catch (err) {
     console.warn('Erreur extraction fcmTokens Firestore:', err);
   }
@@ -655,32 +657,44 @@ export const dispatchPushNotification = async (options: PushDispatchOptions) => 
       ? options.title
       : `E-ROUAMA : ${senderLabel}`;
 
-    const normalizedDept = options.targetDepartment
-      ? normalizeDepartmentKey(options.targetDepartment)
-      : options.targetRole
-      ? normalizeDepartmentKey(options.targetRole)
-      : null;
+    const normalizedDepts = Array.from(
+      new Set(
+        [
+          options.targetDepartment ? normalizeDepartmentKey(options.targetDepartment) : '',
+          ...(Array.isArray(options.targetDepartments)
+            ? options.targetDepartments.map(d => normalizeDepartmentKey(d))
+            : []),
+          options.targetRole ? normalizeDepartmentKey(options.targetRole) : '',
+        ].filter(Boolean)
+      )
+    );
+    const primaryDept = normalizedDepts[0] || null;
 
+    const targetRoleUpper = (options.targetRole || '').toUpperCase().trim();
+    const isDuesTargeted = ['RETARD', 'A_JOUR', 'EN_AVANCE'].includes(targetRoleUpper) || Boolean(options.targetDuesStatus);
+    const resolvedDuesStatus = options.targetDuesStatus || (['RETARD', 'A_JOUR', 'EN_AVANCE'].includes(targetRoleUpper) ? targetRoleUpper : null);
+
+    const hasDirectUsers = Boolean(options.targetUserId || (options.targetUserIds && options.targetUserIds.length > 0));
     const isBroadcastAll =
-      (options.targetRole || '').toUpperCase().trim() === 'ALL' ||
-      (options.targetRole || '').toUpperCase().trim() === 'TOUS' ||
-      normalizedDept === 'all';
+      !hasDirectUsers &&
+      !isDuesTargeted &&
+      (targetRoleUpper === 'ALL' || targetRoleUpper === 'TOUS' || primaryDept === 'all');
 
-    // Règle stricte : Ne filtrer/exclure que pour les messages directs ou chats 1-à-1
-    const excludedUserId = isBroadcastAll
-      ? undefined
-      : options.metadata?.excludedUserId
+    const excludedUserId = options.metadata?.excludedUserId
       ? String(options.metadata.excludedUserId).trim()
       : undefined;
 
-    // Récupération simultanée de tous les jetons FCM des destinataires concernés dans Firestore
-    let targetTokens = await extractRecipientFcmTokens({
-      targetRole: options.targetRole,
-      targetDepartment: normalizedDept || undefined,
-      targetUserId: options.targetUserId,
-      targetUserIds: options.targetUserIds,
-      excludedUserId,
-    });
+    let targetTokens: string[] = [];
+    if (!hasDirectUsers || options.fcmToken || options.fcmTokens) {
+      targetTokens = await extractRecipientFcmTokens({
+        targetRole: isBroadcastAll ? 'ALL' : options.targetRole,
+        targetDepartment: primaryDept || undefined,
+        targetDepartments: normalizedDepts,
+        targetUserId: options.targetUserId,
+        targetUserIds: options.targetUserIds,
+        excludedUserId,
+      });
+    }
 
     if (options.fcmToken && typeof options.fcmToken === 'string' && options.fcmToken.trim().length > 10) {
       targetTokens.push(options.fcmToken.trim());
@@ -699,56 +713,15 @@ export const dispatchPushNotification = async (options: PushDispatchOptions) => 
       `msg_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
     const notificationTag = options.metadata?.tag || `erouama-msg-${messageId}`;
 
-    // Marquer l'ID comme déjà émis par ce client pour éviter les doubles échos
+    // Marquer l'ID comme déjà émis par ce client pour éviter les auto-échos locaux redondants
     markNotificationAsHandled(messageId);
     markNotificationAsHandled(notificationTag);
 
-    // Construction du format natif FCM HTTP v1 haute priorité Android / WebPush
-    const buildFcmHttpV1Envelope = (token?: string) => ({
-      message: {
-        token: token || '',
-        notification: {
-          title: formattedTitle,
-          body: options.body,
-        },
-        android: {
-          priority: 'high',
-          notification: {
-            channel_id: 'default',
-            sound: 'default',
-            default_vibrate_timings: true,
-          },
-        },
-        webpush: {
-          headers: {
-            Urgency: 'high',
-            TTL: '86400',
-          },
-          notification: {
-            title: formattedTitle,
-            body: options.body,
-            icon: '/icon-192.png',
-            badge: '/icon-192.png',
-            requireInteraction: true,
-            vibrate: [200, 100, 200],
-            tag: notificationTag,
-          },
-          fcm_options: {
-            link: options.url || '/',
-          },
-        },
-        data: {
-          title: formattedTitle,
-          body: options.body,
-          click_action: options.url || '/',
-          messageId: messageId,
-          id: messageId,
-          tag: notificationTag,
-        },
-      },
-    });
-
-    const primaryMessageObj = buildFcmHttpV1Envelope(targetTokens[0] || '').message;
+    const resolvedTargetRole = hasDirectUsers
+      ? (options.targetRole || 'DIRECT_USER')
+      : isDuesTargeted
+      ? (resolvedDuesStatus || options.targetRole || 'ALL')
+      : (options.targetRole || (primaryDept ? primaryDept.toUpperCase() : 'ALL'));
 
     const payload = {
       id: messageId,
@@ -757,57 +730,31 @@ export const dispatchPushNotification = async (options: PushDispatchOptions) => 
       body: options.body,
       icon: '/icon-192.png',
       badge: '/icon-192.png',
-      priority: 'high',
-      sound: 'default',
-      requireInteraction: true,
+      priority: options.priority || 'high',
+      sound: options.sound || 'default',
+      requireInteraction: options.requireInteraction !== false,
       vibrate: [200, 100, 200],
       tag: notificationTag,
       deleted: false,
       status: 'active',
       senderRole: options.senderRole || '',
       senderName: options.senderName || '',
-      targetRole: options.targetRole || 'ALL',
-      targetDepartment: normalizedDept || options.targetRole || 'ALL',
+      targetRole: resolvedTargetRole,
+      targetDepartment: primaryDept || (hasDirectUsers ? '' : resolvedTargetRole),
+      targetDepartments: normalizedDepts,
+      targetDuesStatus: resolvedDuesStatus,
       targetUserId: options.targetUserId || null,
       targetUserIds: options.targetUserIds || (options.targetUserId ? [options.targetUserId] : []),
       targetTokens,
       fcmTokens: targetTokens,
       type: options.type,
       url: options.url || '/',
-      message: primaryMessageObj,
-      messages: targetTokens.map(token => buildFcmHttpV1Envelope(token)),
       notification: {
         title: formattedTitle,
         body: options.body,
         icon: '/icon-192.png',
         badge: '/icon-192.png',
         sound: 'default',
-      },
-      android: {
-        priority: 'high',
-        notification: {
-          channel_id: 'default',
-          sound: 'default',
-          default_vibrate_timings: true,
-        },
-      },
-      webpush: {
-        headers: {
-          Urgency: 'high',
-          TTL: '86400',
-        },
-        notification: {
-          title: formattedTitle,
-          body: options.body,
-          icon: '/icon-192.png',
-          badge: '/icon-192.png',
-          requireInteraction: true,
-          vibrate: [200, 100, 200],
-          tag: notificationTag,
-        },
-        fcm_options: {
-          link: options.url || '/',
-        },
       },
       data: {
         click_action: options.url || '/',
@@ -829,14 +776,12 @@ export const dispatchPushNotification = async (options: PushDispatchOptions) => 
       timestamp: Date.now(),
     };
 
-    // 1. Enregistre l'événement dans la collection Firestore 'push_notifications'
     await addDoc(collection(db, 'push_notifications'), payload);
 
     console.log(
-      '📢 Notification Push FCM émise vers Firestore:',
+      '📢 Notification temps réel émise vers Firestore:',
       payload.title,
-      `[${targetTokens.length} jetons ciblés]`,
-      normalizedDept ? `[Département: ${normalizedDept}]` : ''
+      normalizedDepts.length > 0 ? `[Département(s): ${normalizedDepts.join(', ')}]` : `[Cible: ${resolvedTargetRole}]`
     );
   } catch (err) {
     console.warn('Erreur émission notification push:', err);
@@ -900,16 +845,154 @@ export const setupForegroundFCMListener = (onReceived?: (payload: any) => void) 
   };
 };
 
-// Écouteur en temps réel (onSnapshot) pour intercepter les notifications push et les afficher à l'utilisateur
-export const listenForIncomingPushNotifications = (
-  currentUserRole?: string,
-  currentUserId?: string,
-  userDepartments?: string[],
-  onReceived?: (notif: any) => void
-) => {
+export interface RealtimeNotificationItem {
+  id: string;
+  title: string;
+  body: string;
+  icon: string;
+  url: string;
+  type: string;
+  senderName?: string;
+  senderRole?: string;
+  targetDepartment?: string;
+  targetRole?: string;
+  createdAt: string;
+  timestamp: number;
+  data?: any;
+}
+
+const getReadIdsStorageKey = (userId: string) => `erouama_notif_read_ids_${userId || 'guest'}`;
+const getLastSeenStorageKey = (userId: string) => `erouama_notif_last_seen_${userId || 'guest'}`;
+
+export const getReadNotificationIds = (userId: string): Set<string> => {
+  try {
+    const raw = localStorage.getItem(getReadIdsStorageKey(userId));
+    if (raw) {
+      const arr = JSON.parse(raw);
+      if (Array.isArray(arr)) return new Set(arr.map(String));
+    }
+  } catch {}
+  return new Set();
+};
+
+export const markNotificationIdAsRead = (userId: string, notifId: string): Set<string> => {
+  const existing = getReadNotificationIds(userId);
+  if (notifId) existing.add(String(notifId));
+  const arr = Array.from(existing).slice(-120);
+  try {
+    localStorage.setItem(getReadIdsStorageKey(userId), JSON.stringify(arr));
+  } catch {}
+  return new Set(arr);
+};
+
+export const markAllNotificationIdsAsRead = (userId: string, notifIds: string[]): Set<string> => {
+  const existing = getReadNotificationIds(userId);
+  notifIds.forEach(id => id && existing.add(String(id)));
+  const arr = Array.from(existing).slice(-150);
+  try {
+    localStorage.setItem(getReadIdsStorageKey(userId), JSON.stringify(arr));
+  } catch {}
+  return new Set(arr);
+};
+
+export const matchesNotificationRecipient = (
+  docData: any,
+  context: {
+    userId: string;
+    userRole: string;
+    userDeptsNormalized: string[];
+    userDuesStatus?: string;
+  }
+): boolean => {
+  if (!docData || docData.deleted === true || docData.status === 'deleted') {
+    return false;
+  }
+
+  const cleanUserId = String(context.userId || '').trim();
+  const cleanRoleUpper = String(context.userRole || '').toUpperCase().trim();
+  const cleanRoleNorm = normalizeDepartmentKey(cleanRoleUpper);
+
+  // Exclusion de l'expéditeur si explicitement exclu
+  if (docData.metadata?.excludedUserId && cleanUserId && String(docData.metadata.excludedUserId).trim() === cleanUserId) {
+    return false;
+  }
+
+  const targetUserIds: string[] = [];
+  if (docData.targetUserId) targetUserIds.push(String(docData.targetUserId).trim());
+  if (Array.isArray(docData.targetUserIds)) {
+    docData.targetUserIds.forEach((id: any) => id && targetUserIds.push(String(id).trim()));
+  }
+
+  const hasDirectTargets = targetUserIds.length > 0;
+  const isDirectTarget = Boolean(cleanUserId && targetUserIds.includes(cleanUserId));
+
+  if (hasDirectTargets) {
+    if (isDirectTarget) return true;
+    // Si la notification cible uniquement des utilisateurs précis et pas celui-ci, ne pas diffuser aux autres sauf si c'est aussi un département explicite
+    if (!docData.targetDepartment && (!Array.isArray(docData.targetDepartments) || docData.targetDepartments.length === 0)) {
+      return false;
+    }
+  }
+
+  // Ciblage par statut de cotisation (ex: 'RETARD', 'A_JOUR', 'EN_AVANCE')
+  const targetDues = String(docData.targetDuesStatus || '').toUpperCase().trim();
+  const targetRoleClean = String(docData.targetRole || '').toUpperCase().trim();
+  if (targetDues || ['RETARD', 'A_JOUR', 'EN_AVANCE'].includes(targetRoleClean)) {
+    const expectedDues = targetDues || targetRoleClean;
+    return Boolean(context.userDuesStatus && context.userDuesStatus.toUpperCase() === expectedDues);
+  }
+
+  // Diffusion générale à tous les membres
+  const targetDeptsRaw: string[] = [
+    docData.targetDepartment,
+    ...(Array.isArray(docData.targetDepartments) ? docData.targetDepartments : []),
+    docData.targetRole,
+  ].filter(Boolean);
+
+  const targetDeptsNorm = targetDeptsRaw.map(d => normalizeDepartmentKey(String(d))).filter(Boolean);
+
+  const isBroadcastAll =
+    targetRoleClean === 'ALL' ||
+    targetRoleClean === 'TOUS' ||
+    targetDeptsNorm.includes('all') ||
+    (!docData.targetRole && !docData.targetDepartment && !hasDirectTargets);
+
+  if (isBroadcastAll) {
+    return true;
+  }
+
+  // Super Admin reçoit tout ce qui concerne les départements
+  if (cleanRoleUpper === 'SUPER_ADMIN') {
+    return true;
+  }
+
+  // Correspondance exacte ou normalisée de rôle / département
+  const isRoleTarget = Boolean(
+    cleanRoleUpper &&
+      targetRoleClean &&
+      (targetRoleClean === cleanRoleUpper ||
+        (cleanRoleNorm && normalizeDepartmentKey(targetRoleClean) === cleanRoleNorm))
+  );
+
+  const isDeptTarget = targetDeptsNorm.some(
+    tDept => tDept !== 'all' && tDept !== 'direct_user' && context.userDeptsNormalized.includes(tDept)
+  );
+
+  return isRoleTarget || isDeptTarget;
+};
+
+export interface RealtimeNotifSubscriptionOptions {
+  userRole?: string;
+  userId?: string;
+  userDepartments?: string[];
+  userDuesStatus?: string;
+  onReceived?: (notif: RealtimeNotificationItem) => void;
+  onListUpdate?: (items: RealtimeNotificationItem[]) => void;
+}
+
+export const subscribeToRealtimeNotifications = (options: RealtimeNotifSubscriptionOptions) => {
   if (typeof window === 'undefined') return () => {};
 
-  // Récupération de l'identité terminal persistée pour maintenir la réception même après déconnexion (logout)
   const storedLastUserId = localStorage.getItem('erouama_last_auth_user_id') || '';
   const storedLastRole = localStorage.getItem('erouama_last_auth_role') || '';
   let storedLastDepts: string[] = [];
@@ -918,122 +1001,196 @@ export const listenForIncomingPushNotifications = (
     if (raw) storedLastDepts = JSON.parse(raw);
   } catch {}
 
-  const cleanRole = (currentUserRole || storedLastRole || '').toUpperCase().trim();
-  const cleanUserId = (currentUserId || storedLastUserId || '').trim();
-  const userDeptsNormalized = (
-    userDepartments && userDepartments.length > 0 ? userDepartments : storedLastDepts
-  ).map(d => normalizeDepartmentKey(d));
+  const cleanRole = (options.userRole || storedLastRole || '').toUpperCase().trim();
+  const cleanUserId = (options.userId || storedLastUserId || '').trim();
+  const combinedDepts = [
+    ...(options.userDepartments && options.userDepartments.length > 0 ? options.userDepartments : storedLastDepts),
+    cleanRole,
+  ].filter(Boolean);
+  const userDeptsNormalized = Array.from(new Set(combinedDepts.map(d => normalizeDepartmentKey(d)).filter(Boolean)));
+
+  const lastSeenKey = getLastSeenStorageKey(cleanUserId);
+  let storedLastSeenTs = 0;
+  let hasStoredLastSeen = false;
+  try {
+    const rawTs = localStorage.getItem(lastSeenKey);
+    if (rawTs) {
+      const parsed = Number(rawTs);
+      if (!isNaN(parsed) && parsed > 0) {
+        storedLastSeenTs = parsed;
+        hasStoredLastSeen = true;
+      }
+    }
+  } catch {}
 
   try {
     const notifsRef = collection(db, 'push_notifications');
-    const q = query(notifsRef, orderBy('createdAt', 'desc'), limit(15));
+    const q = query(notifsRef, orderBy('createdAt', 'desc'), limit(30));
 
     let initialLoadDone = false;
 
-    // Écouteur en temps réel sécurisé avec dédoublonnage strict
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      // 1. Au tout premier chargement, marquer tous les documents existants comme déjà traités
-      // afin de ne pas déclencher de notifications intempestives sur d'anciennes alertes
-      if (!initialLoadDone) {
-        snapshot.docs.forEach((docSnap) => {
-          const docData = docSnap.data() as any;
-          const initialMsgId = docData.messageId || docData.id || docSnap.id;
-          const initialTag = docData.tag || `erouama-msg-${initialMsgId}`;
-          markNotificationAsHandled(initialMsgId);
-          markNotificationAsHandled(initialTag);
-          markNotificationAsHandled(docSnap.id);
-        });
-        initialLoadDone = true;
+    const toNotifItem = (docSnapId: string, docData: any): RealtimeNotificationItem => {
+      const notifId = docData.messageId || docData.id || docSnapId;
+      const ts =
+        typeof docData.timestamp === 'number' && !isNaN(docData.timestamp)
+          ? docData.timestamp
+          : docData.createdAt
+          ? Date.parse(docData.createdAt) || Date.now()
+          : Date.now();
+      return {
+        id: String(notifId),
+        title: docData.title || 'E-ROUAMA',
+        body: docData.body || '',
+        icon: docData.icon || '/icon-192.png',
+        url: docData.url || '/',
+        type: docData.type || 'GENERAL',
+        senderName: docData.senderName || '',
+        senderRole: docData.senderRole || '',
+        targetDepartment: docData.targetDepartment || '',
+        targetRole: docData.targetRole || '',
+        createdAt: docData.createdAt || new Date(ts).toISOString(),
+        timestamp: ts,
+        data: docData,
+      };
+    };
+
+    const emitAlertForItem = (item: RealtimeNotificationItem, docSnapId: string, docData: any) => {
+      const notifTag = docData.tag || `erouama-msg-${item.id}`;
+      if (hasNotificationBeenHandled(item.id) || hasNotificationBeenHandled(notifTag)) {
         return;
       }
+      markNotificationAsHandled(item.id);
+      markNotificationAsHandled(notifTag);
+      markNotificationAsHandled(docSnapId);
 
-      // 2. Traitement des nouvelles notifications push arrivées en temps réel
-      snapshot.docChanges().forEach((change) => {
-        if (change.type === 'added') {
-          const docData = change.doc.data() as any;
-          const notifId = docData.messageId || docData.id || change.doc.id;
-          const notifTag = docData.tag || `erouama-msg-${notifId}`;
+      // Sonnerie temps réel même si le navigateur n'a pas encore accordé les notifications OS
+      playWaveNotificationSound();
 
-          // Ignorer les notifications marquées supprimées
-          if (docData.deleted === true || docData.status === 'deleted') {
-            return;
-          }
+      // Notification système native (si permission accordée)
+      triggerDirectNotification({
+        title: item.title,
+        body: item.body,
+        icon: item.icon,
+        tag: notifTag,
+        url: item.url,
+        data: docData,
+      });
 
-          // Anti-doublon strict (déjà affiché par cet onglet ou ce client)
-          if (hasNotificationBeenHandled(notifId) || hasNotificationBeenHandled(notifTag)) {
-            return;
-          }
+      // Toast in-app immédiat
+      if (options.onReceived) {
+        options.onReceived(item);
+      }
+    };
 
-          // Vérification du ciblage destinataire
-          const targetRoleClean = (docData.targetRole || '').toUpperCase().trim();
-          const targetDeptNormalized = docData.targetDepartment
-            ? normalizeDepartmentKey(docData.targetDepartment)
-            : '';
-          const isBroadcastAll =
-            targetRoleClean === 'ALL' ||
-            targetRoleClean === 'TOUS' ||
-            targetDeptNormalized === 'all' ||
-            !docData.targetRole;
+    const unsubscribe = onSnapshot(
+      q,
+      (snapshot) => {
+        const matchedItems: RealtimeNotificationItem[] = [];
+        let maxTimestampSeen = storedLastSeenTs;
 
-          // Exclusion stricte si l'expéditeur a exclu cet utilisateur (ex: l'auteur de l'action)
-          if (docData.metadata?.excludedUserId && String(docData.metadata.excludedUserId).trim() === cleanUserId) {
-            return;
-          }
-
-          const isDirectTarget =
-            (docData.targetUserId && String(docData.targetUserId).trim() === cleanUserId) ||
-            (Array.isArray(docData.targetUserIds) && docData.targetUserIds.map(String).includes(cleanUserId));
-
-          const isRoleTarget = Boolean(
-            targetRoleClean &&
-            cleanRole &&
-            (targetRoleClean === cleanRole ||
-              (targetRoleClean === 'CERVEAU' && cleanRole === 'CERVEAU') ||
-              (targetRoleClean === 'TRESORIER' && cleanRole === 'TRESORIER') ||
-              (targetRoleClean === 'PAYOR' && cleanRole === 'PAYOR') ||
-              (targetRoleClean === 'SECRETARIAT' && cleanRole === 'SECRETARIAT') ||
-              (targetRoleClean === 'COM' && cleanRole === 'COM') ||
-              (targetRoleClean === 'ORGANISATION' && cleanRole === 'ORGANISATION') ||
-              (targetRoleClean === 'PROJET' && cleanRole === 'PROJET') ||
-              (targetRoleClean === 'SPIRITUALITE' && (cleanRole === 'SPIRITUALITE' || cleanRole === 'SPIRIT')))
-          );
-
-          const isDeptTarget = Boolean(
-            targetDeptNormalized && userDeptsNormalized.includes(targetDeptNormalized)
-          );
-
-          if (isBroadcastAll || isDirectTarget || isRoleTarget || isDeptTarget) {
-            markNotificationAsHandled(notifId);
-            markNotificationAsHandled(notifTag);
-            markNotificationAsHandled(change.doc.id);
-
-            // Déclenchement de la notification push système native (Android shade / WebPush)
-            triggerDirectNotification({
-              title: docData.title || 'E-ROUAMA',
-              body: docData.body || '',
-              icon: docData.icon || '/icon-192.png',
-              tag: notifTag,
-              url: docData.url || '/',
-              data: docData,
-            });
-
-            // Affichage de l'alerte visuelle in-app / toast
-            if (onReceived) {
-              onReceived({
-                id: notifId,
-                title: docData.title || 'E-ROUAMA',
-                body: docData.body || '',
-                icon: docData.icon || '/icon-192.png',
-                url: docData.url || '/',
-                data: docData,
-              });
+        snapshot.docs.forEach((docSnap) => {
+          const docData = docSnap.data() as any;
+          if (
+            matchesNotificationRecipient(docData, {
+              userId: cleanUserId,
+              userRole: cleanRole,
+              userDeptsNormalized,
+              userDuesStatus: options.userDuesStatus,
+            })
+          ) {
+            const item = toNotifItem(docSnap.id, docData);
+            matchedItems.push(item);
+            if (item.timestamp > maxTimestampSeen) {
+              maxTimestampSeen = item.timestamp;
             }
           }
+        });
+
+        matchedItems.sort((a, b) => b.timestamp - a.timestamp);
+        if (options.onListUpdate) {
+          options.onListUpdate(matchedItems);
         }
-      });
-    }, (err) => {
-      console.warn('Erreur écouteur push notifications Firestore:', err);
-    });
+
+        if (!initialLoadDone) {
+          const now = Date.now();
+          const dayMs = 24 * 60 * 60 * 1000;
+
+          if (hasStoredLastSeen) {
+            // Déclencher les notifications arrivées pendant que l'onglet était fermé / à la connexion
+            const missedRecent = matchedItems.filter(
+              item => item.timestamp > storedLastSeenTs && now - item.timestamp < dayMs
+            );
+            // Marquer d'abord les anciens comme traités, puis émettre au plus le plus récent en toast + sonnerie
+            snapshot.docs.forEach((docSnap) => {
+              const docData = docSnap.data() as any;
+              const id = docData.messageId || docData.id || docSnap.id;
+              const ts =
+                typeof docData.timestamp === 'number'
+                  ? docData.timestamp
+                  : Date.parse(docData.createdAt) || 0;
+              if (ts <= storedLastSeenTs) {
+                markNotificationAsHandled(id);
+                markNotificationAsHandled(docData.tag || `erouama-msg-${id}`);
+                markNotificationAsHandled(docSnap.id);
+              }
+            });
+            if (missedRecent.length > 0) {
+              const newest = missedRecent[0];
+              emitAlertForItem(newest, newest.id, newest.data || {});
+              missedRecent.slice(1).forEach(m => {
+                markNotificationAsHandled(m.id);
+                markNotificationAsHandled(m.data?.tag || `erouama-msg-${m.id}`);
+              });
+            }
+          } else {
+            // Première initialisation sur ce navigateur : mémoriser les anciennes sans inonder l'écran
+            snapshot.docs.forEach((docSnap) => {
+              const docData = docSnap.data() as any;
+              const initialMsgId = docData.messageId || docData.id || docSnap.id;
+              const initialTag = docData.tag || `erouama-msg-${initialMsgId}`;
+              markNotificationAsHandled(initialMsgId);
+              markNotificationAsHandled(initialTag);
+              markNotificationAsHandled(docSnap.id);
+            });
+          }
+
+          const baselineTs = Math.max(now, maxTimestampSeen);
+          storedLastSeenTs = baselineTs;
+          try {
+            localStorage.setItem(lastSeenKey, String(baselineTs));
+          } catch {}
+          initialLoadDone = true;
+          return;
+        }
+
+        // Nouveaux événements temps réel après le chargement initial
+        snapshot.docChanges().forEach((change) => {
+          if (change.type === 'added') {
+            const docData = change.doc.data() as any;
+            if (
+              matchesNotificationRecipient(docData, {
+                userId: cleanUserId,
+                userRole: cleanRole,
+                userDeptsNormalized,
+                userDuesStatus: options.userDuesStatus,
+              })
+            ) {
+              const item = toNotifItem(change.doc.id, docData);
+              if (item.timestamp > storedLastSeenTs) {
+                storedLastSeenTs = item.timestamp;
+                try {
+                  localStorage.setItem(lastSeenKey, String(item.timestamp));
+                } catch {}
+              }
+              emitAlertForItem(item, change.doc.id, docData);
+            }
+          }
+        });
+      },
+      (err) => {
+        console.warn('Erreur écouteur push notifications Firestore:', err);
+      }
+    );
 
     return () => {
       unsubscribe();
@@ -1042,4 +1199,19 @@ export const listenForIncomingPushNotifications = (
     console.warn('Erreur écouteur push notifications Firestore:', err);
     return () => {};
   }
+};
+
+// Écouteur en temps réel rétro-compatible
+export const listenForIncomingPushNotifications = (
+  currentUserRole?: string,
+  currentUserId?: string,
+  userDepartments?: string[],
+  onReceived?: (notif: any) => void
+) => {
+  return subscribeToRealtimeNotifications({
+    userRole: currentUserRole,
+    userId: currentUserId,
+    userDepartments,
+    onReceived,
+  });
 };
