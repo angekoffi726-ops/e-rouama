@@ -1096,7 +1096,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     let hasSoiree = false;
     let hasAnniv = false;
 
-    for (const raw of rawLoaded) {
+    const prioritizedRaw = [...rawLoaded].sort((a, b) => {
+      const aPub = !a.archivedBySecretariat && String(a.status || '').trim().toUpperCase() === 'PUBLISHED' ? 0 : 1;
+      const bPub = !b.archivedBySecretariat && String(b.status || '').trim().toUpperCase() === 'PUBLISHED' ? 0 : 1;
+      if (aPub !== bPub) return aPub - bPub;
+      return (b.updatedAtMs || b.createdAtMs || 0) - (a.updatedAtMs || a.createdAtMs || 0);
+    });
+
+    for (const raw of prioritizedRaw) {
       let item = raw;
       if (
         item.fixedType === 'SOIREE_ROUAMA' ||

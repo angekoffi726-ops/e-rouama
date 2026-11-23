@@ -6,6 +6,7 @@ import { db } from '../../firebase';
 import { compressProfileImage } from '../../utils/imageCompressor';
 import { EditMemberModal } from '../common/EditMemberModal';
 import { requestPushPermissionAndSaveToken, isPushNotificationSupported } from '../../utils/pushNotificationService';
+import { getNextPublishedActivity, getPublishedActivities } from '../../utils/publishedActivities';
 import {
   Camera,
   Upload,
@@ -27,7 +28,7 @@ import {
 } from 'lucide-react';
 
 interface DashboardTabProps {
-  onNavigateTab: (tab: TabType) => void;
+  onNavigateTab: (tab: TabType, docId?: string) => void;
 }
 
 export const DashboardTab: React.FC<DashboardTabProps> = ({ onNavigateTab }) => {
@@ -236,10 +237,9 @@ export const DashboardTab: React.FC<DashboardTabProps> = ({ onNavigateTab }) => 
 
   const latestNews = eligibleNewsList.length > 0 ? eligibleNewsList[0] : null;
 
-  // Next activity
-  const nextActivity = activities && activities.length > 0
-    ? activities.find(a => a.status === 'PUBLISHED') || activities[0]
-    : null;
+  // Next activity: strictement basée sur les programmes validés et officiellement publiés dans SHOW
+  const publishedActivities = useMemo(() => getPublishedActivities(activities || []), [activities]);
+  const nextActivity = useMemo(() => getNextPublishedActivity(activities || []), [activities]);
 
   // 1. SAUVEGARDE DE LA PHOTO DANS FIRESTORE
   const handleAvatarFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -792,18 +792,23 @@ export const DashboardTab: React.FC<DashboardTabProps> = ({ onNavigateTab }) => 
                   Prochain Événement
                 </h2>
               </div>
+              {publishedActivities.length > 0 && (
+                <span className="bg-emerald-100 text-[#355E3B] px-2.5 py-0.5 rounded-full text-[10px] font-black border border-emerald-200">
+                  {publishedActivities.length} publié{publishedActivities.length > 1 ? 's' : ''}
+                </span>
+              )}
             </div>
 
             <p className="text-xs text-slate-500 font-medium">
-              Grand rendez-vous & activités à venir dans la fraternité.
+              Grand rendez-vous & activités officiellement publiées dans la fraternité.
             </p>
 
             {/* Next Activity Box */}
             {nextActivity ? (
               <div className="p-4 bg-emerald-50/50 rounded-2xl border border-emerald-200/60 space-y-2">
-                <div className="flex items-center justify-between text-[10px] font-bold text-emerald-900">
+                <div className="flex items-center justify-between gap-2 text-[10px] font-bold text-emerald-900">
                   <span className="bg-[#355E3B] text-white px-2 py-0.5 rounded-md font-black">
-                    {nextActivity.eventDate}
+                    {nextActivity.eventDate || 'Date à préciser'}
                   </span>
                   <span className="text-slate-500">
                     Budget : {typeof nextActivity.budget === 'number' && !isNaN(nextActivity.budget)
@@ -815,26 +820,25 @@ export const DashboardTab: React.FC<DashboardTabProps> = ({ onNavigateTab }) => 
                   {nextActivity.title}
                 </h3>
                 <p className="text-xs text-slate-600 line-clamp-2 leading-relaxed">
-                  {nextActivity.description}
+                  {nextActivity.description || "Programme validé par le Payor et officiellement publié dans l'onglet SHOW."}
                 </p>
               </div>
             ) : (
-              <div className="p-4 bg-emerald-50/50 rounded-2xl border border-emerald-200/60 space-y-1.5">
+              <div className="p-4 bg-emerald-50/50 rounded-2xl border border-dashed border-emerald-200/80 space-y-1.5">
                 <div className="flex items-center gap-1.5 text-emerald-950 font-bold text-xs">
                   <Award className="w-4 h-4 text-[#E67E22] shrink-0" />
-                  <span>Anniversaire Officiel Rouama</span>
+                  <span>Aucun programme d'activité publié pour le moment</span>
                 </div>
-                <p className="text-xs font-extrabold text-[#D35400]">🗓️ Samedi 21 Mars 2026</p>
                 <p className="text-[11px] text-slate-600 leading-relaxed">
-                  Célébration collective de la Fraternité Diniyo Rouama. Cotisation spéciale fixée à 10 000 F CFA.
+                  Les prochains rendez-vous et programmes apparaîtront ici dès validation par le Payor et publication officielle dans SHOW.
                 </p>
               </div>
             )}
           </div>
 
           <button
-            onClick={() => onNavigateTab('ACTIVITES')}
-            className="w-full py-3 px-4 bg-emerald-50 hover:bg-emerald-100 text-[#355E3B] border border-emerald-200 rounded-2xl font-bold text-xs flex items-center justify-center gap-2 active:scale-95 transition-all mt-auto"
+            onClick={() => onNavigateTab('ACTIVITES', nextActivity?.id)}
+            className="w-full py-3 px-4 bg-emerald-50 hover:bg-emerald-100 text-[#355E3B] border border-emerald-200 rounded-2xl font-bold text-xs flex items-center justify-center gap-2 active:scale-95 transition-all mt-auto cursor-pointer"
           >
             <span>Voir le Programme des Activités</span>
             <ArrowRight className="w-4 h-4 text-[#355E3B]" />

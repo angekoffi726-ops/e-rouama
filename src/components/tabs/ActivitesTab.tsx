@@ -18,97 +18,11 @@ import {
   UserCheck,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-
-const MONTH_NAMES = [
-  'Janvier', 'Février', 'Mars', 'Avril', 'Mai', 'Juin',
-  'Juillet', 'Août', 'Septembre', 'Octobre', 'Novembre', 'Décembre'
-];
-
-// Helper to calculate target Date for an activity
-function getActivityTargetDate(act: EventActivity): { targetDate: Date | null; isMonthYearOnly: boolean; isIndeterminate: boolean } {
-  // Case 0: Specific Anniversaire event
-  if (act.fixedType === 'ANNIVERSAIRE') {
-    const yearMatch = act.eventDate ? act.eventDate.match(/\b(202\d|203\d)\b/) : null;
-    const year = act.eventYear && act.eventYear !== 'LATER'
-      ? parseInt(act.eventYear, 10)
-      : yearMatch
-      ? parseInt(yearMatch[1], 10)
-      : 2027;
-    return {
-      targetDate: new Date(year, 2, 21, 0, 0, 0),
-      isMonthYearOnly: false,
-      isIndeterminate: false,
-    };
-  }
-
-  // Case 0b: Specific Soirée Rouama event (Harmonisation 2027)
-  if (
-    act.fixedType === 'SOIREE_ROUAMA' ||
-    act.id === 'ACT-SOIREE-2027' ||
-    act.id === 'ACT-SOIREE-2026' ||
-    act.title?.toLowerCase().includes('soirée rouama') ||
-    act.title?.toLowerCase().includes('soiree rouama')
-  ) {
-    const yearMatch = act.eventDate ? act.eventDate.match(/\b(202\d|203\d)\b/) : null;
-    let year = act.eventYear && act.eventYear !== 'LATER'
-      ? parseInt(act.eventYear, 10)
-      : yearMatch
-      ? parseInt(yearMatch[1], 10)
-      : 2027;
-    if (year <= 2026) {
-      year = 2027;
-    }
-    return {
-      targetDate: new Date(year, 7, 1, 0, 0, 0), // 1er Août 2027 (0-indexed month 7)
-      isMonthYearOnly: true,
-      isIndeterminate: false,
-    };
-  }
-
-  // Case 1: Structured fractional fields are present
-  if (act.eventYear && act.eventYear !== 'LATER' && act.eventMonth && act.eventMonth !== 'LATER') {
-    const year = parseInt(act.eventYear, 10);
-    const monthIndex = parseInt(act.eventMonth, 10) - 1;
-    const isDayPending = !act.eventDay || act.eventDay === 'LATER' || act.isDayPending;
-    const day = isDayPending ? 1 : parseInt(act.eventDay, 10);
-    return {
-      targetDate: new Date(year, monthIndex, day, 0, 0, 0),
-      isMonthYearOnly: isDayPending,
-      isIndeterminate: false,
-    };
-  }
-
-  // Case 2: Attempt parsing standard YYYY-MM-DD
-  if (act.eventDate && /^\d{4}-\d{2}-\d{2}$/.test(act.eventDate)) {
-    const [y, m, d] = act.eventDate.split('-').map(Number);
-    return {
-      targetDate: new Date(y, m - 1, d, 0, 0, 0),
-      isMonthYearOnly: false,
-      isIndeterminate: false,
-    };
-  }
-
-  // Case 3: Attempt parsing formatted strings like "21 Mars 2027" or "Août 2027"
-  if (act.eventDate) {
-    for (let i = 0; i < MONTH_NAMES.length; i++) {
-      const mName = MONTH_NAMES[i];
-      if (act.eventDate.toLowerCase().includes(mName.toLowerCase())) {
-        const yearMatch = act.eventDate.match(/\b(202\d|203\d)\b/);
-        const year = yearMatch ? parseInt(yearMatch[1], 10) : 2027;
-        const dayMatch = act.eventDate.match(/\b(\d{1,2})\s+[A-Za-zÀ-ÿ]/);
-        const day = dayMatch ? parseInt(dayMatch[1], 10) : 1;
-        const isMonthOnly = !dayMatch;
-        return {
-          targetDate: new Date(year, i, day, 0, 0, 0),
-          isMonthYearOnly: isMonthOnly,
-          isIndeterminate: false,
-        };
-      }
-    }
-  }
-
-  return { targetDate: null, isMonthYearOnly: false, isIndeterminate: true };
-}
+import {
+  getActivityTargetDate,
+  getPublishedActivities,
+  isAnniversaireActivity,
+} from '../../utils/publishedActivities';
 
 const formatMembers = (val?: string[] | string) => {
   if (!val) return 'Non désigné';
@@ -200,9 +114,10 @@ export const OfficialCountdownClock: React.FC<{
 // 2. CARTE D'ÉVÉNEMENT SIMPLIFIÉE AVEC DÉCOMPTE GRAND FORMAT ET DÉTAILS DÉROULANTS
 interface EventActivityCardProps {
   activity: EventActivity;
+  isHighlighted?: boolean;
 }
 
-export const EventActivityCard: React.FC<EventActivityCardProps> = ({ activity: act }) => {
+export const EventActivityCard: React.FC<EventActivityCardProps> = ({ activity: act, isHighlighted = false }) => {
   // Chaque carte gère de manière strictement indépendante son propre état d'affichage
   const [showDetails, setShowDetails] = useState<boolean>(false);
 
@@ -234,7 +149,11 @@ export const EventActivityCard: React.FC<EventActivityCardProps> = ({ activity: 
   return (
     <div
       id={`event-card-${act.id}`}
-      className="bg-white rounded-[2rem] sm:rounded-3xl p-5 sm:p-7 border-2 border-emerald-200/80 shadow-md hover:shadow-lg transition-all space-y-5"
+      className={`bg-white rounded-[2rem] sm:rounded-3xl p-5 sm:p-7 border-2 shadow-md hover:shadow-lg transition-all space-y-5 ${
+        isHighlighted
+          ? 'border-amber-500 ring-4 ring-amber-400/40'
+          : 'border-emerald-200/80'
+      }`}
     >
       {/* STRUCTURE SIMPLIFIÉE PAR DÉFAUT :
           - Badges & Date
@@ -493,9 +412,14 @@ export const EventActivityCard: React.FC<EventActivityCardProps> = ({ activity: 
   );
 };
 
-export const ActivitesTab: React.FC = () => {
+interface ActivitesTabProps {
+  highlightedActivityId?: string;
+}
+
+export const ActivitesTab: React.FC<ActivitesTabProps> = ({ highlightedActivityId }) => {
   const { activities } = useApp();
   const [showAnnivDetails, setShowAnnivDetails] = useState<boolean>(false);
+  const [activeHighlightId, setActiveHighlightId] = useState<string | undefined>(highlightedActivityId);
 
   // Compute target festival year dynamically:
   // Before or on March 21st of current year -> current year (e.g. 2026)
@@ -517,13 +441,16 @@ export const ActivitesTab: React.FC = () => {
     return () => clearInterval(interval);
   }, []);
 
+  // Source de vérité unique partagée avec ACCUEIL
+  const publishedActivities = useMemo(
+    () => getPublishedActivities(activities || []),
+    [activities]
+  );
+
   // Récupération stricte de l'activité Anniversaire Rouama UNIQUEMENT si officiellement PUBLIÉE
-  const anniversaireActivity = activities.find(
-    a =>
-      a.status === 'PUBLISHED' &&
-      (a.fixedType === 'ANNIVERSAIRE' ||
-        a.id === 'ACT-ANNIVERSAIRE-2027' ||
-        a.title?.toUpperCase().includes('ANNIVERSAIRE'))
+  const anniversaireActivity = useMemo(
+    () => publishedActivities.find(isAnniversaireActivity),
+    [publishedActivities]
   );
 
   const hasAnnivAdHocMembers = anniversaireActivity?.adHocRoles && Object.values(anniversaireActivity.adHocRoles).some(val => {
@@ -531,45 +458,46 @@ export const ActivitesTab: React.FC = () => {
     return Boolean(val && val !== 'Non désigné');
   });
 
-  // SUPPRESSION STRICTE DU DOUBLON :
-  // Seule une unique carte pour la Soirée Rouama 2027 et les autres événements publiés figurent dans la section inférieure
-  const otherPublishedActivities = useMemo(() => {
-    const list = activities.filter(
-      a =>
-        a.status === 'PUBLISHED' &&
-        a.fixedType !== 'ANNIVERSAIRE' &&
-        a.id !== 'ACT-ANNIVERSAIRE-2027' &&
-        !a.title?.toUpperCase().includes('ANNIVERSAIRE')
-    );
-    const deduped: EventActivity[] = [];
-    let seenSoiree = false;
+  // Autres événements publiés (déjà dédoublonnés et triés chronologiquement par getPublishedActivities)
+  const otherPublishedActivities = useMemo(
+    () => publishedActivities.filter(a => !isAnniversaireActivity(a)),
+    [publishedActivities]
+  );
 
-    for (const act of list) {
-      const isSoiree =
-        act.fixedType === 'SOIREE_ROUAMA' ||
-        act.id === 'ACT-SOIREE-2027' ||
-        act.id === 'ACT-SOIREE-2026' ||
-        act.title?.toLowerCase().includes('soirée rouama') ||
-        act.title?.toLowerCase().includes('soiree rouama');
-
-      if (isSoiree) {
-        if (seenSoiree) continue;
-        seenSoiree = true;
-        deduped.push(act);
-      } else {
-        if (!deduped.some(existing => existing.id === act.id)) {
-          deduped.push(act);
-        }
+  useEffect(() => {
+    if (!highlightedActivityId) return;
+    setActiveHighlightId(highlightedActivityId);
+    const scrollTimer = setTimeout(() => {
+      const el =
+        document.getElementById(`event-card-${highlightedActivityId}`) ||
+        (anniversaireActivity?.id === highlightedActivityId
+          ? document.getElementById('anniversaire-hero-card')
+          : null);
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
       }
-    }
-    return deduped;
-  }, [activities]);
+    }, 150);
+    const clearTimer = setTimeout(() => {
+      setActiveHighlightId(undefined);
+    }, 3200);
+    return () => {
+      clearTimeout(scrollTimer);
+      clearTimeout(clearTimer);
+    };
+  }, [highlightedActivityId, anniversaireActivity?.id]);
 
   return (
     <div className="space-y-8 animate-fadeIn">
       {/* 1. MARCH 21ST FESTIVAL COUNTDOWN HERO BANNER (AFFICHE UNIQUEMENT SI OFFICIELLEMENT PUBLIÉE) */}
       {anniversaireActivity && (
-      <div className="bg-[#355E3B] rounded-[2.5rem] sm:rounded-[3rem] p-6 sm:p-10 text-white shadow-xl relative overflow-hidden border border-white/10">
+      <div
+        id="anniversaire-hero-card"
+        className={`bg-[#355E3B] rounded-[2.5rem] sm:rounded-[3rem] p-6 sm:p-10 text-white shadow-xl relative overflow-hidden border transition-all ${
+          activeHighlightId === anniversaireActivity.id
+            ? 'border-amber-300 ring-4 ring-amber-400/50'
+            : 'border-white/10'
+        }`}
+      >
         <div className="absolute -right-10 -bottom-10 w-64 h-64 bg-[#E67E22]/20 rounded-full blur-2xl pointer-events-none" />
 
         <div className="flex flex-col lg:flex-row items-center justify-between gap-8 relative z-10">
@@ -789,7 +717,11 @@ export const ActivitesTab: React.FC = () => {
         ) : (
           <div className="space-y-6">
             {otherPublishedActivities.map(act => (
-              <EventActivityCard key={act.id} activity={act} />
+              <EventActivityCard
+                key={act.id}
+                activity={act}
+                isHighlighted={activeHighlightId === act.id}
+              />
             ))}
           </div>
         )}

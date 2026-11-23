@@ -110,9 +110,7 @@ function AuthenticatedApp({ currentUser, rawMember }: AuthenticatedAppProps) {
 
   const handleNavigateTab = (tab: TabType, docId?: string) => {
     setActiveTab(tab);
-    if (docId) {
-      setTargetDocId(docId);
-    }
+    setTargetDocId(docId);
   };
 
   // Synchronisation dynamique du compteur de membres inscrits strictement via getRegisteredMembersCount
@@ -746,11 +744,11 @@ function AuthenticatedApp({ currentUser, rawMember }: AuthenticatedAppProps) {
         {/* Bloc / Bannière verte d'installation PWA si l'app n'est pas encore installée */}
         <InstallPwaBanner />
 
-        {activeTab === 'DASHBOARD' && <DashboardTab onNavigateTab={setActiveTab} />}
+        {activeTab === 'DASHBOARD' && <DashboardTab onNavigateTab={handleNavigateTab} />}
         {activeTab === 'PRIERE_ROUAMA' && <PriereRouamaTab />}
         {activeTab === 'FINANCES' && <FinancesTab />}
         {activeTab === 'NOUVELLES' && <NouvellesTab onNavigateTab={handleNavigateTab} />}
-        {activeTab === 'ACTIVITES' && <ActivitesTab />}
+        {activeTab === 'ACTIVITES' && <ActivitesTab highlightedActivityId={targetDocId} />}
         {activeTab === 'PROJETS' && <ProjetsTab />}
         {activeTab === 'ARCHIVES' && <ArchivesTab highlightedDocId={targetDocId} />}
       </main>
