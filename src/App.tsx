@@ -21,6 +21,7 @@ import {
   subscribeToRealtimeNotifications,
   refreshFcmTokenOnStartup,
   setupForegroundFCMListener,
+  resolveNotificationScope,
   RealtimeNotificationItem,
   getReadNotificationIds,
   markNotificationIdAsRead,
@@ -125,8 +126,10 @@ function AuthenticatedApp({ currentUser, rawMember }: AuthenticatedAppProps) {
     registerPushServiceWorker();
 
     const effectiveUserId =
-      (currentUser?.type === 'MEMBER' ? currentUser.member?.id : currentUser?.adminRole) ||
+      rawMember?.id ||
+      currentUser?.member?.id ||
       memberId ||
+      currentUser?.id ||
       localStorage.getItem('erouama_last_auth_user_id') ||
       undefined;
     const effectiveRole = memberAdminRole || localStorage.getItem('erouama_last_auth_role') || undefined;
@@ -139,16 +142,26 @@ function AuthenticatedApp({ currentUser, rawMember }: AuthenticatedAppProps) {
       }
     } catch {}
 
-    // Reconstitution et rafraîchissement automatique du token FCM au démarrage
+    // Reconstitution et rafraîchissement automatique du token FCM + abonnement Web Push VAPID au démarrage
     refreshFcmTokenOnStartup(effectiveUserId);
 
     const handleReceivedPush = (notif: any) => {
+      const computedScope =
+        notif?.scope ||
+        resolveNotificationScope({
+          targetRole: notif?.targetRole || notif?.data?.targetRole,
+          targetDepartment: notif?.targetDepartment || notif?.data?.targetDepartment,
+          url: notif?.url || notif?.data?.url,
+          type: notif?.type || notif?.data?.type,
+        });
       setForegroundToast({
         id: notif.id || notif.messageId || String(Date.now()),
         title: notif.title || 'E-ROUAMA',
         body: notif.body || '',
         icon: notif.icon || '/icon-192.png',
         url: notif.url || '/',
+        scope: computedScope,
+        senderLabel: notif.senderName || notif.senderRole || '',
       });
     };
 
@@ -168,6 +181,26 @@ function AuthenticatedApp({ currentUser, rawMember }: AuthenticatedAppProps) {
     };
   }, [memberId, currentUser?.id, currentUser?.type, memberAdminRole, deptKeyString, memberDuesStatus]);
 
+  // Compteurs indépendants d'alertes croisées (Espace Membre <-> Espace Département)
+  const { unreadMemberNotifsCount, unreadAdminNotifsCount } = useMemo(() => {
+    let memberUnread = 0;
+    let adminUnread = 0;
+    notificationsList.forEach((n) => {
+      if (readNotifIds.has(n.id)) return;
+      const scope =
+        n.scope ||
+        resolveNotificationScope({
+          targetRole: n.targetRole,
+          targetDepartment: n.targetDepartment,
+          url: n.url,
+          type: n.type,
+        });
+      if (scope === 'DEPARTMENT') adminUnread++;
+      else memberUnread++;
+    });
+    return { unreadMemberNotifsCount: memberUnread, unreadAdminNotifsCount: adminUnread };
+  }, [notificationsList, readNotifIds]);
+
   // Auto-marquage des messages Gbairai comme lus à l'ouverture de l'onglet
   useEffect(() => {
     if (activeTab === 'NOUVELLES' && memberId) {
@@ -176,8 +209,24 @@ function AuthenticatedApp({ currentUser, rawMember }: AuthenticatedAppProps) {
   }, [activeTab, memberId, markAllGbairaiAsRead]);
 
   const resolveAdminConsoleFromNotif = (notif?: RealtimeNotificationItem, url?: string): AdminRole => {
+    let urlDept = '';
+    if (url && url.includes('dept=')) {
+      const match = url.match(/[?&]dept=([^&#]+)/i);
+      if (match && match[1]) {
+        try {
+          urlDept = decodeURIComponent(match[1]);
+        } catch {
+          urlDept = match[1];
+        }
+      }
+    }
     const candidate = normalizeDepartmentKey(
-      notif?.targetDepartment || notif?.targetRole || notif?.data?.metadata?.targetDeptKey || ''
+      urlDept ||
+        notif?.targetDepartment ||
+        notif?.targetRole ||
+        notif?.data?.targetDepartment ||
+        notif?.data?.metadata?.targetDeptKey ||
+        ''
     );
     const deptToAdminRole: Record<string, AdminRole> = {
       tresorerie: 'TRESORIER',
@@ -187,6 +236,7 @@ function AuthenticatedApp({ currentUser, rawMember }: AuthenticatedAppProps) {
       communication: 'COM',
       projet: 'PROJET',
       spiritualite: 'SPIRITUALITE',
+      suivi_programme: 'SDP',
       sdp: 'SDP',
       cerveau: 'CERVEAU',
     };
@@ -212,11 +262,15 @@ function AuthenticatedApp({ currentUser, rawMember }: AuthenticatedAppProps) {
     const safeUrl = url || '/';
     const isAdminLink =
       safeUrl.includes('#admin') ||
+      notif?.scope === 'DEPARTMENT' ||
       (notif?.type && ['INFO_REQUEST', 'DOCUMENT_TRANSMITTED', 'APPROVAL', 'PV_ACK'].includes(notif.type));
 
     if (isAdminLink && hasAdminPrivileges) {
       const targetConsole = resolveAdminConsoleFromNotif(notif, safeUrl);
       const section = safeUrl.includes('navette') || notif?.type === 'INFO_REQUEST' ? 'navette' : 'console';
+      try {
+        sessionStorage.setItem('erouama_pending_admin_nav', JSON.stringify({ role: targetConsole, section }));
+      } catch {}
       switchWorkspace('ADMIN', targetConsole);
       setTimeout(() => {
         window.dispatchEvent(
@@ -224,7 +278,7 @@ function AuthenticatedApp({ currentUser, rawMember }: AuthenticatedAppProps) {
             detail: { role: targetConsole, section },
           })
         );
-      }, 90);
+      }, 110);
       return;
     }
 
@@ -250,6 +304,57 @@ function AuthenticatedApp({ currentUser, rawMember }: AuthenticatedAppProps) {
       if (memberId) markAllGbairaiAsRead(memberId);
     }
   };
+
+  // Routage direct des deep links (#tab=... ou #admin-console?dept=...) au lancement (PWA fermée) et via clic notification SW
+  useEffect(() => {
+    const processLocationDeepLink = () => {
+      const hash = window.location.hash || '';
+      const search = window.location.search || '';
+      if (!hash.includes('#tab=') && !hash.includes('#admin')) return;
+      const targetUrl = `/${search}${hash}`;
+      handleNotificationNavigate(targetUrl);
+      try {
+        window.history.replaceState(null, '', '/');
+      } catch {}
+    };
+
+    processLocationDeepLink();
+    window.addEventListener('hashchange', processLocationDeepLink);
+
+    const handleSwMessage = (event: MessageEvent) => {
+      const msg = event?.data;
+      if (msg && msg.type === 'NOTIFICATION_CLICK') {
+        const notifData = msg.data || {};
+        if (notifData.messageId || notifData.id) {
+          handleMarkNotifRead(String(notifData.messageId || notifData.id));
+        }
+        handleNotificationNavigate(msg.url || notifData.url || '/', {
+          id: String(notifData.messageId || notifData.id || ''),
+          title: notifData.title || '',
+          body: notifData.body || '',
+          icon: '/icon-192.png',
+          url: msg.url || notifData.url || '/',
+          type: notifData.type || 'GENERAL',
+          scope: notifData.scope,
+          targetDepartment: notifData.targetDepartment,
+          targetRole: notifData.targetRole,
+          createdAt: '',
+          timestamp: Date.now(),
+          data: notifData,
+        });
+      }
+    };
+
+    if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
+      navigator.serviceWorker.addEventListener('message', handleSwMessage);
+    }
+    return () => {
+      window.removeEventListener('hashchange', processLocationDeepLink);
+      if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
+        navigator.serviceWorker.removeEventListener('message', handleSwMessage);
+      }
+    };
+  }, [memberId, memberAdminRole, hasAdminPrivileges]);
 
   // FLUX UNIQUE D'ACCÈS OBLIGATOIRE :
   // - Étape 1 : Le membre se connecte uniquement avec son Prénom et son Code PIN Membre.
@@ -298,7 +403,10 @@ function AuthenticatedApp({ currentUser, rawMember }: AuthenticatedAppProps) {
             />
 
             {/* In-App Workspace Switcher Toggle */}
-            <RoleWorkspaceToggle />
+            <RoleWorkspaceToggle
+              unreadMemberCount={unreadMemberNotifsCount}
+              unreadAdminCount={unreadAdminNotifsCount}
+            />
 
             <button
               onClick={() => setIsAdminChangePasswordOpen(true)}
@@ -583,7 +691,10 @@ function AuthenticatedApp({ currentUser, rawMember }: AuthenticatedAppProps) {
           </button>
 
           {/* In-App Workspace Switcher Toggle */}
-          <RoleWorkspaceToggle />
+          <RoleWorkspaceToggle
+            unreadMemberCount={unreadMemberNotifsCount}
+            unreadAdminCount={unreadAdminNotifsCount}
+          />
 
           <button
             onClick={logout}

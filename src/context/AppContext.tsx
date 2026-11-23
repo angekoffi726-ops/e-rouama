@@ -3832,7 +3832,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         priority: 'high',
         sound: 'default',
         requireInteraction: true,
-        url: '/',
+        url: '/#admin-console?dept=tresorerie',
       }).catch(console.warn);
 
       return {
@@ -4272,7 +4272,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         priority: 'high',
         sound: 'default',
         requireInteraction: true,
-        url: '/',
+        url: '/#tab=FINANCES',
         metadata: {
           paymentId: targetId,
           amount: amountVal,
@@ -4294,7 +4294,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         priority: 'high',
         sound: 'default',
         requireInteraction: true,
-        url: '/',
+        url: '/#tab=NOUVELLES',
       }).catch(console.warn);
     } catch (notifErr) {
       console.warn('Erreur notification validation paiement:', notifErr);
@@ -4436,7 +4436,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           priority: 'high',
           sound: 'default',
           requireInteraction: true,
-          url: '/',
+          url: '/#tab=FINANCES',
         }).catch(console.warn);
       }
     } catch (rejectNotifErr) {
@@ -4626,7 +4626,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       priority: 'high',
       sound: 'default',
       requireInteraction: true,
-      url: '/',
+      url: '/#tab=NOUVELLES',
       metadata: {
         excludedUserId: isTargetAll ? undefined : (resolvedPayerId || undefined),
       },
@@ -5117,7 +5117,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         priority: 'high',
         sound: 'default',
         requireInteraction: true,
-        url: '/',
+        url: '/#admin-console?dept=cerveau',
       }).catch(console.warn);
     } catch (e) {
       console.warn('Erreur addDoc createWithdrawalRequest:', e);
@@ -5210,7 +5210,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       priority: 'high',
       sound: 'default',
       requireInteraction: true,
-      url: '/',
+      url: '/#admin-console?dept=tresorerie',
     }).catch(console.warn);
   };
 
@@ -5232,7 +5232,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       priority: 'high',
       sound: 'default',
       requireInteraction: true,
-      url: '/',
+      url: '/#admin-console?dept=tresorerie',
     }).catch(console.warn);
   };
 
@@ -5591,7 +5591,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       rawTitle: true,
       priority: 'high',
       sound: 'default',
-      url: '/',
+      url: '/#admin-console?dept=communication',
     }).catch(console.warn);
   };
 
@@ -5609,7 +5609,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       targetRole: 'SECRETARIAT',
       targetDepartment: 'secretariat',
       type: 'INFO_REQUEST',
-      url: '/',
+      url: '/#admin-console?dept=secretariat',
     }).catch(console.warn);
   };
 
@@ -5631,7 +5631,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       targetRole: 'SECRETARIAT',
       targetDepartment: 'secretariat',
       type: 'INFO_REQUEST',
-      url: '/',
+      url: '/#admin-console?dept=secretariat',
     }).catch(console.warn);
   };
 
@@ -5649,7 +5649,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       targetRole: 'SDP',
       targetDepartment: 'sdp',
       type: 'INFO_REQUEST',
-      url: '/',
+      url: '/#admin-console?dept=suivi_programme',
     }).catch(console.warn);
   };
 
@@ -5670,7 +5670,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       targetRole: 'SDP',
       targetDepartment: 'sdp',
       type: 'INFO_REQUEST',
-      url: '/',
+      url: '/#admin-console?dept=suivi_programme',
     }).catch(console.warn);
   };
 
@@ -5688,7 +5688,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       targetRole: 'PAYOR',
       targetDepartment: 'payor',
       type: 'INFO_REQUEST',
-      url: '/',
+      url: '/#admin-console?dept=payor',
     }).catch(console.warn);
   };
 
@@ -5709,7 +5709,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       targetRole: 'PAYOR',
       targetDepartment: 'payor',
       type: 'INFO_REQUEST',
-      url: '/',
+      url: '/#admin-console?dept=payor',
     }).catch(console.warn);
   };
 
@@ -5813,7 +5813,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       targetRole: 'ORGANISATION',
       targetDepartment: 'organisation',
       type: 'INFO_REQUEST',
-      url: '/',
+      url: '/#admin-console?dept=organisation',
     }).catch(console.warn);
   };
 
@@ -5852,7 +5852,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       targetRole: 'ORGANISATION',
       targetDepartment: 'organisation',
       type: 'INFO_REQUEST',
-      url: '/',
+      url: '/#admin-console?dept=organisation',
     }).catch(console.warn);
   };
 
@@ -6151,7 +6151,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         priority: 'high',
         sound: 'default',
         requireInteraction: true,
-        url: '/',
+        url: '/#tab=PROJETS',
       }).catch(console.warn);
     }
     return { ok: true };
@@ -6218,7 +6218,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       targetRole: 'SECRETARIAT',
       targetDepartment: 'secretariat',
       type: 'INFO_REQUEST',
-      url: '/',
+      url: '/#admin-console?dept=secretariat',
     }).catch(console.warn);
     return { ok: true };
   };
@@ -6286,7 +6286,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       targetRole: 'SECRETARIAT',
       targetDepartment: 'secretariat',
       type: 'INFO_REQUEST',
-      url: '/',
+      url: '/#admin-console?dept=secretariat',
     }).catch(console.warn);
     return { ok: true };
   };
@@ -6307,7 +6307,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       targetRole: 'SDP',
       targetDepartment: 'sdp',
       type: 'INFO_REQUEST',
-      url: '/',
+      url: '/#admin-console?dept=suivi_programme',
     }).catch(console.warn);
   };
 
@@ -6332,7 +6332,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       targetRole: 'SDP',
       targetDepartment: 'sdp',
       type: 'INFO_REQUEST',
-      url: '/',
+      url: '/#admin-console?dept=suivi_programme',
     }).catch(console.warn);
   };
 
@@ -6352,7 +6352,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       targetRole: 'PAYOR',
       targetDepartment: 'payor',
       type: 'INFO_REQUEST',
-      url: '/',
+      url: '/#admin-console?dept=payor',
     }).catch(console.warn);
   };
 
@@ -6377,7 +6377,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       targetRole: 'PAYOR',
       targetDepartment: 'payor',
       type: 'INFO_REQUEST',
-      url: '/',
+      url: '/#admin-console?dept=payor',
     }).catch(console.warn);
   };
 
@@ -6547,7 +6547,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       targetRole: 'PROJET',
       targetDepartment: 'projet',
       type: 'INFO_REQUEST',
-      url: '/',
+      url: '/#admin-console?dept=projet',
     }).catch(console.warn);
   };
 
@@ -6595,7 +6595,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       targetRole: 'PROJET',
       targetDepartment: 'projet',
       type: 'INFO_REQUEST',
-      url: '/',
+      url: '/#admin-console?dept=projet',
     }).catch(console.warn);
   };
 
@@ -6748,7 +6748,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       rawTitle: true,
       priority: 'high',
       sound: 'default',
-      url: '/',
+      url: '/#admin-console?dept=communication',
     }).catch(console.warn);
   };
 
@@ -6819,8 +6819,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       senderRole: 'SECRÉTARIAT',
       senderName: 'Secrétariat Général',
       targetRole: 'SECRETARIAT',
-      type: 'PV_PUBLISHED',
-      url: '/',
+      targetDepartment: 'secretariat',
+      type: 'INFO_REQUEST',
+      url: '/#admin-console?dept=secretariat',
     }).catch(console.warn);
   };
 
@@ -6838,7 +6839,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       targetRole: 'PAYOR',
       targetDepartment: 'payor',
       type: 'INFO_REQUEST',
-      url: '/',
+      url: '/#admin-console?dept=payor',
     }).catch(console.warn);
   };
 
@@ -6870,8 +6871,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         senderRole: 'PAYOR',
         senderName: 'Espace Payor',
         targetRole: 'SECRETAIRE',
-        type: 'PV_PUBLISHED',
-        url: '/',
+        targetDepartment: 'secretariat',
+        type: 'APPROVAL',
+        url: '/#admin-console?dept=secretariat',
       }).catch(console.warn);
     }
   };
@@ -6945,8 +6947,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       senderRole: 'SECRETAIRE',
       senderName: 'Secrétariat Général',
       targetRole: 'COM',
-      type: 'PV_PUBLISHED',
-      url: '/archives',
+      targetDepartment: 'communication',
+      type: 'DOCUMENT_TRANSMITTED',
+      url: '/#admin-console?dept=communication',
     }).catch(console.warn);
   };
 
@@ -6967,8 +6970,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         senderRole: 'COM',
         senderName: 'Commission Communication',
         targetRole: 'SECRETAIRE',
+        targetDepartment: 'secretariat',
         type: 'PV_ACK',
-        url: '/',
+        url: '/#admin-console?dept=secretariat',
       }).catch(console.warn);
     }
   };
@@ -7111,7 +7115,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       targetRole: 'TRESORIER',
       targetDepartment: 'tresorerie',
       type: 'APPROVAL',
-      url: '/',
+      url: '/#admin-console?dept=tresorerie',
     }).catch(console.warn);
   };
 
@@ -7162,7 +7166,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       targetRole: 'TRESORIER',
       targetDepartment: 'tresorerie',
       type: 'INFO_REQUEST',
-      url: '/',
+      url: '/#admin-console?dept=tresorerie',
     }).catch(console.warn);
   };
 
@@ -7189,7 +7193,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       targetRole: 'SECRETAIRE',
       targetDepartment: 'secretariat',
       type: 'DOCUMENT_TRANSMITTED',
-      url: '/',
+      url: '/#admin-console?dept=secretariat',
     }).catch(console.warn);
   };
 
@@ -7207,7 +7211,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       targetRole: 'PAYOR',
       targetDepartment: 'payor',
       type: 'DOCUMENT_TRANSMITTED',
-      url: '/',
+      url: '/#admin-console?dept=payor',
     }).catch(console.warn);
   };
 
@@ -7633,7 +7637,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         priority: 'high',
         sound: 'default',
         requireInteraction: true,
-        url: '/#admin-navette',
+        url: `/#admin-navette?dept=${encodeURIComponent(normalizeDepartmentKey(req.recipientRole) || req.recipientRole)}`,
         metadata: {
           requestId: id,
           targetDeptKey: normalizeDepartmentKey(req.recipientRole),
@@ -7757,7 +7761,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         priority: 'high',
         sound: 'default',
         requireInteraction: true,
-        url: '/#admin-navette',
+        url: `/#admin-navette?dept=${encodeURIComponent(normalizeDepartmentKey(targetRole) || targetRole)}`,
         metadata: {
           requestId: id,
           targetDeptKey: normalizeDepartmentKey(targetRole),
@@ -7893,7 +7897,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       priority: 'high',
       sound: 'default',
       requireInteraction: true,
-      url: '/',
+      url: '/#tab=PRIERE_ROUAMA',
     }).catch(console.warn);
   };
 
@@ -8006,7 +8010,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       rawTitle: true,
       priority: 'high',
       sound: 'default',
-      url: '/',
+      url: '/#admin-console?dept=communication',
     }).catch(console.warn);
   };
 
@@ -8157,7 +8161,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       targetRole: 'SECRETAIRE',
       targetDepartment: 'secretariat',
       type: 'DOCUMENT_TRANSMITTED',
-      url: '/',
+      url: '/#admin-console?dept=secretariat',
     }).catch(console.warn);
   };
 
@@ -8185,7 +8189,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       targetRole: 'SECRETAIRE',
       targetDepartment: 'secretariat',
       type: 'DOCUMENT_TRANSMITTED',
-      url: '/',
+      url: '/#admin-console?dept=secretariat',
     }).catch(console.warn);
   };
 
@@ -8207,7 +8211,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       targetRole: 'SDP',
       targetDepartment: 'sdp',
       type: 'DOCUMENT_TRANSMITTED',
-      url: '/',
+      url: '/#admin-console?dept=suivi_programme',
     }).catch(console.warn);
   };
 
@@ -8232,7 +8236,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       targetRole: 'SDP',
       targetDepartment: 'sdp',
       type: 'DOCUMENT_TRANSMITTED',
-      url: '/',
+      url: '/#admin-console?dept=suivi_programme',
     }).catch(console.warn);
   };
 
@@ -8255,7 +8259,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       targetRole: 'PAYOR',
       targetDepartment: 'payor',
       type: 'DOCUMENT_TRANSMITTED',
-      url: '/',
+      url: '/#admin-console?dept=payor',
     }).catch(console.warn);
   };
 
@@ -8281,7 +8285,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       targetRole: 'PAYOR',
       targetDepartment: 'payor',
       type: 'DOCUMENT_TRANSMITTED',
-      url: '/',
+      url: '/#admin-console?dept=payor',
     }).catch(console.warn);
   };
 
@@ -8317,7 +8321,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       targetRole: 'SPIRITUALITE',
       targetDepartment: 'spiritualite',
       type: 'APPROVAL',
-      url: '/',
+      url: '/#admin-console?dept=spiritualite',
     }).catch(console.warn);
   };
 
@@ -8356,7 +8360,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       targetRole: 'SPIRITUALITE',
       targetDepartment: 'spiritualite',
       type: 'APPROVAL',
-      url: '/',
+      url: '/#admin-console?dept=spiritualite',
     }).catch(console.warn);
   };
 
@@ -8381,7 +8385,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       targetRole: 'SPIRITUALITE',
       targetDepartment: 'spiritualite',
       type: 'INFO_REQUEST',
-      url: '/',
+      url: '/#admin-console?dept=spiritualite',
     }).catch(console.warn);
   };
 
@@ -8420,7 +8424,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       targetRole: 'SPIRITUALITE',
       targetDepartment: 'spiritualite',
       type: 'INFO_REQUEST',
-      url: '/',
+      url: '/#admin-console?dept=spiritualite',
     }).catch(console.warn);
   };
 

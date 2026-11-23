@@ -167,12 +167,23 @@ export const NotificationBell: React.FC<NotificationBellProps> = ({
                       </p>
 
                       <div className="flex items-center justify-between gap-2 pt-0.5">
-                        {(notif.senderName || notif.senderRole) && (
-                          <span className="inline-block px-2 py-0.5 rounded-md bg-slate-800 text-slate-300 text-[9px] font-bold uppercase tracking-wide border border-slate-700 truncate max-w-[70%]">
-                            {notif.senderName || notif.senderRole}
+                        <div className="flex items-center gap-1.5 min-w-0 max-w-[75%]">
+                          <span
+                            className={`inline-block px-1.5 py-0.5 rounded-md text-[9px] font-black uppercase tracking-wide border shrink-0 ${
+                              notif.scope === 'DEPARTMENT'
+                                ? 'bg-emerald-900/60 text-emerald-300 border-emerald-600/40'
+                                : 'bg-amber-900/60 text-amber-300 border-amber-600/40'
+                            }`}
+                          >
+                            {notif.scope === 'DEPARTMENT' ? '🛡️ Département' : '👤 Membre'}
                           </span>
-                        )}
-                        <span className="text-[10px] text-amber-300/80 font-bold flex items-center gap-0.5 ml-auto">
+                          {(notif.senderName || notif.senderRole) && (
+                            <span className="inline-block px-2 py-0.5 rounded-md bg-slate-800 text-slate-300 text-[9px] font-bold uppercase tracking-wide border border-slate-700 truncate">
+                              {notif.senderName || notif.senderRole}
+                            </span>
+                          )}
+                        </div>
+                        <span className="text-[10px] text-amber-300/80 font-bold flex items-center gap-0.5 ml-auto shrink-0">
                           <span>Ouvrir</span>
                           <ArrowRight className="w-3 h-3" />
                         </span>

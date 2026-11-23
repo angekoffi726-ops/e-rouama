@@ -145,6 +145,13 @@ self.addEventListener('push', (event) => {
           payload.webpush?.notification?.badge ||
           '/icon-192.png';
 
+        const rawData = payload.data && typeof payload.data === 'object' ? payload.data : {};
+        const fallbackClickUrl =
+          rawData.click_action ||
+          rawData.url ||
+          payload.webpush?.fcm_options?.link ||
+          '/';
+
         await self.registration.showNotification(title, {
           body: body,
           icon: icon,
@@ -153,7 +160,12 @@ self.addEventListener('push', (event) => {
           renotify: true,
           requireInteraction: true,
           vibrate: [200, 100, 200],
-          data: payload.data || { click_action: payload.webpush?.fcm_options?.link || '/' }
+          data: {
+            ...rawData,
+            url: fallbackClickUrl,
+            click_action: fallbackClickUrl,
+            tag: notificationTag,
+          }
         });
       } catch (e) {
         console.warn('[firebase-messaging-sw.js] Erreur push natif:', e);
@@ -162,24 +174,40 @@ self.addEventListener('push', (event) => {
   );
 });
 
-// Écouteur de clic sur la notification (redirige l'utilisateur vers la PWA)
+// Écouteur de clic sur la notification (ouvre directement l'application sur l'espace ou la rubrique concernée)
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
-  const targetUrl = event.notification.data?.click_action || event.notification.data?.url || '/';
+  const notifData = event.notification.data || {};
+  const targetUrl = notifData.click_action || notifData.url || '/';
 
   event.waitUntil(
-    clients.matchAll({ type: 'window', includeUncontrolled: true }).then((windowClients) => {
+    clients.matchAll({ type: 'window', includeUncontrolled: true }).then(async (windowClients) => {
       for (const client of windowClients) {
         if ('focus' in client) {
-          client.focus();
-          if (client.url && client.navigate) {
-            client.navigate(targetUrl);
+          try {
+            await client.focus();
+          } catch (_) {}
+          try {
+            client.postMessage({
+              type: 'NOTIFICATION_CLICK',
+              url: targetUrl,
+              data: notifData,
+            });
+          } catch (_) {}
+          if (client.navigate && targetUrl) {
+            try {
+              const absoluteUrl = new URL(targetUrl, self.location.origin).href;
+              if (client.url !== absoluteUrl) {
+                await client.navigate(absoluteUrl);
+              }
+            } catch (_) {}
           }
           return;
         }
       }
       if (clients.openWindow) {
-        return clients.openWindow(targetUrl);
+        const absoluteUrl = new URL(targetUrl, self.location.origin).href;
+        return clients.openWindow(absoluteUrl);
       }
     })
   );
@@ -215,8 +243,8 @@ self.addEventListener('message', async (event) => {
   }
 });
 
-// Versioning et stratégie de cache PWA (2026.11.18.20)
-const APP_VERSION = '2026.11.18.20';
+// Versioning et stratégie de cache PWA (2026.11.18.21)
+const APP_VERSION = '2026.11.18.21';
 const CACHE_NAME = 'erouama-cache-v-' + APP_VERSION;
 
 // Installation : forcer le nouveau Service Worker à devenir actif immédiatement

@@ -593,8 +593,20 @@ export const AdminPortal: React.FC = () => {
     return result.length > 0 ? result : [userNativeRole];
   }, [userNativeRole, currentUser]);
 
-  // Console active sélectionnée (par défaut la 1ère console autorisée)
+  // Console active sélectionnée (priorité au rôle demandé par la session/notification ou 1ère console autorisée)
   const [selectedRole, setSelectedRole] = useState<AdminRole>(() => {
+    try {
+      const pendingRaw = sessionStorage.getItem('erouama_pending_admin_nav');
+      if (pendingRaw) {
+        const pending = JSON.parse(pendingRaw);
+        if (pending?.role && allowedConsoles.includes(pending.role)) {
+          return pending.role;
+        }
+      }
+    } catch {}
+    if (currentUser?.adminRole && allowedConsoles.includes(currentUser.adminRole)) {
+      return currentUser.adminRole;
+    }
     return allowedConsoles[0] || 'TRESORIER';
   });
 
@@ -605,10 +617,9 @@ export const AdminPortal: React.FC = () => {
     }
   }, [allowedConsoles, selectedRole]);
 
-  // Navigation directe depuis le Centre de Notifications ou un Toast temps réel
+  // Navigation directe depuis le Centre de Notifications, Push en arrière-plan ou Toast temps réel
   useEffect(() => {
-    const handleNavigateAdmin = (e: Event) => {
-      const detail = (e as CustomEvent<{ role?: AdminRole; section?: string }>).detail;
+    const applyAdminNav = (detail?: { role?: AdminRole; section?: string }) => {
       if (!detail) return;
       const targetRole = detail.role && allowedConsoles.includes(detail.role)
         ? detail.role
@@ -622,9 +633,24 @@ export const AdminPortal: React.FC = () => {
             if (el) {
               el.scrollIntoView({ behavior: 'smooth', block: 'start' });
             }
-          }, 180);
+          }, 200);
         }
       }
+    };
+
+    try {
+      const pendingRaw = sessionStorage.getItem('erouama_pending_admin_nav');
+      if (pendingRaw) {
+        sessionStorage.removeItem('erouama_pending_admin_nav');
+        applyAdminNav(JSON.parse(pendingRaw));
+      }
+    } catch {}
+
+    const handleNavigateAdmin = (e: Event) => {
+      try {
+        sessionStorage.removeItem('erouama_pending_admin_nav');
+      } catch {}
+      applyAdminNav((e as CustomEvent<{ role?: AdminRole; section?: string }>).detail);
     };
     window.addEventListener('erouama-navigate-admin', handleNavigateAdmin);
     return () => window.removeEventListener('erouama-navigate-admin', handleNavigateAdmin);

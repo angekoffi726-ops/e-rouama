@@ -76,6 +76,119 @@ export const markNotificationAsHandled = (id: string): void => {
   }
 };
 
+// Cache en mémoire de la clé publique VAPID récupérée depuis le backend
+let cachedVapidPublicKey: string | null = null;
+let lastStartupSyncSignature = '';
+let lastStartupSyncAt = 0;
+
+export interface WebPushSubscriptionRecord {
+  endpoint: string;
+  expirationTime?: number | null;
+  keys: {
+    p256dh: string;
+    auth: string;
+  };
+  updatedAt?: string;
+}
+
+const urlBase64ToUint8Array = (base64String: string): Uint8Array => {
+  const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const rawData = window.atob(base64);
+  const outputArray = new Uint8Array(rawData.length);
+  for (let i = 0; i < rawData.length; ++i) {
+    outputArray[i] = rawData.charCodeAt(i);
+  }
+  return outputArray;
+};
+
+const arrayBufferToBase64Url = (buf: ArrayBuffer | null | undefined): string => {
+  if (!buf) return '';
+  const bytes = new Uint8Array(buf);
+  let binary = '';
+  for (let i = 0; i < bytes.byteLength; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return window.btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+};
+
+export const fetchVapidPublicKey = async (): Promise<string | null> => {
+  if (cachedVapidPublicKey) return cachedVapidPublicKey;
+  if (typeof window === 'undefined') return null;
+  try {
+    const resp = await fetch('/api/push/vapid-public-key', { cache: 'no-store' });
+    if (!resp.ok) return null;
+    const json = await resp.json();
+    if (json?.publicKey && typeof json.publicKey === 'string') {
+      cachedVapidPublicKey = json.publicKey.trim();
+      return cachedVapidPublicKey;
+    }
+  } catch (err) {
+    console.debug('VAPID public key fetch note:', err);
+  }
+  return null;
+};
+
+export const ensureWebPushSubscription = async (
+  registration: ServiceWorkerRegistration | null
+): Promise<WebPushSubscriptionRecord | null> => {
+  if (
+    typeof window === 'undefined' ||
+    !registration ||
+    !registration.pushManager ||
+    typeof Notification === 'undefined' ||
+    Notification.permission !== 'granted'
+  ) {
+    return null;
+  }
+
+  try {
+    const vapidPublicKey = await fetchVapidPublicKey();
+    if (!vapidPublicKey) return null;
+
+    let subscription = await registration.pushManager.getSubscription();
+    if (subscription) {
+      const existingKey = arrayBufferToBase64Url(subscription.options?.applicationServerKey);
+      if (existingKey && existingKey !== vapidPublicKey) {
+        await subscription.unsubscribe().catch(() => {});
+        subscription = null;
+      }
+    }
+
+    if (!subscription) {
+      subscription = await registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(vapidPublicKey) as BufferSource,
+      });
+    }
+
+    const subJson = subscription.toJSON();
+    if (
+      subJson?.endpoint &&
+      subJson.endpoint.startsWith('https://') &&
+      subJson.keys?.p256dh &&
+      subJson.keys?.auth
+    ) {
+      const record: WebPushSubscriptionRecord = {
+        endpoint: subJson.endpoint,
+        expirationTime: subJson.expirationTime ?? null,
+        keys: {
+          p256dh: subJson.keys.p256dh,
+          auth: subJson.keys.auth,
+        },
+        updatedAt: new Date().toISOString(),
+      };
+      try {
+        localStorage.setItem('erouama_webpush_sub', JSON.stringify(record));
+      } catch {}
+      return record;
+    }
+  } catch (err) {
+    console.debug('WebPush subscribe note:', err);
+  }
+  return null;
+};
+
 // Enregistrement du Service Worker
 export const registerPushServiceWorker = async (): Promise<ServiceWorkerRegistration | null> => {
   if (typeof window === 'undefined' || !('serviceWorker' in navigator)) {
@@ -105,7 +218,119 @@ export const getPushPermissionState = (): NotificationPermission | 'unsupported'
   return Notification.permission;
 };
 
-// Obtention du token FCM et enregistrement dans Firestore
+const mergeWebPushSubscriptions = (
+  existingList: any,
+  newSub: WebPushSubscriptionRecord | null
+): WebPushSubscriptionRecord[] => {
+  const map = new Map<string, WebPushSubscriptionRecord>();
+  if (Array.isArray(existingList)) {
+    existingList.forEach((s: any) => {
+      if (s?.endpoint && typeof s.endpoint === 'string' && s.keys?.p256dh && s.keys?.auth) {
+        map.set(s.endpoint, {
+          endpoint: s.endpoint,
+          expirationTime: s.expirationTime ?? null,
+          keys: { p256dh: s.keys.p256dh, auth: s.keys.auth },
+          updatedAt: s.updatedAt,
+        });
+      }
+    });
+  }
+  if (newSub) {
+    map.set(newSub.endpoint, newSub);
+  }
+  return Array.from(map.values()).slice(-8);
+};
+
+const syncPushCredentialsToFirestore = async (
+  targetUserId: string,
+  targetMemberId: string | null,
+  fcmToken: string,
+  webPushSub: WebPushSubscriptionRecord | null
+) => {
+  if (!targetUserId) return;
+  const nowIso = new Date().toISOString();
+  const memberRolesMeta = getDefaultRolesForMember(targetUserId);
+  const { getDoc } = await import('firebase/firestore');
+
+  let existingUserSubs: any[] = [];
+  try {
+    const snap = await getDoc(doc(db, 'users', targetUserId));
+    if (snap.exists()) {
+      const data = snap.data() as any;
+      if (Array.isArray(data?.webPushSubscriptions)) {
+        existingUserSubs = data.webPushSubscriptions;
+      } else if (data?.webPushSubscription) {
+        existingUserSubs = [data.webPushSubscription];
+      }
+    }
+  } catch {}
+
+  const mergedSubs = mergeWebPushSubscriptions(existingUserSubs, webPushSub);
+  const userPayload: Record<string, any> = {
+    id: targetUserId,
+    roles: memberRolesMeta.roles,
+    departments: memberRolesMeta.departments,
+    pushNotificationsEnabled: true,
+    pushTokenUpdatedAt: nowIso,
+    devicePlatform: navigator.userAgent.includes('Mobile') ? 'mobile' : 'desktop',
+  };
+  if (fcmToken) {
+    userPayload.fcmToken = fcmToken;
+    userPayload.fcmTokens = arrayUnion(fcmToken);
+  }
+  if (webPushSub) {
+    userPayload.webPushSubscription = webPushSub;
+    userPayload.webPushSubscriptions = mergedSubs;
+  }
+
+  try {
+    await updateDoc(doc(db, 'users', targetUserId), userPayload);
+  } catch {
+    await setDoc(
+      doc(db, 'users', targetUserId),
+      {
+        ...userPayload,
+        ...(fcmToken ? { fcmTokens: [fcmToken] } : {}),
+      },
+      { merge: true }
+    );
+  }
+
+  if (targetMemberId) {
+    const memberPayload: Record<string, any> = {
+      id: targetMemberId,
+      roles: memberRolesMeta.roles,
+      departments: memberRolesMeta.departments,
+      pushNotificationsEnabled: true,
+      pushTokenUpdatedAt: nowIso,
+    };
+    if (fcmToken) {
+      memberPayload.fcmToken = fcmToken;
+      memberPayload.fcmTokens = arrayUnion(fcmToken);
+    }
+    if (webPushSub) {
+      memberPayload.webPushSubscription = webPushSub;
+      memberPayload.webPushSubscriptions = mergedSubs;
+    }
+    try {
+      await updateDoc(doc(db, 'members', targetMemberId), memberPayload);
+    } catch {
+      await setDoc(
+        doc(db, 'members', targetMemberId),
+        {
+          ...memberPayload,
+          ...(fcmToken ? { fcmTokens: [fcmToken] } : {}),
+        },
+        { merge: true }
+      ).catch(() => {});
+    }
+  }
+
+  // Invalider le cache local des destinataires pour prise en compte immédiate
+  cachedTokenDocs = null;
+};
+
+// Obtention du token FCM + abonnement Web Push VAPID et enregistrement dans Firestore
 export const requestPushPermissionAndSaveToken = async (
   userId: string,
   userType: 'MEMBER' | 'ADMIN' = 'MEMBER',
@@ -134,19 +359,22 @@ export const requestPushPermissionAndSaveToken = async (
     const registration = await navigator.serviceWorker.register('/firebase-messaging-sw.js', {
       scope: '/',
     });
-    await navigator.serviceWorker.ready;
+    const readyReg = (await navigator.serviceWorker.ready) || registration;
 
-    // 3. Récupération du Token FCM officiel via SDK Firebase Messaging
+    // 3. Abonnement Web Push natif (VAPID serveur) pour réveil SW même application fermée
+    const webPushSub = await ensureWebPushSubscription(readyReg);
+
+    // 4. Récupération du Token FCM officiel via SDK Firebase Messaging (si configuré)
     let fcmToken = '';
     try {
       const { getMessaging, getToken, isSupported } = await import('firebase/messaging');
       const supported = await isSupported().catch(() => false);
 
-      if (supported && registration) {
+      if (supported && readyReg) {
         const messaging = getMessaging(app);
         const vapidKey = (import.meta as any).env?.VITE_FIREBASE_VAPID_KEY;
         const getTokenOptions: { serviceWorkerRegistration: ServiceWorkerRegistration; vapidKey?: string } = {
-          serviceWorkerRegistration: registration,
+          serviceWorkerRegistration: readyReg,
         };
         if (vapidKey && typeof vapidKey === 'string' && vapidKey.trim()) {
           getTokenOptions.vapidKey = vapidKey.trim();
@@ -165,7 +393,7 @@ export const requestPushPermissionAndSaveToken = async (
       console.warn('FCM module note:', fcmErr);
     }
 
-    // Si pas de token FCM réseau direct, générer un identifiant de subscription WebPush persistant
+    // Si pas de token FCM réseau direct, utiliser un identifiant persistant
     if (!fcmToken) {
       const stored = localStorage.getItem('erouama_fcm_token');
       if (stored) {
@@ -175,62 +403,12 @@ export const requestPushPermissionAndSaveToken = async (
       }
     }
 
-    // 4. Enregistre le token dans Firestore dans users/{userId}/fcmToken ET users/{userId}/fcmTokens
-    const nowIso = new Date().toISOString();
-    const targetUserId = userId || (memberId || 'anonymous');
+    // 5. Enregistrement dans Firestore (users + members)
+    const targetUserId = userId || memberId || 'anonymous';
     const memberRolesMeta = getDefaultRolesForMember(targetUserId);
-
-    try {
-      await updateDoc(doc(db, 'users', targetUserId), {
-        fcmToken: fcmToken,
-        fcmTokens: arrayUnion(fcmToken),
-        roles: memberRolesMeta.roles,
-        departments: memberRolesMeta.departments,
-        pushNotificationsEnabled: true,
-        pushTokenUpdatedAt: nowIso,
-        devicePlatform: navigator.userAgent.includes('Mobile') ? 'mobile' : 'desktop',
-      });
-    } catch {
-      await setDoc(
-        doc(db, 'users', targetUserId),
-        {
-          id: targetUserId,
-          fcmToken: fcmToken,
-          fcmTokens: [fcmToken],
-          roles: memberRolesMeta.roles,
-          departments: memberRolesMeta.departments,
-          pushNotificationsEnabled: true,
-          pushTokenUpdatedAt: nowIso,
-          devicePlatform: navigator.userAgent.includes('Mobile') ? 'mobile' : 'desktop',
-        },
-        { merge: true }
-      );
-    }
-
-    // Enregistrement miroir dans members/{memberId} si membre
     const targetMemberId = memberId || (userType === 'MEMBER' ? targetUserId : null);
-    if (targetMemberId) {
-      try {
-        await updateDoc(doc(db, 'members', targetMemberId), {
-          fcmToken: fcmToken,
-          fcmTokens: arrayUnion(fcmToken),
-          pushNotificationsEnabled: true,
-          pushTokenUpdatedAt: nowIso,
-        });
-      } catch {
-        await setDoc(
-          doc(db, 'members', targetMemberId),
-          {
-            id: targetMemberId,
-            fcmToken: fcmToken,
-            fcmTokens: [fcmToken],
-            pushNotificationsEnabled: true,
-            pushTokenUpdatedAt: nowIso,
-          },
-          { merge: true }
-        );
-      }
-    }
+
+    await syncPushCredentialsToFirestore(targetUserId, targetMemberId, fcmToken, webPushSub);
 
     // Sauvegarde locale
     localStorage.setItem('erouama_fcm_token', fcmToken);
@@ -245,14 +423,19 @@ export const requestPushPermissionAndSaveToken = async (
       localStorage.setItem('erouama_last_auth_depts', JSON.stringify(memberRolesMeta.departments));
     }
 
+    lastStartupSyncSignature = `${targetUserId}|${fcmToken}|${webPushSub?.endpoint || ''}`;
+    lastStartupSyncAt = Date.now();
+
     return {
       success: true,
       token: fcmToken,
-      message: 'Notifications Push activées avec succès !',
+      message: webPushSub
+        ? 'Notifications Push en arrière-plan activées avec succès !'
+        : 'Notifications Push activées avec succès !',
       permission: 'granted',
     };
   } catch (error: any) {
-    console.error('Erreur activation push FCM:', error);
+    console.error('Erreur activation push FCM/WebPush:', error);
     return {
       success: false,
       message: error?.message || 'Erreur lors de l’activation des notifications.',
@@ -262,38 +445,36 @@ export const requestPushPermissionAndSaveToken = async (
 };
 
 /**
- * Reconstitution et rafraîchissement automatique du token FCM au démarrage de l'appli.
- * Exécuté dès le chargement (y compris sur la page de connexion / Login ou hors session).
- * Vérifie l'état de la permission, rafraîchit le token via le SDK Firebase et s'assure
- * qu'il est synchronisé dans LocalStorage et Firestore pour l'appareil.
+ * Reconstitution et rafraîchissement automatique du token FCM & de la souscription Web Push VAPID au démarrage.
  */
 export const refreshFcmTokenOnStartup = async (targetUserId?: string): Promise<string | null> => {
   if (typeof window === 'undefined' || !isPushNotificationSupported()) return null;
 
   try {
-    // 1. Enregistre ou récupère le Service Worker
     const registration = await registerPushServiceWorker();
     if (!registration) return null;
 
-    // 2. Détermine l'ID utilisateur cible (session active ou dernier utilisateur authentifié sur ce terminal)
     const effectiveUserId =
       targetUserId ||
       localStorage.getItem('erouama_last_auth_user_id') ||
       localStorage.getItem('erouama_current_user_id') ||
       '';
 
+    let webPushSub: WebPushSubscriptionRecord | null = null;
     let fcmToken = '';
 
-    // Si permission accordée, obtenir ou rafraîchir le jeton FCM
     if (Notification.permission === 'granted') {
+      const readyReg = (await navigator.serviceWorker.ready) || registration;
+      webPushSub = await ensureWebPushSubscription(readyReg);
+
       try {
         const { getMessaging, getToken, isSupported } = await import('firebase/messaging');
         const supported = await isSupported().catch(() => false);
-        if (supported && registration) {
+        if (supported && readyReg) {
           const messaging = getMessaging(app);
           const vapidKey = (import.meta as any).env?.VITE_FIREBASE_VAPID_KEY;
           const getTokenOptions: { serviceWorkerRegistration: ServiceWorkerRegistration; vapidKey?: string } = {
-            serviceWorkerRegistration: registration,
+            serviceWorkerRegistration: readyReg,
           };
           if (vapidKey && typeof vapidKey === 'string' && vapidKey.trim()) {
             getTokenOptions.vapidKey = vapidKey.trim();
@@ -311,64 +492,27 @@ export const refreshFcmTokenOnStartup = async (targetUserId?: string): Promise<s
       }
     }
 
-    // Si pas de jeton réseau direct, utiliser le jeton persisté localement
     if (!fcmToken) {
       fcmToken = localStorage.getItem('erouama_fcm_token') || '';
     }
+    if (!fcmToken && webPushSub) {
+      fcmToken = `webpush_${Date.now()}_${Math.random().toString(36).substring(2, 10)}`;
+    }
 
-    if (fcmToken) {
-      localStorage.setItem('erouama_fcm_token', fcmToken);
+    if (fcmToken || webPushSub) {
+      if (fcmToken) localStorage.setItem('erouama_fcm_token', fcmToken);
       localStorage.setItem('erouama_push_enabled', 'true');
 
-      // Mettre à jour dans Firestore pour que les notifications continuent à atteindre l'appareil même après déconnexion
       if (effectiveUserId) {
-        const nowIso = new Date().toISOString();
-        const memberRolesMeta = getDefaultRolesForMember(effectiveUserId);
-
-        try {
-          await updateDoc(doc(db, 'users', effectiveUserId), {
-            fcmToken: fcmToken,
-            fcmTokens: arrayUnion(fcmToken),
-            roles: memberRolesMeta.roles,
-            departments: memberRolesMeta.departments,
-            pushNotificationsEnabled: true,
-            pushTokenUpdatedAt: nowIso,
-            devicePlatform: navigator.userAgent.includes('Mobile') ? 'mobile' : 'desktop',
-          });
-        } catch {
-          await setDoc(
-            doc(db, 'users', effectiveUserId),
-            {
-              id: effectiveUserId,
-              fcmToken: fcmToken,
-              fcmTokens: [fcmToken],
-              roles: memberRolesMeta.roles,
-              departments: memberRolesMeta.departments,
-              pushNotificationsEnabled: true,
-              pushTokenUpdatedAt: nowIso,
-              devicePlatform: navigator.userAgent.includes('Mobile') ? 'mobile' : 'desktop',
-            },
-            { merge: true }
-          );
-        }
-
-        try {
-          await setDoc(
-            doc(db, 'members', effectiveUserId),
-            {
-              id: effectiveUserId,
-              fcmToken: fcmToken,
-              fcmTokens: arrayUnion(fcmToken),
-              pushNotificationsEnabled: true,
-              pushTokenUpdatedAt: nowIso,
-            },
-            { merge: true }
-          );
-        } catch {
-          // Ignorer si non-membre
+        const signature = `${effectiveUserId}|${fcmToken}|${webPushSub?.endpoint || ''}`;
+        const now = Date.now();
+        if (signature !== lastStartupSyncSignature || now - lastStartupSyncAt > 10 * 60 * 1000) {
+          await syncPushCredentialsToFirestore(effectiveUserId, effectiveUserId, fcmToken, webPushSub);
+          lastStartupSyncSignature = signature;
+          lastStartupSyncAt = now;
         }
       }
-      return fcmToken;
+      return fcmToken || webPushSub?.endpoint || null;
     }
   } catch (err) {
     console.debug('Erreur rafraîchissement token au démarrage:', err);
@@ -507,27 +651,132 @@ export interface PushDispatchOptions {
 let cachedTokenDocs: { fetchedAt: number; entries: Array<{ docId: string; data: any }> } | null = null;
 const TOKEN_CACHE_TTL_MS = 5 * 60 * 1000;
 
+export const resolveNotificationScope = (params: {
+  targetRole?: string;
+  targetDepartment?: string;
+  targetDepartments?: string[];
+  targetDuesStatus?: string;
+  targetUserId?: string;
+  targetUserIds?: string[];
+  url?: string;
+  type?: string;
+}): 'MEMBER' | 'DEPARTMENT' => {
+  const cleanUrl = (params.url || '').toLowerCase();
+  if (cleanUrl.includes('#tab=')) return 'MEMBER';
+  if (cleanUrl.includes('#admin')) return 'DEPARTMENT';
+
+  const roleUpper = String(params.targetRole || '').toUpperCase().trim();
+  if (params.targetDuesStatus || ['RETARD', 'A_JOUR', 'EN_AVANCE', 'ALL', 'TOUS'].includes(roleUpper)) {
+    return 'MEMBER';
+  }
+
+  const depts = [
+    params.targetDepartment,
+    ...(Array.isArray(params.targetDepartments) ? params.targetDepartments : []),
+    params.targetRole,
+  ]
+    .filter(Boolean)
+    .map((d) => normalizeDepartmentKey(String(d)))
+    .filter((d) => d && d !== 'all' && d !== 'direct_user' && d !== 'membre');
+
+  const adminDeptKeys = new Set([
+    'suivi_programme',
+    'cerveau',
+    'tresorerie',
+    'projet',
+    'secretariat',
+    'spiritualite',
+    'organisation',
+    'communication',
+    'payor',
+  ]);
+  if (depts.some((d) => adminDeptKeys.has(d))) {
+    return 'DEPARTMENT';
+  }
+
+  const adminRoles = new Set([
+    'TRESORIER',
+    'PAYOR',
+    'SECRETARIAT',
+    'SECRETAIRE',
+    'SDP',
+    'RESP_PROGRAMME',
+    'COM',
+    'ORGANISATION',
+    'PROJET',
+    'SPIRITUALITE',
+    'CERVEAU',
+    'SUPER_ADMIN',
+  ]);
+  if (adminRoles.has(roleUpper)) {
+    return 'DEPARTMENT';
+  }
+
+  return 'MEMBER';
+};
+
+const resolveNotificationDeepLinkUrl = (
+  scope: 'MEMBER' | 'DEPARTMENT',
+  params: {
+    url?: string;
+    primaryDept?: string | null;
+    type?: string;
+  }
+): string => {
+  const rawUrl = (params.url || '').trim();
+  if (rawUrl && rawUrl !== '/') {
+    if (rawUrl === '/#admin-console' && params.primaryDept && params.primaryDept !== 'all') {
+      return `/#admin-console?dept=${encodeURIComponent(params.primaryDept)}`;
+    }
+    if (rawUrl === '/archives') {
+      return scope === 'DEPARTMENT' && params.primaryDept
+        ? `/#admin-console?dept=${encodeURIComponent(params.primaryDept)}`
+        : '/#tab=ARCHIVES';
+    }
+    return rawUrl;
+  }
+
+  if (scope === 'DEPARTMENT') {
+    if (params.primaryDept && params.primaryDept !== 'all') {
+      return `/#admin-console?dept=${encodeURIComponent(params.primaryDept)}`;
+    }
+    return '/#admin-console';
+  }
+
+  if (params.type === 'PAYMENT') return '/#tab=FINANCES';
+  if (params.type === 'PV_PUBLISHED' || params.type === 'BILAN_PUBLISHED') return '/#tab=ARCHIVES';
+  return '/#tab=NOUVELLES';
+};
+
 /**
- * Extrait tous les jetons FCM actifs des destinataires concernés dans Firestore
- * (Prend en compte les rôles, départements, gestion partagée et diffusion globale)
+ * Extrait tous les jetons FCM et abonnements Web Push VAPID actifs des destinataires concernés dans Firestore
+ * (Prend en compte les rôles, départements, statut de cotisation, gestion partagée et diffusion globale)
  */
-export const extractRecipientFcmTokens = async (options: {
+export const extractRecipientTargets = async (options: {
   targetRole?: string;
   targetDepartment?: string;
   targetDepartments?: string[];
   targetUserId?: string;
   targetUserIds?: string[];
+  targetDuesStatus?: string;
   excludedUserId?: string;
   excludedUserIds?: string[];
-}): Promise<string[]> => {
+}): Promise<{ tokens: string[]; subscriptions: WebPushSubscriptionRecord[] }> => {
   const tokens: string[] = [];
+  const subscriptionsMap = new Map<string, WebPushSubscriptionRecord>();
+
   const targetRoleClean = (options.targetRole || '').toUpperCase().trim();
+  const resolvedDuesTarget =
+    (options.targetDuesStatus || (['RETARD', 'A_JOUR', 'EN_AVANCE'].includes(targetRoleClean) ? targetRoleClean : ''))
+      .toUpperCase()
+      .trim();
+
   const normalizedDepts = Array.from(
     new Set(
       [
         options.targetDepartment ? normalizeDepartmentKey(options.targetDepartment) : '',
         ...(Array.isArray(options.targetDepartments)
-          ? options.targetDepartments.map(d => normalizeDepartmentKey(d))
+          ? options.targetDepartments.map((d) => normalizeDepartmentKey(d))
           : []),
         options.targetRole ? normalizeDepartmentKey(options.targetRole) : '',
       ].filter(Boolean)
@@ -535,14 +784,15 @@ export const extractRecipientFcmTokens = async (options: {
   );
 
   const isBroadcastAll =
-    targetRoleClean === 'ALL' ||
-    targetRoleClean === 'TOUS' ||
-    normalizedDepts.includes('all');
+    !resolvedDuesTarget &&
+    (targetRoleClean === 'ALL' ||
+      targetRoleClean === 'TOUS' ||
+      normalizedDepts.includes('all'));
 
   const excludedIds = new Set<string>();
   if (options.excludedUserId) excludedIds.add(String(options.excludedUserId).trim());
   if (Array.isArray(options.excludedUserIds)) {
-    options.excludedUserIds.forEach(id => id && excludedIds.add(String(id).trim()));
+    options.excludedUserIds.forEach((id) => id && excludedIds.add(String(id).trim()));
   }
 
   try {
@@ -551,20 +801,20 @@ export const extractRecipientFcmTokens = async (options: {
       directUserIds.add(String(options.targetUserId).trim());
     }
     if (Array.isArray(options.targetUserIds)) {
-      options.targetUserIds.forEach(id => id && directUserIds.add(String(id).trim()));
+      options.targetUserIds.forEach((id) => id && directUserIds.add(String(id).trim()));
     }
 
     const targetDeptManagers = new Set<string>();
     normalizedDepts.forEach((normDept) => {
       if (!normDept || normDept === 'all') return;
       const deptConfig = OFFICIAL_DEPARTMENTS.find(
-        d =>
+        (d) =>
           d.key === normDept ||
           normalizeDepartmentKey(d.key) === normDept ||
           normalizeDepartmentKey(d.adminRole) === normDept
       );
       if (deptConfig) {
-        deptConfig.managerMemberIds.forEach(id => targetDeptManagers.add(String(id).trim()));
+        deptConfig.managerMemberIds.forEach((id) => targetDeptManagers.add(String(id).trim()));
       }
       if (normDept === 'cerveau') {
         targetDeptManagers.add('1');
@@ -576,26 +826,71 @@ export const extractRecipientFcmTokens = async (options: {
       }
     });
 
-    const collectTokensFromDoc = (docId: string, u: any) => {
+    const pushFromDoc = (u: any) => {
+      if (Array.isArray(u?.fcmTokens)) tokens.push(...u.fcmTokens.filter(Boolean));
+      if (u?.fcmToken && typeof u.fcmToken === 'string' && u.fcmToken.trim()) tokens.push(u.fcmToken.trim());
+
+      const addSub = (s: any) => {
+        if (
+          s &&
+          typeof s.endpoint === 'string' &&
+          s.endpoint.startsWith('https://') &&
+          s.keys &&
+          typeof s.keys.p256dh === 'string' &&
+          typeof s.keys.auth === 'string'
+        ) {
+          subscriptionsMap.set(s.endpoint, {
+            endpoint: s.endpoint,
+            expirationTime: s.expirationTime ?? null,
+            keys: { p256dh: s.keys.p256dh, auth: s.keys.auth },
+          });
+        }
+      };
+
+      if (u?.webPushSubscription) addSub(u.webPushSubscription);
+      if (Array.isArray(u?.webPushSubscriptions)) {
+        u.webPushSubscriptions.forEach(addSub);
+      }
+    };
+
+    const collectFromDoc = (docId: string, u: any) => {
       const uId = String(u?.id || '').trim();
 
       if (excludedIds.has(docId) || (uId && excludedIds.has(uId))) {
-        if (isBroadcastAll) {
-          // Ne pas exclure les autres comptes sur broadcast général; exclure uniquement l'émetteur exact si spécifié
-          return;
+        return;
+      }
+
+      if (resolvedDuesTarget) {
+        const uDues = String(u?.duesStatus || u?.statutCotisation || '').toUpperCase().trim();
+        if (uDues && uDues === resolvedDuesTarget) {
+          pushFromDoc(u);
         }
         return;
       }
 
       if (isBroadcastAll) {
-        if (Array.isArray(u?.fcmTokens)) tokens.push(...u.fcmTokens.filter(Boolean));
-        if (u?.fcmToken && typeof u.fcmToken === 'string' && u.fcmToken.trim()) tokens.push(u.fcmToken.trim());
+        pushFromDoc(u);
         return;
       }
 
-      const uDepts = Array.isArray(u?.departments) ? u.departments.map((x: any) => normalizeDepartmentKey(x)) : [];
-      const uRoles = Array.isArray(u?.roles) ? u.roles.map((x: any) => normalizeDepartmentKey(x)) : [];
-      const uRole = normalizeDepartmentKey(u?.role || u?.adminRole || '');
+      const defaultMeta = getDefaultRolesForMember(uId || docId, u?.firstName, u?.nickname);
+      const uDepts = Array.from(
+        new Set(
+          [
+            ...(Array.isArray(u?.departments) ? u.departments : []),
+            ...(defaultMeta.departments || []),
+          ].map((x: any) => normalizeDepartmentKey(x))
+        )
+      );
+      const uRoles = Array.from(
+        new Set(
+          [
+            ...(Array.isArray(u?.roles) ? u.roles : []),
+            ...(defaultMeta.roles || []),
+          ].map((x: any) => normalizeDepartmentKey(x))
+        )
+      );
+      const uRole = normalizeDepartmentKey(u?.role || u?.adminRole || defaultMeta.adminRole || '');
 
       const isDirectTarget =
         directUserIds.has(docId) ||
@@ -610,15 +905,14 @@ export const extractRecipientFcmTokens = async (options: {
         (uId && targetDeptManagers.has(uId.toUpperCase()));
 
       const isDeptMatch = normalizedDepts.some(
-        normDept =>
+        (normDept) =>
           normDept &&
           normDept !== 'all' &&
           (uDepts.includes(normDept) || uRoles.includes(normDept) || uRole === normDept)
       );
 
       if (isDirectTarget || isManagerTarget || isDeptMatch) {
-        if (Array.isArray(u?.fcmTokens)) tokens.push(...u.fcmTokens.filter(Boolean));
-        if (u?.fcmToken && typeof u.fcmToken === 'string' && u.fcmToken.trim()) tokens.push(u.fcmToken.trim());
+        pushFromDoc(u);
       }
     };
 
@@ -632,20 +926,66 @@ export const extractRecipientFcmTokens = async (options: {
       ]);
       const entries: Array<{ docId: string; data: any }> = [];
       if (allUsersSnap) {
-        allUsersSnap.forEach(d => entries.push({ docId: d.id, data: d.data() }));
+        allUsersSnap.forEach((d) => entries.push({ docId: d.id, data: d.data() }));
       }
       if (allMembersSnap) {
-        allMembersSnap.forEach(d => entries.push({ docId: d.id, data: d.data() }));
+        allMembersSnap.forEach((d) => entries.push({ docId: d.id, data: d.data() }));
       }
       cachedTokenDocs = { fetchedAt: now, entries };
     }
 
-    cachedTokenDocs.entries.forEach(entry => collectTokensFromDoc(entry.docId, entry.data));
+    cachedTokenDocs.entries.forEach((entry) => collectFromDoc(entry.docId, entry.data));
   } catch (err) {
-    console.warn('Erreur extraction fcmTokens Firestore:', err);
+    console.warn('Erreur extraction cibles push Firestore:', err);
   }
 
-  return Array.from(new Set(tokens.filter(t => typeof t === 'string' && t.trim().length > 10)));
+  return {
+    tokens: Array.from(new Set(tokens.filter((t) => typeof t === 'string' && t.trim().length > 10))),
+    subscriptions: Array.from(subscriptionsMap.values()),
+  };
+};
+
+export const extractRecipientFcmTokens = async (options: {
+  targetRole?: string;
+  targetDepartment?: string;
+  targetDepartments?: string[];
+  targetUserId?: string;
+  targetUserIds?: string[];
+  targetDuesStatus?: string;
+  excludedUserId?: string;
+  excludedUserIds?: string[];
+}): Promise<string[]> => {
+  const { tokens } = await extractRecipientTargets(options);
+  return tokens;
+};
+
+const sendBackgroundWebPushBatch = async (
+  subscriptions: WebPushSubscriptionRecord[],
+  payload: {
+    title: string;
+    body: string;
+    icon: string;
+    badge: string;
+    tag: string;
+    url: string;
+    data: Record<string, any>;
+  }
+) => {
+  if (typeof window === 'undefined' || !subscriptions || subscriptions.length === 0) return;
+  try {
+    const resp = await fetch('/api/push/send', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ subscriptions, payload }),
+    });
+    if (!resp.ok) return;
+    const result = await resp.json().catch(() => null);
+    if (result?.expiredEndpoints?.length > 0) {
+      cachedTokenDocs = null;
+    }
+  } catch (err) {
+    console.debug('Background WebPush dispatch note:', err);
+  }
 };
 
 export const dispatchPushNotification = async (options: PushDispatchOptions) => {
@@ -662,7 +1002,7 @@ export const dispatchPushNotification = async (options: PushDispatchOptions) => 
         [
           options.targetDepartment ? normalizeDepartmentKey(options.targetDepartment) : '',
           ...(Array.isArray(options.targetDepartments)
-            ? options.targetDepartments.map(d => normalizeDepartmentKey(d))
+            ? options.targetDepartments.map((d) => normalizeDepartmentKey(d))
             : []),
           options.targetRole ? normalizeDepartmentKey(options.targetRole) : '',
         ].filter(Boolean)
@@ -684,18 +1024,34 @@ export const dispatchPushNotification = async (options: PushDispatchOptions) => 
       ? String(options.metadata.excludedUserId).trim()
       : undefined;
 
-    let targetTokens: string[] = [];
-    if (!hasDirectUsers || options.fcmToken || options.fcmTokens) {
-      targetTokens = await extractRecipientFcmTokens({
-        targetRole: isBroadcastAll ? 'ALL' : options.targetRole,
-        targetDepartment: primaryDept || undefined,
-        targetDepartments: normalizedDepts,
-        targetUserId: options.targetUserId,
-        targetUserIds: options.targetUserIds,
-        excludedUserId,
-      });
-    }
+    const notificationScope = resolveNotificationScope({
+      targetRole: options.targetRole,
+      targetDepartment: options.targetDepartment,
+      targetDepartments: options.targetDepartments,
+      targetDuesStatus: resolvedDuesStatus || undefined,
+      targetUserId: options.targetUserId,
+      targetUserIds: options.targetUserIds,
+      url: options.url,
+      type: options.type,
+    });
 
+    const resolvedUrl = resolveNotificationDeepLinkUrl(notificationScope, {
+      url: options.url,
+      primaryDept,
+      type: options.type,
+    });
+
+    const extracted = await extractRecipientTargets({
+      targetRole: isBroadcastAll ? 'ALL' : options.targetRole,
+      targetDepartment: primaryDept || undefined,
+      targetDepartments: normalizedDepts,
+      targetUserId: options.targetUserId,
+      targetUserIds: options.targetUserIds,
+      targetDuesStatus: resolvedDuesStatus || undefined,
+      excludedUserId,
+    });
+
+    let targetTokens = [...extracted.tokens];
     if (options.fcmToken && typeof options.fcmToken === 'string' && options.fcmToken.trim().length > 10) {
       targetTokens.push(options.fcmToken.trim());
     }
@@ -718,10 +1074,12 @@ export const dispatchPushNotification = async (options: PushDispatchOptions) => 
     markNotificationAsHandled(notificationTag);
 
     const resolvedTargetRole = hasDirectUsers
-      ? (options.targetRole || 'DIRECT_USER')
+      ? options.targetRole || 'DIRECT_USER'
       : isDuesTargeted
-      ? (resolvedDuesStatus || options.targetRole || 'ALL')
-      : (options.targetRole || (primaryDept ? primaryDept.toUpperCase() : 'ALL'));
+      ? resolvedDuesStatus || options.targetRole || 'ALL'
+      : options.targetRole || (primaryDept ? primaryDept.toUpperCase() : 'ALL');
+
+    const resolvedTargetDepartment = primaryDept || (hasDirectUsers ? '' : resolvedTargetRole);
 
     const payload = {
       id: messageId,
@@ -737,10 +1095,11 @@ export const dispatchPushNotification = async (options: PushDispatchOptions) => 
       tag: notificationTag,
       deleted: false,
       status: 'active',
+      scope: notificationScope,
       senderRole: options.senderRole || '',
       senderName: options.senderName || '',
       targetRole: resolvedTargetRole,
-      targetDepartment: primaryDept || (hasDirectUsers ? '' : resolvedTargetRole),
+      targetDepartment: resolvedTargetDepartment,
       targetDepartments: normalizedDepts,
       targetDuesStatus: resolvedDuesStatus,
       targetUserId: options.targetUserId || null,
@@ -748,7 +1107,7 @@ export const dispatchPushNotification = async (options: PushDispatchOptions) => 
       targetTokens,
       fcmTokens: targetTokens,
       type: options.type,
-      url: options.url || '/',
+      url: resolvedUrl,
       notification: {
         title: formattedTitle,
         body: options.body,
@@ -757,10 +1116,14 @@ export const dispatchPushNotification = async (options: PushDispatchOptions) => 
         sound: 'default',
       },
       data: {
-        click_action: options.url || '/',
+        click_action: resolvedUrl,
         title: formattedTitle,
         body: options.body,
-        url: options.url || '/',
+        url: resolvedUrl,
+        scope: notificationScope,
+        targetDepartment: resolvedTargetDepartment,
+        targetRole: resolvedTargetRole,
+        type: options.type,
         messageId: messageId,
         id: messageId,
         tag: notificationTag,
@@ -770,6 +1133,7 @@ export const dispatchPushNotification = async (options: PushDispatchOptions) => 
         sound: 'default',
         requireInteraction: true,
         messageId: messageId,
+        scope: notificationScope,
         ...(options.metadata || {}),
       },
       createdAt: new Date().toISOString(),
@@ -778,8 +1142,21 @@ export const dispatchPushNotification = async (options: PushDispatchOptions) => 
 
     await addDoc(collection(db, 'push_notifications'), payload);
 
+    // Envoi réel Web Push en arrière-plan via le serveur Express (réveille le Service Worker même appli fermée)
+    if (extracted.subscriptions.length > 0) {
+      sendBackgroundWebPushBatch(extracted.subscriptions, {
+        title: formattedTitle,
+        body: options.body,
+        icon: '/icon-192.png',
+        badge: '/icon-192.png',
+        tag: notificationTag,
+        url: resolvedUrl,
+        data: payload.data,
+      }).catch(() => {});
+    }
+
     console.log(
-      '📢 Notification temps réel émise vers Firestore:',
+      `📢 Notification [${notificationScope}] émise (${extracted.subscriptions.length} WebPush):`,
       payload.title,
       normalizedDepts.length > 0 ? `[Département(s): ${normalizedDepts.join(', ')}]` : `[Cible: ${resolvedTargetRole}]`
     );
@@ -852,6 +1229,7 @@ export interface RealtimeNotificationItem {
   icon: string;
   url: string;
   type: string;
+  scope?: 'MEMBER' | 'DEPARTMENT';
   senderName?: string;
   senderRole?: string;
   targetDepartment?: string;
@@ -1037,6 +1415,19 @@ export const subscribeToRealtimeNotifications = (options: RealtimeNotifSubscript
           : docData.createdAt
           ? Date.parse(docData.createdAt) || Date.now()
           : Date.now();
+      const computedScope: 'MEMBER' | 'DEPARTMENT' =
+        docData.scope === 'DEPARTMENT' || docData.scope === 'MEMBER'
+          ? docData.scope
+          : resolveNotificationScope({
+              targetRole: docData.targetRole,
+              targetDepartment: docData.targetDepartment,
+              targetDepartments: docData.targetDepartments,
+              targetDuesStatus: docData.targetDuesStatus,
+              targetUserId: docData.targetUserId,
+              targetUserIds: docData.targetUserIds,
+              url: docData.url,
+              type: docData.type,
+            });
       return {
         id: String(notifId),
         title: docData.title || 'E-ROUAMA',
@@ -1044,6 +1435,7 @@ export const subscribeToRealtimeNotifications = (options: RealtimeNotifSubscript
         icon: docData.icon || '/icon-192.png',
         url: docData.url || '/',
         type: docData.type || 'GENERAL',
+        scope: computedScope,
         senderName: docData.senderName || '',
         senderRole: docData.senderRole || '',
         targetDepartment: docData.targetDepartment || '',
